@@ -8,6 +8,7 @@ import os
 import queue
 import time
 from typing import TYPE_CHECKING, Sequence, Tuple
+import uuid
 
 import PIL
 import PIL.ImageDraw
@@ -36,7 +37,11 @@ def _read_new_data(wnds, queues):
                 msg = q.get(block=False)
                 if msg is display.SHUTDOWN or msg is display.THREAD_COMPLETED:
                     return msg
-                wndname = f"{wnd} {msg.stream_id}" if msg.stream_id > 0 else wnd
+                wndname = (
+                    f"{wnd} {msg.stream_id}"
+                    if isinstance(msg, display._StreamMessage) and msg.stream_id > 0
+                    else wnd
+                )
                 if isinstance(msg, display._Frame):
                     frames[wndname] = msg  # keep only the latest frame data
                 else:
@@ -85,6 +90,7 @@ class CVApp(display.App):
         super().__init__(*args, **kwargs)
         self._stream_wnds = set()
         self._meta_cache = display.MetaCache()
+        self._layers: dict[uuid.UUID, display._Layer] = collections.defaultdict()
 
     def _create_new_window(self, q, wndname, size):
         del q  # unused
@@ -99,6 +105,24 @@ class CVApp(display.App):
 
     def _destroy_all_windows(self):
         cv2.destroyAllWindows()
+
+    def _get_layers(self, stream_id):
+        '''
+        Delete any layers if necessary, and return the layers to be rendered by the
+        requested window.
+
+        Layers with a stream_id of -1 are global and will be rendered on all windows.
+        Otherwise the layer will only be rendered on the window with the same stream_id.
+        '''
+        now = time.time()
+        expired = [
+            k
+            for k, v in self._layers.items()
+            if v.fadeout_start and now - v.fadeout_start >= v.fadeout_duration
+        ]
+        for k in expired:
+            self._layers.pop(k)
+        return [x for x in self._layers.values() if x.stream_id in [stream_id, -1]]
 
     def _run(self, interval=1 / 30):
         last_frame = time.time()
@@ -120,18 +144,36 @@ class CVApp(display.App):
                     if oldtitle != opts.title:
                         pending_titles[wndname] = options[wndname].title
                     continue
+                elif isinstance(msg, display._Delete):
+                    if msg.id in self._layers and not self._layers[msg.id].fadeout_start:
+                        self._layers[msg.id].fadeout_start = time.time()
+                        self._layers[msg.id].fadeout_duration = msg.fadeout
+                    else:
+                        LOG.trace(f'layer {msg.id} already deleted or fading out')
+                    continue
+                elif isinstance(msg, display._Layer):
+                    self._layers[msg.id] = msg
+                    continue
                 elif not isinstance(msg, display._Frame):
                     LOG.debug(f"Unknown message: {msg}")
                     continue
 
                 if wndname not in self._wnds:
                     self._create_new_window(None, wndname, msg.image.size)
-                draw = CVDraw(msg.image, opts)
+                layers = self._get_layers(msg.stream_id)
+                draw = CVDraw(msg.image, layers, opts)
+
                 _, meta_map = self._meta_cache.get(msg.stream_id, msg.meta)
                 for m in meta_map.values():
                     m.visit(lambda m: m.draw(draw))
                 draw.draw()
-                bgr = msg.image.asarray(types.ColorFormat.BGRA)
+                if (
+                    msg.image.color_format == types.ColorFormat.RGB
+                    or msg.image.color_format == types.ColorFormat.RGBA
+                ):
+                    bgr = msg.image.asarray(types.ColorFormat.BGRA)
+                else:
+                    bgr = msg.image.asarray(types.ColorFormat.RGBA)
                 if pending := pending_titles.pop(wndname, None):
                     cv2.setWindowTitle(wndname, pending)
                 cv2.imshow(wndname, bgr)
@@ -166,6 +208,35 @@ def _get_speedometer(diameter):
     return x.resize((diameter, diameter))
 
 
+@functools.lru_cache(maxsize=128)
+def _load_pil_image_from_file(filename):
+    return PIL.Image.open(filename)
+
+
+def _normalize_anchor_point(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    anchor_x: str,
+    anchor_y: str,
+) -> Tuple[int, int]:
+    '''
+    Default pillow anchor is the top left corner. If we are using a different anchor point,
+    calculate the x and y co-ordinate of the top-left corner from the given point, anchor and
+    renderable size, and use that.
+    '''
+    if anchor_x == 'center':
+        x -= width / 2
+    elif anchor_x == 'right':
+        x -= width
+    if anchor_y == 'center':
+        y -= height / 2
+    elif anchor_y == 'bottom':
+        y -= height
+    return x, y
+
+
 class _DrawList(list):
     def __getattr__(self, name):
         def _draw(*args):
@@ -175,16 +246,73 @@ class _DrawList(list):
 
 
 class CVDraw(display.Draw):
-    def __init__(self, image: types.Image, options: CVOptions = CVOptions()):
+    def __init__(
+        self, image: types.Image, layers: list[display._Layer], options: CVOptions = CVOptions()
+    ):
         self._canvas_size = (image.width, image.height)
         self._img = image
         rgb = image.asarray('RGB')
         self._pil = PIL.Image.fromarray(rgb_to_grayscale_rgb(rgb, options.grayscale))
-        self._draw = PIL.ImageDraw.Draw(self._pil)
+        self._draw = PIL.ImageDraw.Draw(self._pil, "RGBA")
         self._dlist = _DrawList()
         self._font_cache = {}
         self._speedometer_index = 0
         self._options = options
+
+        now = time.time()
+        for l in layers:
+            if l.fadeout_start is None or l.fadeout_start > now:
+                fadeout_percent = 1.0
+            else:
+                fadeout_percent = max(
+                    0.0, 1.0 - ((now - l.fadeout_start) / float(l.fadeout_duration))
+                )
+
+            pt = l.position.as_px(self._canvas_size)
+            if isinstance(l, display._Text):
+                font = display.Font(size=l.font_size)
+                text_size = self.textsize(l.text, font)
+                pt = _normalize_anchor_point(
+                    *pt,
+                    text_size[0],
+                    text_size[1],
+                    l.anchor_x,
+                    l.anchor_y,
+                )
+                color = l.color[:3] + (int(l.color[3] * fadeout_percent),)
+                bgcolor = l.bgcolor[:3] + (int(l.bgcolor[3] * fadeout_percent),)
+                txt = PIL.Image.new('RGBA', text_size, bgcolor)
+                txt_draw = PIL.ImageDraw.Draw(txt, "RGBA")
+                txt_draw.text((0, 0), l.text, color, self._load_font(font), "lt")
+                self._dlist.paste(txt, pt, txt)
+            elif isinstance(l, display._Image):
+                img = _load_pil_image_from_file(l.path)
+                if l.scale is None:
+                    scale = 1.0, 1.0
+                elif isinstance(l.scale, float):
+                    scale = l.scale, l.scale
+                img = img.resize((int(scale[0] * img.width), int(scale[1] * img.height)))
+                if fadeout_percent < 1.0:
+                    img = img.convert("RGBA")
+                    alpha = np.array(img.split()[-1])
+                    alpha = (alpha * fadeout_percent).astype(np.uint8)
+                    img.putalpha(PIL.Image.fromarray(alpha))
+                pt = _normalize_anchor_point(
+                    *pt,
+                    img.width,
+                    img.height,
+                    l.anchor_x,
+                    l.anchor_y,
+                )
+
+                self._dlist.paste(img, pt, img)
+            else:
+                LOG.debug(f"Unknown layer type {l.__class__.__name__} ignoring...")
+
+    def _pt_transform(self, pt: tuple[int | float, int | float]) -> tuple[int, int]:
+        if type(pt[0]) is float:
+            return int(pt[0] * self._canvas_size[0]), int(pt[1] * self._canvas_size[1])
+        return pt
 
     @property
     def options(self) -> CVOptions:
@@ -265,7 +393,7 @@ class CVDraw(display.Draw):
         if back_color is not None:
             w, h = self.textsize(text, font)
             self.rectangle(p, (p[0] + w, p[1] + h), back_color)
-        self._dlist.text(p, text, txt_color, self._load_font(font))
+        self._dlist.text(p, text, txt_color, self._load_font(font), "lt")
 
     def keypoint(
         self, p: display.Point, color: display.Color = (255, 255, 255, 255), size=2
@@ -298,7 +426,9 @@ class CVDraw(display.Draw):
         x_adjust = y_adjust = 0
         mask, mbox = mask_data[-1], mask_data[4:8]
         img_size = (mbox[2] - mbox[0], mbox[3] - mbox[1])
-        resized_image = cv2.resize(mask, img_size, interpolation=cv2.INTER_CUBIC)
+        if 0 in img_size or 0 in mask.shape:
+            return
+        resized_image = cv2.resize(mask, img_size, interpolation=cv2.INTER_LINEAR)
 
         mid_point = np.iinfo(np.uint8).max // 2
         bool_array = resized_image > mid_point
@@ -314,3 +444,42 @@ class CVDraw(display.Draw):
         colored_mask = cv2.resize(colored_mask, self._canvas_size)
         mask_pil = PIL.Image.fromarray(colored_mask)
         self._dlist.paste(mask_pil, (0, 0), mask_pil)
+
+    def draw_image(self, image: np.ndarray):
+        if image.dtype not in [np.uint8, np.float32, np.float64]:
+            raise ValueError("draw_image: image dtype must be np.uint8, np.float32, or np.float64")
+
+        def float_to_uint8_image(float_img):
+            d_min = np.min(float_img)
+            d_max = np.max(float_img)
+
+            if np.isclose(d_min, d_max):
+                uint8_img = np.zeros_like(image, dtype=np.uint8)
+            else:
+                uint8_img = np.clip((image - d_min) / (d_max - d_min) * 255.0, 0, 255).astype(
+                    np.uint8
+                )
+
+            return uint8_img
+
+        if image.ndim == 4 and image.shape[0] == 1:
+            image = image.squeeze(axis=0)  # Remove batch dimension
+        if image.ndim == 3 and image.shape[0] == 1:
+            image = image.squeeze(axis=0)  # Remove channel dimension if single channel
+
+        if image.dtype == np.float32 or image.dtype == np.float64:
+            image = float_to_uint8_image(image)
+
+        # Convert CHW to HWC format
+        if image.ndim == 3 and image.shape[0] == 3:
+            image = np.transpose(image, (1, 2, 0))
+
+        image = cv2.resize(image, self._canvas_size)
+
+        if image.ndim == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGBA)
+        else:
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2RGBA)
+
+        pil_image = PIL.Image.fromarray(image)
+        self._dlist.paste(pil_image, (0, 0), pil_image)

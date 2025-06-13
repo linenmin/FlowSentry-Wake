@@ -301,7 +301,6 @@ TEST(yolov8seg_decode_scores, without_scaling_segments)
     { "confidence_threshold", "0.4" },
     { "classes", "80" },
     { "multiclass", "1" },
-    { "scale_mask_to_input", "0" },
     { "model_width", "640" },
     { "model_height", "640" },
   };

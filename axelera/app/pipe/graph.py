@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Builds a dependency graph for the tasks in the pipeline
 
 from collections import defaultdict
@@ -7,6 +7,8 @@ import functools
 import sys
 
 import networkx as nx
+
+from axelera import types
 
 from .. import logging_utils, operators
 
@@ -25,43 +27,120 @@ class NetworkType(enum.Enum):
     COMPLEX_NETWORK = enum.auto()
 
 
+class EdgeType(enum.Enum):
+    EXECUTION = enum.auto()  # For execution flow
+    RESULT = enum.auto()  # For result organization
+
+
 class DependencyGraph:
     def __init__(self, tasks):
         self.graph = defaultdict(list)
+        self.result_graph = defaultdict(list)  # New graph for result organization
         self.task_map = {task.name: task for task in tasks}
         self.input_placeholder = "Input"
-        self._initialize_graph(tasks)
         self.task_names = list(self.task_map.keys())
+        self._initialize_graph(tasks)
         self.model_names = [task.model_info.name for task in tasks]
+
+        # Build result view automatically
+        self._build_result_graph(tasks)
 
     def _build_graph(self, tasks):
         for task in tasks:
-            if isinstance(task.input, operators.InputFromROI):
-                source_task_name = task.input.where
+            if task.is_dl_task:
+                if isinstance(task.input, operators.InputFromROI):
+                    source_task_name = task.input.where
+                    self.graph[source_task_name].append(task.name)
+                elif isinstance(task.input, (operators.Input, operators.InputWithImageProcessing)):
+                    self.graph[self.input_placeholder].append(task.name)
+            elif task.model_info.task_category == types.TaskCategory.ObjectTracking:
+                source_task_name = task.cv_process[0].bbox_task_name
                 self.graph[source_task_name].append(task.name)
-            elif isinstance(task.input, (operators.Input, operators.InputWithImageProcessing)):
-                self.graph[self.input_placeholder].append(task.name)
+            else:
+                raise ValueError(
+                    f"Handle this case: Task {task.name} is not a DL task or a tracker task"
+                )
 
         # Ensure all tasks are in the graph, even if they have no dependencies
         for task in tasks:
             if task.name not in self.graph:
                 self.graph[task.name] = []
+
+        # Create NetworkX graph for execution view
         self.graph_nx = nx.from_dict_of_lists(self.graph, create_using=nx.DiGraph)
 
+    def _is_internal_task(self, task_name):
+        return task_name == 'axelera-tiles-internal'
+
     def _check_task(self, task_name):
+        # This is a special internal task used for tiling
+        if self._is_internal_task(task_name):
+            return
         if task_name not in self.task_names:
             if task_name in self.model_names:
                 raise ValueError(f"Task {task_name} is a model, not a task")
             else:
                 raise ValueError(f"Task {task_name} not found in the pipeline")
 
-    def get_dependencies(self, task_name):
-        return self.graph[task_name]
+    def _build_result_graph(self, tasks):
+        # Start with a copy of the execution graph
+        self.result_graph = {k: v.copy() for k, v in self.graph.items()}
+
+        # Find tracker nodes and handle them specially
+        for task in tasks:
+            if task.model_info.task_category == types.TaskCategory.ObjectTracking:
+                self._handle_tracker_in_result_graph(task)
+
+        # Create NetworkX graph for result view
+        self.result_graph_nx = nx.from_dict_of_lists(self.result_graph, create_using=nx.DiGraph)
+
+    def _handle_tracker_in_result_graph(self, tracker_task):
+        # Get the detection metadata name this tracker depends on
+        bbox_task_name = tracker_task.cv_process[0].bbox_task_name
+
+        # Find the source task for this tracker in our execution graph
+        for source_task, dependent_tasks in self.graph.items():
+            if tracker_task.name in dependent_tasks:
+                # This is the task that produces the detections
+                # In result view, remove dependency and connect tracker directly to input
+                if source_task != self.input_placeholder:  # Only modify if not already from input
+                    if tracker_task.name in self.result_graph.get(source_task, []):
+                        self.result_graph[source_task].remove(tracker_task.name)
+
+                    # Add direct connection from input to tracker
+                    if self.input_placeholder not in self.result_graph:
+                        self.result_graph[self.input_placeholder] = []
+                    if tracker_task.name not in self.result_graph[self.input_placeholder]:
+                        self.result_graph[self.input_placeholder].append(tracker_task.name)
+
+                    break  # Found and handled this tracker
+
+    def get_dependencies(self, task_name, view=EdgeType.EXECUTION):
+        """Get task dependencies based on the specified view."""
+        if view == EdgeType.EXECUTION:
+            return self.graph[task_name]
+        else:
+            return self.result_graph[task_name]
 
     @functools.lru_cache(maxsize=None)
-    def get_master(self, task_name):
+    def get_master(self, task_name, view=EdgeType.EXECUTION):
+        """Get the master (predecessor) task based on the specified view.
+
+        Args:
+            task_name: The name of the task to find the master for
+            view: Which graph view to use (EXECUTION or RESULT)
+
+        Returns:
+            The name of the master task, or '' if there is no master
+        """
+        if self._is_internal_task(task_name):
+            return None
         self._check_task(task_name)
-        predecessors = list(self.graph_nx.predecessors(task_name))
+
+        # Use the appropriate graph based on the view
+        graph_to_use = self.graph_nx if view == EdgeType.EXECUTION else self.result_graph_nx
+
+        predecessors = list(graph_to_use.predecessors(task_name))
         if len(predecessors) > 1:
             raise ValueError("Unexpected network structure: multiple master nodes found")
         if not predecessors or predecessors[0] == self.input_placeholder:
@@ -77,9 +156,19 @@ class DependencyGraph:
 
     def _initialize_graph(self, new_tasks):
         self._build_graph(new_tasks)
+        self._build_result_graph(new_tasks)  # This will create both graph representations
         self.clear_cache()
 
-    def print_graph(self, stream=sys.stdout):
+    def print_graph(self, log=print, view=EdgeType.EXECUTION):
+        """Print the graph in the specified view.
+
+        Args:
+            stream: Either a file-like object with a write method, or a logging function
+            view: Which graph view to print (EXECUTION or RESULT)
+        """
+        graph_to_use = self.graph if view == EdgeType.EXECUTION else self.result_graph
+
+        log(f"\n--- {view.name} VIEW ---")
         indent_char = "  "  # Indentation character
         branch_char = "│ "  # Branch character
         arrow_char = "└─"  # Arrow character
@@ -90,13 +179,13 @@ class DependencyGraph:
             if task_name == self.input_placeholder:
                 layers[task_name] = 0
             else:
-                if dependencies := self.get_dependencies(task_name):
-                    layer = max(layers.get(dep, 0) for dep in dependencies) + 1
+                if deps := [d for d in graph_to_use.get(task_name, []) if d in graph_to_use]:
+                    layer = max(layers.get(dep, 0) for dep in deps) + 1
                 else:
                     layer = 1
                 layers[task_name] = layer
 
-        max_layer = max(layers.values())
+        max_layer = max(layers.values()) if layers else 0
         visited = set()
 
         def print_dependencies(task, level, prefix=""):
@@ -111,9 +200,10 @@ class DependencyGraph:
                 else:
                     prefix += branch_char
 
-            print(f"{prefix}{task}", file=stream)
+            output_line = f"{prefix}{task}"
+            log(output_line)
 
-            dependencies = self.get_dependencies(task)
+            dependencies = graph_to_use.get(task, [])
             if dependencies:
                 for i, dep in enumerate(dependencies):
                     if i == len(dependencies) - 1:
@@ -123,11 +213,22 @@ class DependencyGraph:
 
         print_dependencies(self.input_placeholder, 0)
 
-    def visualize_graph(self):
+    def print_all_views(self, log=print):
+        """Print both execution and result views of the graph.
+
+        Args:
+            stream: Either a file-like object or a logging function
+        """
+        self.print_graph(log=log, view=EdgeType.EXECUTION)
+        self.print_graph(log=log, view=EdgeType.RESULT)
+
+    def visualize_graph(self, view=EdgeType.EXECUTION):
         import matplotlib.pyplot as plt
 
         G = nx.DiGraph()
         self.input_placeholder = "Input"  # Placeholder for the input node
+
+        graph_to_use = self.graph if view == EdgeType.EXECUTION else self.result_graph
 
         # Create a mapping of nodes to their respective layers
         layers = {}
@@ -135,7 +236,7 @@ class DependencyGraph:
             if task_name == self.input_placeholder:
                 layers[task_name] = 0
             else:
-                dependencies = self.get_dependencies(task_name)
+                dependencies = graph_to_use.get(task_name, [])
                 if dependencies:
                     layer = max(layers.get(dep, 0) for dep in dependencies) + 1
                 else:
@@ -143,7 +244,7 @@ class DependencyGraph:
                 layers[task_name] = layer
 
         # Add edges to the graph and assign subset (layer) attribute to each node
-        for source, destinations in self.graph.items():
+        for source, destinations in graph_to_use.items():
             for dest in destinations:
                 G.add_edge(source, dest)
                 G.nodes[source]["subset"] = layers.get(source, 0)  # Use get() with default value 0

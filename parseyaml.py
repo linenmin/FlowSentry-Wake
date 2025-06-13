@@ -23,12 +23,12 @@ def required_value(key):
     return f"Missing value for key: {key}"
 
 
-def check_key(key, envs, parent=""):
+def check_key(key, envs, parent="", check_value=True):
     keystr = f"{parent}:{key}" if parent else key
     if not key in envs:
         print(required_key(keystr))
         return False
-    elif not envs[key]:
+    elif check_value and not envs[key]:
         print(required_value(keystr))
         return False
     return True
@@ -122,6 +122,23 @@ def check_system_libs(key, libs):
         return True
 
 
+def check_pkg_subset(pkg: str, envs, required: bool=True):
+    if required:
+        if not check_key(pkg, envs):
+            return False
+    elif not pkg in envs:
+        return True
+
+    if check_key('index_url', envs[pkg], pkg) and \
+        check_key('libs', envs[pkg], pkg, check_value=False):
+        libs = envs[pkg]['libs']
+        if libs or libs == []:
+            return True
+        else:
+            print(f"{pkg}:libs Value must be a (possibly empty) list")
+            return False
+
+
 def check_penv(envs):
     # penv is optional
     ok = True
@@ -140,14 +157,11 @@ def check_penv(envs):
     # TODO expand these
     ok = ok and check_key('repositories', envs)
 
-    if 'libs' not in envs:
-        ok = ok and check_key('common', envs)
-        ok = ok and check_key('development', envs)
-        ok = ok and check_key('runtime', envs)
-    else:
-        ok = ok and check_key('libs', envs)
+    ok = ok and check_pkg_subset('common', envs)
+    ok = ok and check_pkg_subset('development', envs)
+    ok = ok and check_pkg_subset('runtime', envs)
+    ok = ok and check_pkg_subset('llm', envs, required=False)
     
-    ok = ok and check_key('cuda', envs)
     ok = ok and check_key('requirements', envs)
     ok = ok and check_key('pyenv', envs)
     ok = ok and check_key('python_src', envs)
@@ -184,8 +198,6 @@ def limit_for_hash(env, hash_type):
             del env['penv']['repositories']
         if 'libs' in env['penv']:  # requirements
             del env['penv']['libs']
-        if 'cuda' in env['penv']:  # requirements
-            del env['penv']['cuda']
         if 'pyenv' in env['penv']:
             del env['penv']['pyenv']
         if 'python_src' in env['penv']:
@@ -198,8 +210,6 @@ def limit_for_hash(env, hash_type):
         else:
             if 'system-dependencies' in env['docker']:
                 del env['docker']['system-dependencies']
-            if 'system-cuda-dependencies' in env['docker']:
-                del env['docker']['system-cuda-dependencies']
     if 'runtime' in env:
         if not is_docker_hash:
             del env['runtime']

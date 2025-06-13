@@ -169,10 +169,12 @@ interface_from_caps_and_meta(GstCaps *caps, GstBuffer *buffer)
 
   if (std::holds_alternative<AxVideoInterface>(interface)) {
     auto &video_interface = std::get<AxVideoInterface>(interface);
+    video_interface.info.actual_height = video_interface.info.height;
     GstVideoMeta *meta = gst_buffer_get_video_meta(buffer);
     if (!meta) {
       return interface;
     }
+    video_interface.info.actual_height = meta->height;
     auto num_planes = meta->n_planes;
     video_interface.offsets.assign(meta->offset, meta->offset + num_planes);
     video_interface.strides.assign(meta->stride, meta->stride + num_planes);
@@ -247,6 +249,18 @@ assign_data_ptrs_to_interface(const std::vector<GstMapInfo> &info, AxDataInterfa
   } else {
     throw std::logic_error(
         "No video or tensor interface passed to assign_data_ptrs_to_interface.");
+  }
+}
+
+void
+assign_vaapi_ptrs_to_interface(const std::vector<GstMapInfo> &info, AxDataInterface &interface)
+{
+  if (std::holds_alternative<AxVideoInterface>(interface)) {
+    auto &video = std::get<AxVideoInterface>(interface);
+    video.vaapi = reinterpret_cast<VASurfaceID_proxy *>(info[0].data);
+    video.data = nullptr;
+  } else {
+    throw std::logic_error("Tensor interface passed to assign_vaapi_ptrs_to_interface.");
   }
 }
 
@@ -487,7 +501,7 @@ parse_and_validate_options(GObject *self, const std::string &options_string,
 void
 init_options(GObject *self, const std::string &options_string,
     const Ax::V1Plugin::Base &fns, Ax::Logger &logger,
-    std::shared_ptr<void> &options, bool &initialized)
+    std::shared_ptr<void> &options, bool &initialized, void *display)
 {
   if (initialized) {
     return;
@@ -499,6 +513,11 @@ init_options(GObject *self, const std::string &options_string,
     throw std::runtime_error("Function -init_and_set_static_properties- not found but assigned following options: "
                              + options_string);
   }
+  (void) display;
+  // We do not use display yet, we need to extend the plugin system by either:
+  // 1. Change all plugins to have the extra param
+  // 2. Add a new api `init_and_set_static_properties_with_va` or similar
+  // 3. Pass the va via the options array, encoding the ptr as uintptr_t in hex.
   auto opts = parse_and_validate_options(self, options_string, fns);
   options = fns.init_and_set_static_properties(opts, logger);
   if (fns.set_dynamic_properties) {

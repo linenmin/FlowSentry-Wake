@@ -14,6 +14,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
@@ -29,6 +30,8 @@ using inferences = ax_utils::inferences;
 
 struct properties {
   std::string meta_name{};
+  std::string master_meta{};
+  std::string association_meta{};
   std::vector<lookups> dequantize_tables{};
   std::vector<std::vector<int>> paddings{};
   std::vector<std::string> class_labels{};
@@ -230,6 +233,14 @@ init_and_set_static_properties(
   auto props = std::make_shared<yolo::properties>();
   props->meta_name = Ax::get_property(
       input, "meta_key", "yolo_decode_static_properties", props->meta_name);
+  props->master_meta = Ax::get_property(
+      input, "master_meta", "yolo_decode_static_properties", props->master_meta);
+  props->association_meta = Ax::get_property(input, "association_meta",
+      "yolo_decode_static_properties", props->association_meta);
+  if (!props->master_meta.empty() || !props->association_meta.empty()) {
+    throw std::runtime_error(
+        "yolo_decode_static_properties: Neither master_meta nor association_meta are supported");
+  }
   auto zero_points = Ax::get_property(input, "zero_points",
       "yolo_decode_static_properties", std::vector<float>{});
   auto scales = Ax::get_property(
@@ -314,7 +325,7 @@ init_and_set_static_properties(
     }
     try {
       props->feature_decoder
-          = std::make_unique<OnnxRuntimeInference>(feature_decoder_onnx_path);
+          = std::make_unique<OnnxRuntimeInference>(feature_decoder_onnx_path, logger);
       auto input_node_dims = props->feature_decoder->get_input_node_dims();
       props->dequantized_data.resize(input_node_dims.size());
       for (size_t i = 0; i < input_node_dims.size(); ++i) {
@@ -338,6 +349,8 @@ allowed_properties()
   // clang-format off
   static const std::unordered_set<std::string> allowed_properties{
     "meta_key",
+    "master_meta",
+    "association_meta",
     "zero_points",
     "scales",
     "paddings",
@@ -368,7 +381,7 @@ set_dynamic_properties(const std::unordered_map<std::string, std::string> &input
 
 extern "C" void
 decode_to_meta(const AxTensorsInterface &in_tensors, const yolo::properties *prop,
-    unsigned int subframe_index, unsigned int subframe_number,
+    unsigned int subframe_index, unsigned int number_of_subframes,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
     const AxDataInterface &video_interface, Ax::Logger &logger)
 {
@@ -428,8 +441,9 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolo::properties *pro
     boxes.emplace_back(box);
   }
 
-  map[prop->meta_name] = std::make_unique<AxMetaObjDetection>(std::move(boxes),
-      std::move(predictions.scores), std::move(predictions.class_ids));
+  ax_utils::insert_and_associate_meta<AxMetaObjDetection>(map, prop->meta_name,
+      prop->master_meta, subframe_index, number_of_subframes, prop->association_meta,
+      std::move(boxes), std::move(predictions.scores), std::move(predictions.class_ids));
 
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);

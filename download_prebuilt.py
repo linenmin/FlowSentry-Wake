@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import os
 import pathlib
 import re
 import subprocess
@@ -64,6 +65,11 @@ def get_version():
 
 def get_models(version):
     with requests.get(f"{BASE_URL}{version}/{MODELS_FILE}") as request:
+        if request.status_code == 403:  # forbidden
+            raise RuntimeError(
+                f"Prebuilt models are not available for this version ({version}). You can try\n"
+                f"another version using --version but they may not be compatible."
+            )
         request.raise_for_status()
         return request.json()
 
@@ -105,6 +111,9 @@ def download(args):
 
     to_download = [m.removesuffix(".zip") for m in to_download]
     for mname in to_download:
+        if os.path.exists(f'build/{mname}'):
+            print(f'{mname} already exists, skipping download')
+            continue
         f = f"{mname}.zip"
         if not (checksum := models.get(f)):
             raise ValueError(f'Prebuilt model not available for {args.model} in v{version}')

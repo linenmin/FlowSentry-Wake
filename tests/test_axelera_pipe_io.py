@@ -3,6 +3,7 @@
 import contextlib
 import itertools
 import logging
+import os
 from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
@@ -11,8 +12,9 @@ import numpy as np
 import pytest
 
 from axelera import types
-from axelera.app import display_cv, gst_builder, meta, operators, pipe, pipeline, utils
+from axelera.app import display_cv, gst_builder, meta, pipe, utils
 from axelera.app.config import HardwareCaps
+from axelera.app.pipe import io
 
 bgr_img = types.Image.fromarray(
     np.full((4, 6, 3), (1, 2, 3), dtype=np.uint8), color_format=types.ColorFormat.BGR
@@ -21,25 +23,39 @@ rgb_img = cv2.cvtColor(bgr_img.asarray(), cv2.COLOR_BGR2RGB)
 
 MP4V = cv2.VideoWriter_fourcc(*"mp4v")
 
-common_res = [(640, 480), (1280, 720), (1920, 1080), (3840, 2160)]
+common_res = [(640, 480), (1280, 720), (1920, 1080), (3840, 240)]
 low_res = [(640, 480), (1280, 720)]
 
 
 def _gen_input_gst(pipein):
-    gst = gst_builder.Builder()
+    gst = gst_builder.Builder(HardwareCaps.NONE)
     pipein.build_input_gst(gst, '')
     return list(gst)
 
 
 def _streamid(idx: int = 0):
     return {
-        'name': f'axinplace-addstreamid{idx}',
+        'name': f'decodebin-link{idx}',
         'instance': 'axinplace',
-        'name': 'axinplace-addstreamid0',
         'lib': 'libinplace_addstreamid.so',
         'mode': 'meta',
         'options': f'stream_id:{idx}',
     }
+
+
+def _colorconvert(hardware_caps, format='RGB'):
+    if hardware_caps.opencl:
+        return [
+            {
+                'instance': 'axtransform',
+                'lib': 'libtransform_colorconvert.so',
+                'options': f'format:{format.lower()}',
+            },
+        ]
+    return [
+        {'instance': 'videoconvert'},
+        {'caps': f'video/x-raw,format={format}A', 'instance': 'capsfilter'},
+    ]
 
 
 class MockCapture:
@@ -101,7 +117,7 @@ class MockCapture:
 @pytest.mark.parametrize('resolutions', [common_res, low_res])
 def test_input_torch_usb0(resolutions):
     with patch.object(cv2, 'VideoCapture', new=MockCapture(resolutions, 100, 30)) as capture:
-        pipein = pipe.PipeInput('Torch', source='usb')
+        pipein = io.SinglePipeInput('Torch', source='usb')
     assert pipein.format == 'usb'
     assert pipein.location == '/dev/video0'
     assert pipein.number_of_frames == 100
@@ -112,7 +128,7 @@ def test_input_torch_usb0(resolutions):
 def test_input_torch_usb_no_res():
     with patch.object(cv2, 'VideoCapture', new=MockCapture([], 100, 30)):
         with pytest.raises(RuntimeError, match='Unable to find a supported resolution'):
-            pipe.PipeInput('Torch', source='usb')
+            io.SinglePipeInput('Torch', source='usb')
 
 
 @contextlib.contextmanager
@@ -140,7 +156,6 @@ def mock_pathlib(*, is_file: bool = None, is_dir: bool = None, resolve: str = No
         ('usb:1:1280x720', 'usb', '/dev/video1', 1, 1280, 720),
         ('usb:/dev/summit', 'usb', '/dev/summit', '/dev/summit', 0, 0),
         ('usb:/dev/summit:1280x720', 'usb', '/dev/summit', '/dev/summit', 1280, 720),
-        ('csi:/dev/video0', 'csi', '/dev/video0', '/dev/video0', 0, 0),
         ('http://localhost', 'hls', 'http://localhost', 'http://localhost', 0, 0),
         ('https://localhost', 'hls', 'https://localhost', 'https://localhost', 0, 0),
         ('rtsp://localhost', 'rtsp', 'rtsp://localhost', 'rtsp://localhost', 0, 0),
@@ -158,7 +173,7 @@ def mock_pathlib(*, is_file: bool = None, is_dir: bool = None, resolve: str = No
 def test_input_torch_video_sources(source, format, location, cap_source, width, height):
     with patch.object(cv2, 'VideoCapture', MockCapture()) as capture:
         with mock_pathlib(is_file=True, resolve='/abs'):
-            pipein = pipe.PipeInput('Torch', source)
+            pipein = io.SinglePipeInput('Torch', source)
     assert pipein.format == format
     assert pipein.location == location
     assert capture.source == cap_source
@@ -173,13 +188,13 @@ def test_input_torch_video_sources(source, format, location, cap_source, width, 
     ],
 )
 def test_input_torch_fakevideo_sources(source, format, location, width, height):
-    pipein = pipe.PipeInput('Torch', source)
+    pipein = io.SinglePipeInput('Torch', source)
     assert pipein.format == format
     assert pipein.location == location
     assert pipein.width == width
     assert pipein.height == height
 
-    images = list(itertools.islice(pipein.create_generator(), 2))
+    images = list(itertools.islice(pipein.frame_generator(), 2))
     assert len(images) == 2
     assert images[0].img.size == (width, height)
     np.testing.assert_equal(images[0].img.asarray(), images[1].img.asarray())
@@ -189,7 +204,7 @@ def test_input_torch_fakevideo_sources(source, format, location, width, height):
 def test_input_torch_image(extension):
     with mock_pathlib(is_file=True, resolve='/abs/somedir'):
         with patch.object(cv2, 'imread', return_value=bgr_img.asarray()):
-            pipein = pipe.PipeInput('Torch', f'file{extension}')
+            pipein = io.SinglePipeInput('Torch', f'file{extension}')
 
     assert pipein.format == 'image'
     assert pipein.location == f'/abs/somedir/file{extension}'
@@ -218,7 +233,7 @@ def test_input_torch_images_from_dir():
     with mock_pathlib(is_file=False, is_dir=True, resolve='/abs'):
         with patch.object(Path, 'iterdir', new=a_b_iterdir):
             with patch.object(cv2, 'imread', return_value=bgr_img.asarray()):
-                pipein = pipe.PipeInput('Torch', 'somedir')
+                pipein = io.SinglePipeInput('Torch', 'somedir')
 
     assert pipein.format == 'images'
     assert pipein.location == '/abs/somedir'
@@ -230,7 +245,7 @@ def test_input_torch_images_from_empty_dir():
     with mock_pathlib(is_file=False, is_dir=True, resolve='/abs'):
         with patch.object(Path, 'iterdir', new=empty_iterdir):
             with pytest.raises(RuntimeError, match='Failed to locate any images in /abs/somedir'):
-                pipe.PipeInput('Torch', 'somedir')
+                io.SinglePipeInput('Torch', 'somedir')
 
 
 def test_input_torch_images_from_bad_image():
@@ -238,73 +253,57 @@ def test_input_torch_images_from_bad_image():
         with patch.object(Path, 'iterdir', new=a_b_iterdir):
             with patch.object(cv2, 'imread', return_value=None):
                 with pytest.raises(RuntimeError, match='Failed to read image: a.jpg'):
-                    pipe.PipeInput('Torch', 'somedir')
+                    io.SinglePipeInput('Torch', 'somedir')
 
 
 def test_input_torch_nonexistent_path():
     with mock_pathlib(is_file=False, is_dir=False, resolve='/abs'):
         with pytest.raises(FileNotFoundError, match="No such file or directory: 'somefile'"):
-            pipe.PipeInput('Torch', 'somefile')
+            io.SinglePipeInput('Torch', 'somefile')
 
 
 def test_input_video_is_opened_false():
     with mock_pathlib(is_file=True, resolve='/file'):
         with patch.object(cv2, 'VideoCapture', new=MockCapture(is_opened=False)):
             with pytest.raises(RuntimeError, match='Failed to open video device'):
-                pipe.PipeInput('Torch', source='/file/video.mp4')
+                io.SinglePipeInput('Torch', source='/file/video.mp4')
 
 
 def test_input_video_fail_to_get_caps():
     with mock_pathlib(is_file=True, resolve='/file'):
         with patch.object(cv2, 'VideoCapture', new=MockCapture(fail_caps=True)):
             with pytest.raises(RuntimeError, match='Failed to get video capabilities'):
-                pipe.PipeInput('Torch', source='/file/video.mp4')
+                io.SinglePipeInput('Torch', source='/file/video.mp4')
 
 
 @pytest.mark.parametrize(
-    'allow_hardware_codec, vaapi_enabled, expected',
+    'allow_hardware_codec, expected',
     [
-        (True, True, False),
-        (True, False, False),
-        (False, True, True),
-        (False, False, True),
+        (True, False),
+        (False, True),
     ],
 )
-def test_gen_decodebin(allow_hardware_codec, vaapi_enabled, expected):
+def test_gen_decodebin(allow_hardware_codec, expected):
     gst = gst_builder.Builder()
-    pipe.io.build_decodebin(gst, allow_hardware_codec, vaapi_enabled, '')
+    pipe.io.build_decodebin(gst, allow_hardware_codec, '')
     assert list(gst) == [
         {
             'instance': 'decodebin',
             'force-sw-decoders': expected,
             'caps': 'video/x-raw(ANY)',
             'expose-all-streams': False,
-            'connections': {'src_%u': 'queue_after_decodebin.sink'},
-        },
-        {
-            'instance': 'queue',
-            'name': 'queue_after_decodebin',
-            'max-size-buffers': 16,
-            'max-size-bytes': 0,
-            'max-size-time': 0,
+            'connections': {'src_%u': 'decodebin-link0.sink'},
         },
     ]
     gst = gst_builder.Builder()
-    pipe.io.build_decodebin(gst, allow_hardware_codec, vaapi_enabled, '0')
+    pipe.io.build_decodebin(gst, allow_hardware_codec, '0')
     assert list(gst) == [
         {
             'instance': 'decodebin',
             'force-sw-decoders': expected,
             'caps': 'video/x-raw(ANY)',
             'expose-all-streams': False,
-            'connections': {'src_%u': 'queue_after_decodebin0.sink'},
-        },
-        {
-            'instance': 'queue',
-            'name': 'queue_after_decodebin0',
-            'max-size-buffers': 16,
-            'max-size-bytes': 0,
-            'max-size-time': 0,
+            'connections': {'src_%u': 'decodebin-link0.sink'},
         },
     ]
 
@@ -347,12 +346,11 @@ def test_gen_decodebin(allow_hardware_codec, vaapi_enabled, expected):
     ],
 )
 def test_input_gst_usb(source, device, codec, width, height, expected_caps, hardware_caps):
-    with patch.object(cv2, 'VideoCapture', new=MockCapture()):
-        pipein = pipe.PipeInput('gst', source)
-        pipein.width = width
-        pipein.height = height
-        pipein.codec = codec
-        pipein.hardware_caps = hardware_caps
+    pipein = io.SinglePipeInput('gst', source)
+    pipein.width = width
+    pipein.height = height
+    pipein.codec = codec
+    pipein.hardware_caps = hardware_caps
     gst_repr = [
         {'instance': 'v4l2src', 'device': device},
         {'instance': 'capsfilter', 'caps': expected_caps},
@@ -365,36 +363,36 @@ def test_input_gst_usb(source, device, codec, width, height, expected_caps, hard
                     'force-sw-decoders': False,
                     'caps': 'video/x-raw(ANY)',
                     'expose-all-streams': False,
-                    'connections': {'src_%u': 'queue_after_decodebin.sink'},
-                },
-                {
-                    'instance': 'queue',
-                    'name': 'queue_after_decodebin',
-                    'max-size-buffers': 16,
-                    'max-size-bytes': 0,
-                    'max-size-time': 0,
+                    'connections': {'src_%u': 'decodebin-link0.sink'},
                 },
             ]
         )
     gst_repr.append(_streamid())
-    assert _gen_input_gst(pipein) == gst_repr
+    gst_repr.extend(_colorconvert(hardware_caps))
+    with patch.object(os, 'access', return_value=1):
+        assert _gen_input_gst(pipein) == gst_repr
+
+
+def test_input_gst_bad_usb():
+    with patch.object(os, 'access', return_value=0):
+        pipein = io.SinglePipeInput('gst', 'usb:/dev/nottoday')
+        with pytest.raises(RuntimeError, match='Cannot access device at /dev/nottoday'):
+            _gen_input_gst(pipein)
 
 
 @pytest.mark.parametrize(
-    'source, location, username, password, codec',
+    'source, location, username, password',
     [
-        ('rtsp://somehost/', 'rtsp://somehost/', '', '', None),
-        ('rtsp://user@somehost/path?param=1', 'rtsp://somehost/path?param=1', 'user', '', None),
-        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass', 'mjpg'),
-        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass', 'h264'),
-        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass', 'h265'),
+        ('rtsp://somehost/', 'rtsp://somehost/', '', ''),
+        ('rtsp://user@somehost/path?param=1', 'rtsp://somehost/path?param=1', 'user', ''),
+        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass'),
+        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass'),
+        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass'),
     ],
 )
-def test_input_gst_rtsp(source, location, username, password, codec):
-    with patch.object(cv2, 'VideoCapture', new=MockCapture()):
-        pipein = pipe.PipeInput('gst', source)
-        if codec:
-            pipein.codec = codec
+def test_input_gst_rtsp(source, location, username, password):
+    with patch.object(os, 'access', return_value=1):
+        pipein = io.SinglePipeInput('gst', source)
     assert _gen_input_gst(pipein) == [
         {
             'instance': 'rtspsrc',
@@ -410,65 +408,37 @@ def test_input_gst_rtsp(source, location, username, password, codec):
             'name': 'rtspcapsfilter',
         },
         {
-            'instance': 'queue',
-            'name': 'queue_in',
-            'max-size-buffers': 16,
-            'max-size-bytes': 0,
-            'max-size-time': 0,
-        },
-        {
             'instance': 'decodebin',
             'force-sw-decoders': False,
             'caps': 'video/x-raw(ANY)',
             'expose-all-streams': False,
-            'connections': {'src_%u': 'queue_after_decodebin.sink'},
-        },
-        {
-            'instance': 'queue',
-            'name': 'queue_after_decodebin',
-            'max-size-buffers': 16,
-            'max-size-bytes': 0,
-            'max-size-time': 0,
+            'connections': {'src_%u': 'decodebin-link0.sink'},
         },
         _streamid(),
-    ]
+    ] + _colorconvert(HardwareCaps.NONE)
 
 
 def test_input_gst_video():
     with patch.object(cv2, 'VideoCapture', new=MockCapture()):
         with mock_pathlib(is_dir=False, is_file=True, resolve='/abs'):
-            pipein = pipe.PipeInput('gst', 'path/to/video.mp4')
+            pipein = io.SinglePipeInput('gst', 'path/to/video.mp4')
     assert _gen_input_gst(pipein) == [
         {'instance': 'filesrc', 'location': '/abs/path/to/video.mp4'},
-        {
-            'instance': 'queue',
-            'name': 'queue_in',
-            'max-size-buffers': 16,
-            'max-size-bytes': 0,
-            'max-size-time': 0,
-        },
         {
             'instance': 'decodebin',
             'force-sw-decoders': False,
             'caps': 'video/x-raw(ANY)',
             'expose-all-streams': False,
-            'connections': {'src_%u': 'queue_after_decodebin.sink'},
-        },
-        {
-            'instance': 'queue',
-            'name': 'queue_after_decodebin',
-            'max-size-buffers': 16,
-            'max-size-bytes': 0,
-            'max-size-time': 0,
+            'connections': {'src_%u': 'decodebin-link0.sink'},
         },
         _streamid(),
-    ]
+    ] + _colorconvert(HardwareCaps.NONE)
 
 
 def test_input_gst_image():
     with mock_pathlib(is_file=True, resolve='/abs/somedir'):
         with patch.object(cv2, 'imread', return_value=bgr_img.asarray()):
-            pipein = pipe.PipeInput('gst', 'file.jpg')
+            pipein = io.SinglePipeInput('gst', 'file.jpg')
     assert _gen_input_gst(pipein) == [
         {'instance': 'filesrc', 'location': '/abs/somedir/file.jpg'},
         {
@@ -476,17 +446,10 @@ def test_input_gst_image():
             'force-sw-decoders': True,
             'caps': 'video/x-raw(ANY)',
             'expose-all-streams': False,
-            'connections': {'src_%u': 'queue_after_decodebin.sink'},
-        },
-        {
-            'instance': 'queue',
-            'name': 'queue_after_decodebin',
-            'max-size-buffers': 16,
-            'max-size-bytes': 0,
-            'max-size-time': 0,
+            'connections': {'src_%u': 'decodebin-link0.sink'},
         },
         _streamid(),
-    ]
+    ] + _colorconvert(HardwareCaps.NONE)
 
 
 def test_input_gst_images():
@@ -496,27 +459,27 @@ def test_input_gst_images():
                 with pytest.raises(
                     NotImplementedError, match="images format not supported in gst pipe"
                 ):
-                    pipein = pipe.PipeInput('gst', 'somedir')
+                    pipein = io.SinglePipeInput('gst', 'somedir')
                     _gen_input_gst(pipein)
 
 
-def test_input_create_generator_video():
+def test_input_frame_generator_video():
     with mock_pathlib(is_file=True, resolve='/'):
         with patch.object(cv2, 'VideoCapture', new=MockCapture(count=5)):
-            pipein = pipe.PipeInput('Torch', source='/file/video.mp4')
+            pipein = io.SinglePipeInput('Torch', source='/file/video.mp4')
 
-    got = list(pipein.create_generator())
+    got = list(pipein.frame_generator())
     assert len(got) == 5
     np.testing.assert_equal(got[0].img.asarray(), bgr_img.asarray())
 
 
-def test_input_create_generator_images():
+def test_input_frame_generator_images():
     with patch.object(cv2, 'imread', return_value=bgr_img.asarray()):
         with patch.object(Path, 'iterdir', new=a_b_iterdir):
             with mock_pathlib(is_dir=True, is_file=False, resolve='/'):
-                pipein = pipe.PipeInput('Torch', source='/abs/somedir')
+                pipein = io.SinglePipeInput('Torch', source='/abs/somedir')
 
-        got = list(pipein.create_generator())
+        got = list(pipein.frame_generator())
     assert len(got) == 2
     np.testing.assert_equal(got[0].img.asarray(), bgr_img.asarray())
 
@@ -525,28 +488,17 @@ def new_capture_5(source):
     return MockCapture(count=5)
 
 
-def test_input_create_generator_multiplex():
+def test_input_frame_generator_multiplex():
     with mock_pathlib(is_file=True, resolve='/file'):
         with patch.object(cv2, 'VideoCapture', new_capture_5):
             pipein = pipe.io.MultiplexPipeInput('Torch', ['video.mp4', 'video.mp4'])
 
-    got = list(pipein.create_generator())
+    got = list(pipein.frame_generator())
     assert len(got) == 10
     np.testing.assert_equal(got[0].img.asarray(), bgr_img.asarray())
 
 
-def test_input_create_generator_multiplex_mismatch_codec():
-    with contextlib.ExitStack() as stack:
-        enter = stack.enter_context
-        enter(mock_pathlib(is_file=True, resolve='/'))
-        enter(patch.object(cv2, 'VideoCapture', new_capture_5))
-        enter(pytest.raises(ValueError, match='All codecs must be the same'))
-        pipe.io.MultiplexPipeInput(
-            'Torch', ['/file/video.mp4', '/file/video.mp4'], ['jpeg', 'mpeg']
-        )
-
-
-def test_input_create_generator_multiplex_mismatch_format():
+def test_input_frame_generator_multiplex_mismatch_format():
     with contextlib.ExitStack() as stack:
         enter = stack.enter_context
         enter(mock_pathlib(is_file=True, resolve='/file'))
@@ -562,6 +514,7 @@ def test_input_create_generator_multiplex_mismatch_format():
 
 def create_pipein(fps):
     m = Mock()
+    m.stream_count.return_value = 1
     m.fps = fps
     return m
 
@@ -634,7 +587,6 @@ def test_output_save_video_valid_input_with_meta_does_draw():
 
 
 def test_output_no_save_video_expected_gst_is_empty():
-    # TODO this will need updating when we add app sink
     pipeout = pipe.PipeOutput(save_output='')
     gst = gst_builder.Builder()
     pipeout.build_output_gst(gst, 0)
@@ -642,7 +594,7 @@ def test_output_no_save_video_expected_gst_is_empty():
         {
             'drop': False,
             'instance': 'appsink',
-            'max-buffers': 16,
+            'max-buffers': 4,
             'sync': False,
         }
     ]
@@ -652,7 +604,7 @@ def test_output_no_save_video_expected_gst_is_empty():
         {
             'drop': False,
             'instance': 'appsink',
-            'max-buffers': 16,
+            'max-buffers': 4,
             'sync': False,
         }
     ]
@@ -734,3 +686,50 @@ def test_output_save_images_no_pattern_more_than_once_image():
         with patch.object(Path, 'mkdir'):
             with pytest.raises(ValueError, match="containing '%d', then the input"):
                 do_writes(pipein, pipeout, (bgr_img, ''), (bgr_img, ''))
+
+
+def test_input_torch_codec_attribute():
+    """Test to ensure that the codec attribute is set correctly based on the format."""
+    # Test with usb source
+    with patch.object(cv2, 'VideoCapture', new=MockCapture()):
+        pipein = io.SinglePipeInput('Torch', source='usb')
+        assert pipein.codec == 'mjpg'
+
+    # Test with rtsp source
+    with patch.object(cv2, 'VideoCapture', new=MockCapture()):
+        pipein = io.SinglePipeInput('Torch', source='rtsp://localhost')
+        assert pipein.codec == 'unknown'
+
+    # Test with video source
+    with patch.object(cv2, 'VideoCapture', new=MockCapture()):
+        with mock_pathlib(is_file=True, resolve='/abs'):
+            pipein = io.SinglePipeInput('Torch', source='video.mp4')
+            assert pipein.codec == 'unknown'
+
+    # Test with fakevideo source
+    pipein = io.SinglePipeInput('Torch', source='fakevideo')
+    assert pipein.codec == 'unknown'
+
+
+def test_multiplex_pipe_input_codec_attribute():
+    """Test to ensure that the codec attribute is set correctly in MultiplexPipeInput."""
+    # Test with usb sources
+    with patch.object(cv2, 'VideoCapture', new=MockCapture()):
+        pipein = io.MultiplexPipeInput('Torch', ['usb', 'usb:1'])
+        assert pipein.codec == 'mjpg'
+
+    # Test with mixed sources (warning should be logged)
+    with patch.object(logging.Logger, 'warning') as mock_warning:
+        with patch.object(cv2, 'VideoCapture', new=MockCapture()):
+            with mock_pathlib(is_file=True, resolve='/abs'):
+                pipein = io.MultiplexPipeInput('Torch', ['usb', 'video.mp4'])
+                assert pipein.codec == 'mjpg'  # Takes format from first input
+                mock_warning.assert_called_once_with(
+                    'Not all input sources have the same format: [\'usb\', \'video\']'
+                )
+
+    # Test with non-usb sources
+    with patch.object(cv2, 'VideoCapture', new=MockCapture()):
+        with mock_pathlib(is_file=True, resolve='/abs'):
+            pipein = io.MultiplexPipeInput('Torch', ['rtsp://localhost', 'video.mp4'])
+            assert pipein.codec == 'unknown'

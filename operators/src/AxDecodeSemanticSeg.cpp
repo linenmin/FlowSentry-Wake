@@ -63,8 +63,8 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const semantic_seg::propert
 
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-  logger(AX_INFO) << "decode_to_meta : Decoding semantic_seg"
-                  << duration.count() << " microseconds" << std::endl;
+  logger(AX_DEBUG) << "decode_to_meta : Decoding semantic_seg"
+                   << duration.count() << " microseconds" << std::endl;
 }
 
 extern "C" const std::unordered_set<std::string> &

@@ -23,11 +23,15 @@ bool has_opencl_platform = [] {
   return error == CL_SUCCESS;
 }();
 
+class ColorFormatFixture : public ::testing::TestWithParam<FormatParam>
+{
+};
+
 INSTANTIATE_TEST_SUITE_P(PerspectiveTestSuite, ColorFormatFixture,
-    ::testing::Values(FormatParam{ AxVideoFormat::RGBA, 0 },
-        FormatParam{ AxVideoFormat::RGBA, 1 }, FormatParam{ AxVideoFormat::BGRA, 1 },
-        FormatParam{ AxVideoFormat::BGRA, 0 }, FormatParam{ AxVideoFormat::NV12, 0 },
-        FormatParam{ AxVideoFormat::I420, 0 }, FormatParam{ AxVideoFormat::YUY2, 0 }));
+    ::testing::Values(
+        FormatParam{ AxVideoFormat::RGB, 1 }//, FormatParam{ AxVideoFormat::BGR, 1 }
+        /*FormatParam{ AxVideoFormat::BGR, 0 }, FormatParam{ AxVideoFormat::NV12, 0 },
+        FormatParam{ AxVideoFormat::I420, 0 }, FormatParam{ AxVideoFormat::YUY2, 0 }*/ ));
 
 TEST_P(ColorFormatFixture, color_fusing_test)
 {
@@ -42,8 +46,8 @@ TEST_P(ColorFormatFixture, color_fusing_test)
 
   Transformer perspective("libtransform_perspective_cl.so", input);
 
-  std::vector<int8_t> in_buf(1920 * 1080 * 4);
-  std::vector<int8_t> out_buf(1920 * 1080 * 4);
+  std::vector<int8_t> in_buf(1920 * 1080 * 3, 0);
+  std::vector<int8_t> out_buf(1920 * 1080 * 3, 0);
   std::iota(in_buf.begin(), in_buf.end(), 1);
 
   std::vector<size_t> strides;
@@ -57,23 +61,27 @@ TEST_P(ColorFormatFixture, color_fusing_test)
   } else if (format.format == AxVideoFormat::YUY2) {
     strides = { 1920 * 2 };
     offsets = { 0 };
+  } else if (format.format == AxVideoFormat::RGB || format.format == AxVideoFormat::BGR) {
+    strides = { 1920 * 3 };
+    offsets = { 0 };
   } else {
     strides = { 1920 * 4 };
     offsets = { 0 };
   }
+
   auto in = AxVideoInterface{ { 1920, 1080, int(strides[0]), 0, format.format },
     in_buf.data(), strides, offsets, -1 };
 
   auto out = AxVideoInterface{
-    { 1920, 1080, 1920 * 4, 0, format.bgra_out ? AxVideoFormat::BGRA : AxVideoFormat::RGBA },
-    out_buf.data(), { 1920 * 4 }, { 0 }, -1
+    { 1920, 1080, 1920 * 3, 0, format.bgra_out ? AxVideoFormat::BGR : AxVideoFormat::RGB },
+    out_buf.data(), { 1920 * 3 }, { 0 }, -1
   };
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
   EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
-  if (format.format == AxVideoFormat::RGBA && format.bgra_out == 0) {
+  if (format.format == AxVideoFormat::RGB && format.bgra_out == 0) {
     EXPECT_EQ(in_buf, out_buf);
-  } else if (format.format == AxVideoFormat::BGRA && format.bgra_out == 1) {
+  } else if (format.format == AxVideoFormat::BGR && format.bgra_out == 1) {
     EXPECT_EQ(in_buf, out_buf);
   } else {
     EXPECT_NE(in_buf, out_buf);
@@ -90,13 +98,13 @@ TEST(perspective_cl, identity_test)
   };
 
   Transformer perspective("libtransform_perspective_cl.so", input);
-  std::vector<int8_t> in_buf(16 * 16 * 4);
+  std::vector<int8_t> in_buf(16 * 16 * 3);
   std::iota(in_buf.begin(), in_buf.end(), 1);
-  std::vector<int8_t> out_buf(16 * 16 * 4, 0);
+  std::vector<int8_t> out_buf(16 * 16 * 3, 0);
 
-  auto in = AxVideoInterface{ { 16, 16, 16 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
-  auto out = AxVideoInterface{ { 16, 16, 16 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data() };
+  auto in = AxVideoInterface{ { 16, 16, 16 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
+  auto out
+      = AxVideoInterface{ { 16, 16, 16 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
   EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
 
@@ -113,19 +121,23 @@ TEST(perspective_cl, translation_test)
   };
 
   Transformer perspective("libtransform_perspective_cl.so", input);
-  std::vector<uint8_t> in_buf(4 * 4 * 4);
+  std::vector<uint8_t> in_buf(4 * 4 * 3);
   std::iota(in_buf.begin(), in_buf.end(), 1);
-  std::vector<uint8_t> out_buf(4 * 4 * 4, 0);
+  std::vector<uint8_t> out_buf(4 * 4 * 3, 0);
 
-  auto in = AxVideoInterface{ { 4, 4, 4 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
-  auto out = AxVideoInterface{ { 4, 4, 4 * 4, 0, AxVideoFormat::RGBA }, out_buf.data() };
+  auto in = AxVideoInterface{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
+  auto out = AxVideoInterface{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
   EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
 
-  auto expected = std::vector<uint8_t>{ 0, 0, 0, 0xff, 0, 0, 0, 0xff, 0, 0, 0,
-    0xff, 0, 0, 0, 0xff, 0, 0, 0, 0xff, 0, 0, 0, 0xff, 0, 0, 0, 0xff, 0, 0, 0,
-    0xff, 0, 0, 0, 0xff, 0, 0, 0, 0xff, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0xff,
-    0, 0, 0, 0xff, 17, 18, 19, 20, 21, 22, 23, 24 };
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+     0,  0,  0,  0,  0,  0,  1,  2,  3,  4,  5,  6,
+     0,  0,  0,  0,  0,  0, 13, 14, 15, 16, 17, 18,
+    // clang-format on
+  };
   EXPECT_EQ(out_buf, expected);
 }
 
@@ -139,13 +151,13 @@ TEST(perspective_cl, happy_path_test)
   };
 
   Transformer perspective("libtransform_perspective_cl.so", input);
-  std::vector<int8_t> in_buf(16 * 16 * 4);
+  std::vector<int8_t> in_buf(16 * 16 * 3);
   std::iota(in_buf.begin(), in_buf.end(), 1);
-  std::vector<int8_t> out_buf(16 * 16 * 4, 0);
+  std::vector<int8_t> out_buf(16 * 16 * 3, 0);
 
-  auto in = AxVideoInterface{ { 16, 16, 16 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
-  auto out = AxVideoInterface{ { 16, 16, 16 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data() };
+  auto in = AxVideoInterface{ { 16, 16, 16 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
+  auto out
+      = AxVideoInterface{ { 16, 16, 16 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
   EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
 

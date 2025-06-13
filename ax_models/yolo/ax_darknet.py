@@ -7,8 +7,7 @@ import typing
 
 from axelera import types
 from axelera.app import logging_utils, utils
-from axelera.app import yaml as YAML
-from axelera.app.torch_utils import torch
+from axelera.app.torch_utils import safe_torch_load, torch
 from models import darknet
 
 LOG = logging_utils.getLogger(__name__)
@@ -45,10 +44,15 @@ class AxYoloDarknet(darknet.Darknet, types.Model):
     def __init__(self, **kwargs):
         self.working_dir = str(Path.cwd())
         LOG.debug(f'Current working directory is {self.working_dir}')
-
-        cfg = YAML.attribute(kwargs, 'darknet_cfg_path')
-        shape = YAML.attribute(kwargs, 'input_tensor_shape')
-        if YAML.attribute(kwargs, 'input_tensor_layout') == 'NCHW':
+        if missing := [
+            k
+            for k in ['darknet_cfg_path', 'input_tensor_shape', 'input_tensor_layout']
+            if k not in kwargs
+        ]:
+            raise ValueError(f'Missing required arguments: {missing}')
+        cfg = kwargs['darknet_cfg_path']
+        shape = kwargs['input_tensor_shape']
+        if kwargs['input_tensor_layout'] == 'NCHW':
             imgsz = shape[2:]
         else:  # NHWC / CHWN
             imgsz = shape[1:3]
@@ -57,7 +61,7 @@ class AxYoloDarknet(darknet.Darknet, types.Model):
         # setup Darknet here
         super().__init__(cfg, imgsz)
 
-    def init_model_deploy(self, model_info: types.ModelInfo):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         weights = Path(model_info.weight_path)
         if not (weights.exists() and utils.md5_validates(weights, model_info.weight_md5)):
             utils.download(model_info.weight_url, weights, model_info.weight_md5)
@@ -66,7 +70,7 @@ class AxYoloDarknet(darknet.Darknet, types.Model):
         self.number_of_classes = self.module_list[-1].nc
         LOG.debug(f'Load weights {weights}')
         try:  # model with .pth/.pt format
-            self.load_state_dict(torch.load(weights)['model'])
+            self.load_state_dict(safe_torch_load(weights)['model'])
         except:  # model with .weights format
             darknet.load_darknet_weights(self, weights)
 

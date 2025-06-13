@@ -30,116 +30,153 @@ struct extern_meta_container {
   }
 };
 
-class SubmetaMap;
-
 class AxMetaBase
 {
   public:
-  bool enable_draw = true;
-  std::shared_ptr<SubmetaMap> submeta_map;
+  bool enable_extern = true;
+
   virtual void draw(const AxVideoInterface &video,
       const std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map)
   {
-    throw std::runtime_error("Disable drawing of metadata without overloaded draw function");
   }
+
   virtual size_t get_number_of_subframes() const
   {
     return 1;
   }
 
-  virtual std::vector<extern_meta> get_extern_meta() const = 0;
+  virtual std::vector<extern_meta> get_extern_meta() const
+  {
+    throw std::runtime_error("get_extern_meta not implemented");
+  }
 
-  inline AxMetaBase();
+  void insert_submeta(const std::string &name, int subframe_index,
+      int subframe_number, std::shared_ptr<AxMetaBase> meta)
+  {
+    if (!submeta_map) {
+      throw std::runtime_error("Submeta map is not initialized");
+    }
+    submeta_map->insert(name, subframe_index, subframe_number, std::move(meta));
+  }
+
+  template <typename T = AxMetaBase>
+  T *get_submeta(const std::string &name, int subframe_index, int subframe_number) const
+  {
+    if (!submeta_map) {
+      throw std::runtime_error("Submeta map is not initialized");
+    }
+    return submeta_map->get<T>(name, subframe_index, subframe_number);
+  }
+
+  template <typename T = AxMetaBase>
+  std::vector<T *> get_submetas(const std::string &name) const
+  {
+    if (!submeta_map) {
+      return {};
+    }
+    return submeta_map->get<T>(name);
+  }
+
+  const std::vector<const char *> submeta_names() const
+  {
+    if (!submeta_map) {
+      return {};
+    }
+    return submeta_map->keys();
+  }
+
+  AxMetaBase() : submeta_map(std::make_shared<SubmetaMap>())
+  {
+  }
   virtual ~AxMetaBase() = default;
-};
-
-
-class SubmetaMap
-{
-  public:
-  void insert(const std::string &name, int subframe_index, int subframe_number,
-      std::shared_ptr<AxMetaBase> meta)
-  {
-    std::unique_lock lock(mutex);
-    auto [map_itr, created] = map.try_emplace(
-        name, std::vector<std::shared_ptr<AxMetaBase>>(subframe_number));
-    if (!created && map_itr->second.size() != subframe_number) {
-      throw std::runtime_error("Subframe number mismatch in insert of SubmetaMap");
-    }
-    map_itr->second[subframe_index] = std::move(meta);
-  }
-
-  void erase(const std::string &name)
-  {
-    std::unique_lock lock(mutex);
-    map.erase(name);
-  }
-
-  template <typename T = AxMetaBase>
-  T *get(const std::string &name, int subframe_index, int subframe_number) const
-  {
-    std::shared_lock lock(mutex);
-    auto map_itr = map.find(name);
-    if (map_itr == map.end()) {
-      throw std::runtime_error("Submodel name " + name + " not found in get of SubmetaMap");
-    }
-    if (map_itr->second.size() != subframe_number) {
-      throw std::runtime_error("Subframe number in SubmetaMap is "
-                               + std::to_string(map_itr->second.size()) + " but queried is "
-                               + std::to_string(subframe_number));
-    }
-    auto ptr = map_itr->second[subframe_index].get();
-    if (ptr == nullptr) {
-      throw std::runtime_error("Submodel name " + name + " with index "
-                               + std::to_string(subframe_index) + " is nullptr");
-    }
-    auto result = dynamic_cast<T *>(ptr);
-    if (result == nullptr) {
-      throw std::runtime_error("Submodel name " + name + " with index "
-                               + std::to_string(subframe_index) + " is not of type "
-                               + typeid(T).name() + " but " + typeid(*ptr).name());
-    }
-    return result;
-  }
-
-  template <typename T = AxMetaBase>
-  std::vector<T *> get(const std::string &name) const
-  {
-    std::shared_lock lock(mutex);
-    std::vector<T *> result;
-    auto map_itr = map.find(name);
-    if (map_itr == map.end()) {
-      return result;
-    }
-    for (const auto &meta : map_itr->second) {
-      auto &rmeta = *meta;
-      auto result_meta = dynamic_cast<T *>(&rmeta);
-      if (result_meta == nullptr) {
-        throw std::runtime_error("Submodel name " + name + " is not of type "
-                                 + typeid(T).name() + " but " + typeid(rmeta).name());
-      }
-      result.push_back(result_meta);
-    }
-    return result;
-  }
-
-  const std::pair<std::vector<const char *>, std::vector<int>> contents() const
-  {
-    std::shared_lock lock(mutex);
-    std::vector<const char *> submodel_names;
-    std::vector<int> subframe_numbers;
-    for (const auto &pair : map) {
-      submodel_names.push_back(pair.first.c_str());
-      subframe_numbers.push_back(pair.second.size());
-    }
-    return std::make_pair(std::move(submodel_names), std::move(subframe_numbers));
-  }
 
   private:
-  std::unordered_map<std::string, std::vector<std::shared_ptr<AxMetaBase>>> map;
-  mutable std::shared_mutex mutex;
-};
+  class SubmetaMap
+  {
+    public:
+    void insert(const std::string &name, int subframe_index,
+        int number_of_subframes, std::shared_ptr<AxMetaBase> meta)
+    {
+      if (subframe_index < 0) {
+        throw std::runtime_error("Subframe index cannot be negative in insert of SubmetaMap");
+      }
+      if (number_of_subframes <= 0) {
+        throw std::runtime_error("Number of subframes must be positive in insert of SubmetaMap");
+      }
+      if (subframe_index >= number_of_subframes) {
+        throw std::runtime_error("Subframe index out of bounds in insert of SubmetaMap");
+      }
+      std::unique_lock lock(mutex);
+      auto [map_itr, created] = map.try_emplace(
+          name, std::vector<std::shared_ptr<AxMetaBase>>(number_of_subframes));
+      if (!created && map_itr->second.size() != number_of_subframes) {
+        throw std::runtime_error("Subframe number mismatch in insert of SubmetaMap");
+      }
+      map_itr->second[subframe_index] = std::move(meta);
+    }
 
-inline AxMetaBase::AxMetaBase() : submeta_map(std::make_shared<SubmetaMap>())
-{
-}
+    template <typename T = AxMetaBase>
+    T *get(const std::string &name, int subframe_index, int number_of_subframes) const
+    {
+      std::shared_lock lock(mutex);
+      auto map_itr = map.find(name);
+      if (map_itr == map.end()) {
+        throw std::runtime_error("Submodel name " + name + " not found in get of SubmetaMap");
+      }
+      if (map_itr->second.size() != number_of_subframes) {
+        throw std::runtime_error("Submodel name " + name + " has number of subframes "
+                                 + std::to_string(map_itr->second.size()) + " but queried is "
+                                 + std::to_string(number_of_subframes));
+      }
+      auto ptr = map_itr->second[subframe_index].get();
+      if (ptr == nullptr) {
+        throw std::runtime_error("Submodel name " + name + " with index "
+                                 + std::to_string(subframe_index) + " is nullptr");
+      }
+      auto result = dynamic_cast<T *>(ptr);
+      if (result == nullptr) {
+        throw std::runtime_error("Submodel name " + name + " with index "
+                                 + std::to_string(subframe_index) + " is not of type "
+                                 + typeid(T).name() + " but " + typeid(*ptr).name());
+      }
+      return result;
+    }
+
+    template <typename T = AxMetaBase>
+    std::vector<T *> get(const std::string &name) const
+    {
+      std::shared_lock lock(mutex);
+      std::vector<T *> result;
+      auto map_itr = map.find(name);
+      if (map_itr == map.end()) {
+        return result;
+      }
+      for (const auto &meta : map_itr->second) {
+        auto result_meta = dynamic_cast<T *>(meta.get());
+        if (meta.get() != nullptr && result_meta == nullptr) {
+          auto &rmeta = *meta;
+          throw std::runtime_error("Submodel name " + name + " is not of type "
+                                   + typeid(T).name() + " but " + typeid(rmeta).name());
+        }
+        result.push_back(result_meta);
+      }
+      return result;
+    }
+
+    const std::vector<const char *> keys() const
+    {
+      std::shared_lock lock(mutex);
+      std::vector<const char *> submodel_names;
+      for (const auto &[name, submodel_vector] : map) {
+        submodel_names.push_back(name.c_str());
+      }
+      return submodel_names;
+    }
+
+    private:
+    std::unordered_map<std::string, std::vector<std::shared_ptr<AxMetaBase>>> map;
+    mutable std::shared_mutex mutex;
+  };
+
+  std::shared_ptr<SubmetaMap> submeta_map;
+};

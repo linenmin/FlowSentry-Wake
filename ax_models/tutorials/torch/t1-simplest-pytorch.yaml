@@ -4,7 +4,7 @@ name: t1-simplest-pytorch
 
 description: Pytorch Tutorial-1 - An example demonstrating how to deploy an Pytorch model with minimal effort. The compiled model, located at build/t1-simplest-pytorch/model1/1/model.json, can be utilized in AxRuntime to create your own pipeline.
 
-pipeline: null
+pipeline:
 
 models:
   model1:

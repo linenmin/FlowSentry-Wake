@@ -8,6 +8,7 @@ from unittest.mock import ANY, Mock, call, patch
 
 import PIL
 import pytest
+from strictyaml.exceptions import YAMLValidationError
 
 from axelera import types
 from axelera.app import (
@@ -152,7 +153,7 @@ models:
                 SQUEEZENET_NAME,
                 input=Input(),
                 preprocess=[Resize(width=1024, height=768)],
-                inference_config=InferenceConfig.from_dict({}, True),
+                inference_config=InferenceConfig.from_model_info(MODEL_INFO.extra_kwargs),
                 model_info=MODEL_INFO,
                 context=PipelineContext(),
             )
@@ -166,10 +167,139 @@ models:
     assert exp == net
 
 
+def test_parse_network_with_extra_kwargs_inference_config_and_cpp_decoder_does_all(tmpdir):
+    # Create a temporary ok_ops.py with the required Op class
+    ok_ops_path = tmpdir.join("ok_ops.py")
+    ok_ops_path.write_text(
+        '''
+from axelera.app import operators
+
+class Op(operators.AxOperator):
+    def _post_init(self):
+        self.cpp_decoder_does_all = True
+    def exec_torch(self, img, result, meta):
+        return img, result, meta
+    def build_gst(self, gst, stream_idx):
+        pass
+''',
+        encoding="utf-8",
+    )
+
+    input = f'''
+name: yolov5s-v5
+description: YOLOv5s-v5 (COCO)
+pipeline:
+  - detections:
+      model_name: yolov5s-v5
+      input:
+        type: image
+      preprocess:
+      postprocess:
+        - op:
+models:
+  yolov5s-v5:
+    class: AxYolo
+    class_path: doesnotexist/yolo.py
+    task_category: ObjectDetection
+    input_tensor_layout: NCHW
+    input_tensor_shape: [1, 3, 640, 640]
+    input_color_format: RGB
+    dataset: COCO
+    num_classes: 80
+
+operators:
+  op:
+    class: Op
+    class_path: {ok_ops_path}
+'''
+
+    net = parse_net(input, {})
+    net.tasks[0].inference_config.update_from_decoder_op(net.tasks[0].postprocess[0])
+    inf_config = net.tasks[0].inference_config
+    assert inf_config.cpp_focus_layer_on_host is True
+    assert inf_config.cpp_decoder_does_dequantization_and_depadding is True
+    assert inf_config.cpp_decoder_does_transpose is True
+    assert inf_config.cpp_decoder_does_postamble is True
+
+
+def test_parse_network_with_extra_kwargs_in_inference_config():
+    input = f'''
+name: yolov5s-v5
+description: YOLOv5s-v5 (COCO)
+pipeline:
+  - detections:
+      model_name: yolov5s-v5
+      input:
+        type: image
+      preprocess:
+      postprocess:
+
+models:
+  yolov5s-v5:
+    class: AxYolo
+    class_path: doesnotexist/yolo.py
+    task_category: ObjectDetection
+    input_tensor_layout: NCHW
+    input_tensor_shape: [1, 3, 640, 640]
+    input_color_format: RGB
+    dataset: COCO
+    num_classes: 80
+    extra_kwargs:
+      YOLO:
+        focus_layer_replacement: False
+
+'''
+    net = parse_net(input, {})
+    assert net.path == 'test.yaml'
+    MODEL_INFO = types.ModelInfo(
+        name='yolov5s-v5',
+        task_category='ObjectDetection',
+        input_tensor_shape=[3, 640, 640],
+        input_color_format='RGB',
+        dataset='COCO',
+        class_name='AxYolo',
+        class_path=f'{os.getcwd()}/doesnotexist/yolo.py',
+        num_classes=80,
+        extra_kwargs={
+            'YOLO': {'focus_layer_replacement': False},
+        },
+    )
+
+    mis = network.ModelInfos()
+    mis.add_model(MODEL_INFO, None)
+    exp = AxNetwork(
+        path='test.yaml',
+        name='yolov5s-v5',
+        description='YOLOv5s-v5 (COCO)',
+        tasks=[
+            AxTask(
+                'detections',
+                input=Input(),
+                preprocess=[],
+                inference_config=InferenceConfig.from_model_info(MODEL_INFO.extra_kwargs),
+                model_info=MODEL_INFO,
+                context=PipelineContext(),
+            )
+        ],
+        custom_operators={},
+        model_infos=mis,
+    )
+
+    net.tasks[0].model_info.labels = []
+    net.tasks[0].model_info.label_filter = []
+    pipeline.update_pending_expansions(net.tasks[0])
+    assert exp == net
+    assert exp.tasks[0].inference_config.cpp_focus_layer_on_host == False
+    # becasue no decoder setting, it goes to default value
+    assert exp.tasks[0].inference_config.cpp_decoder_does_dequantization_and_depadding == False
+    assert exp.tasks[0].inference_config.cpp_decoder_does_transpose == True
+    assert exp.tasks[0].inference_config.cpp_decoder_does_postamble == False
+
+
 def test_parse_network_pipeline_assets():
     input = f'''
 {SQUEEZENET_NETWORK}
-pipeline-assets:
+pipeline_assets:
    http://someurl:
      md5: a1234567890
      path: /tmp/somefile
@@ -236,26 +366,26 @@ class AxTorchvisionSqueezeNet(Model):
     [
         (
             f'''
-pipeline-assets:
+pipeline_assets:
    - somelistitem
         ''',
-            r'pipeline-assets must be dict \(found type list\)',
+            r"when expecting a mapping(?s:.)*?found a sequence(?s:.)*?somelistitem",
         ),
         (
             f'''
-pipeline-assets:
+pipeline_assets:
    133
         ''',
-            r'pipeline-assets must be dict \(found type int\)',
+            r"when expecting a mapping(?s:.)*?found an arbitrary integer(?s:.)*?pipeline_assets",
         ),
         (
             f'''
-pipeline-assets:
+pipeline_assets:
    url:
       - md5
       - path
         ''',
-            r'pipeline-assets element for url must be dict \(found type list\)',
+            r"when expecting a mapping(?s:.)*?url(?s:.)*?found a sequence",
         ),
     ],
 )
@@ -269,7 +399,7 @@ models:
 '''
         + input
     )
-    with pytest.raises(ValueError, match=error):
+    with pytest.raises(YAMLValidationError, match=error):
         parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
 
 
@@ -355,7 +485,7 @@ operators:
     class: Op
     class_path: tests/doesnotexist.py
 '''
-    with pytest.raises(FileNotFoundError, match=r'to import.*doesnotexist\.py'):
+    with pytest.raises(FileNotFoundError, match=r'No such file.*doesnotexist\.py'):
         parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
 
 
@@ -370,7 +500,7 @@ operators:
     class: Op
     class_path: tests/bad_ops.py
 '''
-    msg = 'Failed to import module bad_ops : This file should not be imported'
+    msg = 'This file should not be imported'
     with pytest.raises(RuntimeError, match=msg):
         parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
 
@@ -393,7 +523,7 @@ name: squeezenet1.0-imagenet-onnx
 pipeline:
   - squeezenet1.0-imagenet-onnx:
       template_path: doesnotexist/imagenet.yaml]
-models:
+models: {}
 ''',
             ValueError(r'No models defined in network'),
         ),
@@ -472,43 +602,14 @@ pipeline:
 
 models:
 {SQUEEZENET_MINIMAL_MODEL}
-    input_tesnor_format: NCHW
+    input_tensor_format: NCHW
 ''',
-            r'input_tesnor_format is not a valid key for model squeezenet1.0-imagenet-onnx',
-        ),
-        (
-            f'''
-name: squeezenet1.0-imagenet-onnx
-pipeline:
-  - squeezenet1.0-imagenet-onnx:
-      template_path: doesnotexist/imagenet.yaml
-
-models:
-{SQUEEZENET_MINIMAL_MODEL}
-    input_tesnor_format: NCHW
-    wibble: 1
-''',
-            r'input_tesnor_format and wibble are not valid keys for model squeezenet1.0-imagenet-onnx',
-        ),
-        (
-            f'''
-name: squeezenet1.0-imagenet-onnx
-pipeline:
-  - squeezenet1.0-imagenet-onnx:
-      template_path: doesnotexist/imagenet.yaml
-
-models:
-{SQUEEZENET_MINIMAL_MODEL}
-    input_tesnor_format: NCHW
-    wibble: 1
-    wobble: 2
-''',
-            r'input_tesnor_format, wibble and wobble are not valid keys for model squeezenet1.0-imagenet-onnx',
+            r"unexpected key not in schema 'input_tensor_format'",
         ),
     ],
 )
 def test_parse_network_model_invalid_key(input, error):
-    with pytest.raises(ValueError, match=error):
+    with pytest.raises(YAMLValidationError, match=error):
         parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
 
 
@@ -557,6 +658,35 @@ def test_network_model_dataset_with_class_given_but_no_class_path():
         net = parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
 
 
+def test_network_datasets_list():
+    input = SQUEEZENET_NETWORK_WITH_IMAGENET_DATASET.replace("  ImageNet-1K:", " - ImageNet-1K:")
+    with pytest.raises(
+        YAMLValidationError,
+        match=r"when expecting a mapping(?s:.)*?datasets(?s:.)*?found a sequence",
+    ):
+        net = parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
+
+
+def test_network_dataset_is_a_list():
+    input = f'''
+{SQUEEZENET_NETWORK}
+    dataset: ImageNet-1K
+datasets:
+  ImageNet-1K:
+    - class: AxImagenetDataAdapter
+    - class_path: $AXELERA_FRAMEWORK/ax_datasets/imagenet.py
+    - data_dir_name: ImageNet
+    - val: val
+    - test: test
+    - labels_path: imagenet1000_clsidx_to_labels.txt
+'''
+    with pytest.raises(
+        YAMLValidationError,
+        match=r"when expecting a mapping(?s:.)*?ImageNet-1K(?s:.)*?found a sequence",
+    ):
+        net = parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
+
+
 def test_network_model_dataset_with_class_path_given_but_no_class():
     input = SQUEEZENET_NETWORK_WITH_IMAGENET_DATASET.replace(
         '    class: AxImagenetDataAdapter\n', ''
@@ -579,13 +709,16 @@ def test_network_model_dataset_with_target_split_given():
         net = parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
 
 
-def test_parse_all_builtin_networks():
+def test_parse_all_vision_builtin_networks():
     old = os.getcwd()
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
         network_yaml_info = yaml_parser.get_network_yaml_info()
         for nn in network_yaml_info.get_all_info():
             if 'ax_models/tutorials/' in nn.yaml_path:
+                continue
+            # Skip LLM YAMLs
+            if network_yaml_info.has_llm(nn.yaml_path):
                 continue
             try:
                 network.parse_network_from_path(nn.yaml_path)
@@ -817,7 +950,7 @@ def test_instantiate_model_not_model_subclass():
     n = _mini_network()
     with patch.object(n, 'model_class', return_value=int):
         with pytest.raises(TypeError, match=r"<class 'int'> is not a subclass of types.Model"):
-            n.instantiate_model('n', with_data_adapter=True)
+            n.instantiate_model('n')
 
 
 def test_instantiate_model_calls_init():
@@ -834,7 +967,7 @@ def test_instantiate_model_calls_init():
             calls.append('init_model_deploy')
 
     with patch.object(n, 'model_class', return_value=ClassWithInit):
-        m = n.instantiate_model('n', with_data_adapter=True)
+        m = n.instantiate_model('n')
     assert isinstance(m, ClassWithInit)
     assert calls == ['init_model_deploy']
 
@@ -896,7 +1029,7 @@ def test_load_labels_and_filters(input_data, expected_output):
     with patch.object(pathlib.Path, 'is_file', return_value=True):
         with patch.object(pathlib.Path, 'read_text', return_value=valid):
             with patch.object(n, 'model_class', return_value=ClassNoInit):
-                n.instantiate_model('n', with_data_adapter=True)
+                n.instantiate_model('n')
     mi = n.find_model('n')
     assert mi.labels == ['dog', 'cat', 'bird', 'sheep', 'giraffe']
     assert mi.label_filter == expected_output
@@ -909,14 +1042,14 @@ def test_load_labels_and_filters_invalid_filter():
         with patch.object(pathlib.Path, 'read_text', return_value=valid):
             with patch.object(n, 'model_class', return_value=ClassNoInit):
                 with pytest.raises(Exception, match='label_filter contains invalid.*banana'):
-                    n.instantiate_model('n', with_data_adapter=True)
+                    n.instantiate_model('n')
 
 
 def test_load_labels_and_filters_no_labels():
     n = _mini_network(dataset={'label_filter': ' banana'})
     with pytest.raises(Exception, match='label_filter cannot be used if there are no labels'):
         with patch.object(n, 'model_class', return_value=ClassNoInit):
-            n.instantiate_model('n', with_data_adapter=True)
+            n.instantiate_model('n')
 
 
 def test_load_labels_and_filters_empty_labels():
@@ -927,14 +1060,14 @@ def test_load_labels_and_filters_empty_labels():
                 with pytest.raises(
                     Exception, match='label_filter cannot be used if there are no labels'
                 ):
-                    n.instantiate_model('n', with_data_adapter=True)
+                    n.instantiate_model('n')
 
 
 def test_load_labels_and_filters_bad_label_path():
     n = _mini_network(dataset={'labels_path': 'somepath'})
     with pytest.raises(FileNotFoundError, match=r"Labels file somepath not found"):
         with patch.object(n, 'model_class', return_value=ClassNoInit):
-            n.instantiate_model('n', with_data_adapter=True)
+            n.instantiate_model('n')
 
 
 def test_from_model_dir():
@@ -993,12 +1126,10 @@ def test_compiler_overrides_with_overrides():
     mis = network.ModelInfos()
     extra = {
         'max_compiler_cores': 3,
-        'compilation_config': {'backend_config': {'double_buffer': True}},
     }
     mis.add_compiler_overrides('mymodel', extra)
     assert {
         'max_compiler_cores': 3,
-        'compilation_config': {'backend_config': {'double_buffer': True}},
     } == mis.model_compiler_overrides('mymodel', config.Metis.pcie)
     assert 1 == mis.determine_deploy_cores('mymodel', 1, config.Metis.none)
     assert 3 == mis.determine_deploy_cores('mymodel', 4, config.Metis.none)
@@ -1011,12 +1142,10 @@ def test_compiler_overrides_with_execution_overrides():
     mis = network.ModelInfos()
     extra = {
         'max_execution_cores': 3,
-        'compilation_config': {'backend_config': {'double_buffer': True}},
     }
     mis.add_compiler_overrides('mymodel', extra)
     assert {
         'max_execution_cores': 3,
-        'compilation_config': {'backend_config': {'double_buffer': True}},
     } == mis.model_compiler_overrides('mymodel', config.Metis.pcie)
     assert 1 == mis.determine_deploy_cores('mymodel', 1, config.Metis.none)
     assert 1 == mis.determine_deploy_cores('mymodel', 4, config.Metis.none)
@@ -1028,25 +1157,21 @@ def test_compiler_overrides_with_m2_overrides():
     mis = network.ModelInfos()
     extra = {
         'max_compiler_cores': 3,
-        'compilation_config': {'backend_config': {'mvm_utilization_limit': 0.75}},
         'm2': {
             'max_compiler_cores': 2,
             'clock_profile': 400,
-            'compilation_config': {'backend_config': {'mvm_utilization_limit': 0.5}},
         },
     }
     mis.add_compiler_overrides('mymodel', extra)
     assert {
         'max_compiler_cores': 2,
         'clock_profile': 400,
-        'compilation_config': {'backend_config': {'mvm_utilization_limit': 0.5}},
     } == mis.model_compiler_overrides('mymodel', config.Metis.m2)
     assert 1 == mis.determine_deploy_cores('mymodel', 1, config.Metis.m2)
     assert 2 == mis.determine_deploy_cores('mymodel', 4, config.Metis.m2)
     assert 400 == mis.clock_profile('mymodel', config.Metis.m2)
     assert {
         'max_compiler_cores': 3,
-        'compilation_config': {'backend_config': {'mvm_utilization_limit': 0.75}},
     } == mis.model_compiler_overrides('mymodel', config.Metis.pcie)
     assert 1 == mis.determine_deploy_cores('mymodel', 1, config.Metis.pcie)
     assert 3 == mis.determine_deploy_cores('mymodel', 4, config.Metis.pcie)
@@ -1058,25 +1183,21 @@ def test_compiler_overrides_with_m2_override_of_aipu_cores():
     extra = {
         'aipu_cores': 3,
         'max_compiler_cores': 3,
-        'compilation_config': {'backend_config': {'mvm_utilization_limit': 0.75}},
         'm2': {
             'aipu_cores': 2,
             'max_compiler_cores': 2,
-            'compilation_config': {'backend_config': {'mvm_utilization_limit': 0.5}},
         },
     }
     mis.add_compiler_overrides('mymodel', extra)
     assert {
         'aipu_cores': 2,
         'max_compiler_cores': 2,
-        'compilation_config': {'backend_config': {'mvm_utilization_limit': 0.5}},
     } == mis.model_compiler_overrides('mymodel', config.Metis.m2)
     assert 2 == mis.determine_deploy_cores('mymodel', 2, config.Metis.m2)
     assert 2 == mis.determine_deploy_cores('mymodel', 4, config.Metis.m2)
     assert {
         'aipu_cores': 3,
         'max_compiler_cores': 3,
-        'compilation_config': {'backend_config': {'mvm_utilization_limit': 0.75}},
     } == mis.model_compiler_overrides('mymodel', config.Metis.pcie)
     assert 3 == mis.determine_deploy_cores('mymodel', 3, config.Metis.pcie)
     assert 3 == mis.determine_deploy_cores('mymodel', 4, config.Metis.pcie)
@@ -1100,19 +1221,15 @@ def test_compiler_overrides_with_quantization_config():
     mis = network.ModelInfos()
     extra = {
         'compilation_config': {
-            'quantization_config': {
-                'quantization_debug': False,
-                'quantizer_version': 1,
-            }
+            'quantization_debug': False,
+            'quantizer_version': 1,
         },
     }
     mis.add_compiler_overrides('mymodel', extra)
     assert {
         'compilation_config': {
-            'quantization_config': {
-                'quantization_debug': False,
-                'quantizer_version': 1,
-            }
+            'quantization_debug': False,
+            'quantizer_version': 1,
         },
     } == mis.model_compiler_overrides('mymodel', config.Metis.pcie)
 
@@ -1141,7 +1258,7 @@ def test_network_cleanup_trigger_operator_pipeline_stopped():
 SQUEEZENET_NETWORK_WITH_MODEL_CARD = f'''
 {SQUEEZENET_NETWORK}
 internal-model-card:
-    model-card: MC-000
+    model_card: MC-000
 '''
 
 
@@ -1171,7 +1288,7 @@ def test_model_dependencies_no_deps(mock_pip):
 def test_model_dependencies_empty_deps(mock_pip):
     input = f'''
 {SQUEEZENET_NETWORK_WITH_MODEL_CARD}
-    dependencies:
+    dependencies: []
 '''
     mock_pip.return_value.stdout = mock_pip.return_value.stderr = ''
     net = parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
@@ -1187,6 +1304,7 @@ def test_model_dependencies(mock_popen, mock_run):
     dependencies:
         - parp
         - toot >= 2.0, < 3.0
+        - honk>1.0,<=2.0
         - -r file1.txt
         - -r    file2.txt
         - -rfile3.txt
@@ -1222,6 +1340,7 @@ def test_model_dependencies(mock_popen, mock_run):
             '--dry-run',
             'parp',
             'toot >= 2.0, < 3.0',
+            'honk>1.0,<=2.0',
             '-rfile1.txt',
             '-rfile2.txt',
             '-rfile3.txt',
@@ -1241,6 +1360,7 @@ def test_model_dependencies(mock_popen, mock_run):
             'install',
             'parp',
             'toot >= 2.0, < 3.0',
+            'honk>1.0,<=2.0',
             '-rfile1.txt',
             '-rfile2.txt',
             '-rfile3.txt',
@@ -1251,6 +1371,101 @@ def test_model_dependencies(mock_popen, mock_run):
         bufsize=1,
         universal_newlines=True,
         env=ANY,  # Use ANY for environment comparison
+    )
+
+
+@patch('subprocess.run')
+@patch('subprocess.Popen')
+def test_model_dependencies_with_args(mock_popen, mock_run):
+    input = f'''
+{SQUEEZENET_NETWORK_WITH_MODEL_CARD}
+    dependencies:
+        - parp --no-cache-dir
+        - toot >= 2.0, < 3.0
+        - honk>1.0,<=2.0
+        - -r file1.txt
+        - -r    file2.txt
+        - -rfile3.txt
+        - -r $MY_FOLDER/requirements.txt
+'''
+    # Mock the dry-run to indicate some packages need installing
+    mock_run.return_value = Mock(
+        stdout=(
+            "Collecting parp\n"
+            "  Using cached parp-1.0.0.tar.gz\n"
+            "Collecting toot\n"
+            "  Using cached toot-2.1.0.tar.gz\n"
+        ),
+        stderr="",
+    )
+
+    # Mock the Popen process
+    process_mock = Mock()
+    process_mock.stdout.readline.side_effect = ['Installing...', '', None]
+    process_mock.poll.return_value = 0
+    process_mock.returncode = 0
+    mock_popen.return_value = process_mock
+
+    net = parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
+    with patch.dict(os.environ, MY_FOLDER='./myfolder'):
+        utils.ensure_dependencies_are_installed(net.dependencies)
+
+    # Assert the dry run call
+    mock_run.assert_called_once_with(
+        [
+            'pip',
+            'install',
+            '--dry-run',
+            'parp',
+            'toot >= 2.0, < 3.0',
+            'honk>1.0,<=2.0',
+            '-rfile1.txt',
+            '-rfile2.txt',
+            '-rfile3.txt',
+            '-r./myfolder/requirements.txt',
+        ],
+        encoding='utf8',
+        check=True,
+        capture_output=True,
+    )
+
+    # Assert the actual installation call
+    import subprocess
+
+    mock_popen.assert_has_calls(
+        [
+            call(
+                [
+                    'pip',
+                    'install',
+                    'toot >= 2.0, < 3.0',
+                    'honk>1.0,<=2.0',
+                    '-rfile1.txt',
+                    '-rfile2.txt',
+                    '-rfile3.txt',
+                    '-r./myfolder/requirements.txt',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                universal_newlines=True,
+                env=ANY,  # Use ANY for environment comparison
+            ),
+            call(
+                [
+                    'pip',
+                    'install',
+                    'parp',
+                    '--no-cache-dir',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                universal_newlines=True,
+                env=ANY,  # Use ANY for environment comparison
+            ),
+        ],
+        any_order=True,
     )
 
 

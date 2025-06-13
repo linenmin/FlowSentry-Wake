@@ -29,6 +29,11 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(OpenCL OpenCL)
 pkg_check_modules(opencv4 REQUIRED opencv4)
 pkg_check_modules(nlohmann_json REQUIRED nlohmann_json)
+pkg_check_modules(libva libva)
+
+if (libva_FOUND)
+    add_compile_definitions(HAVE_LIBVA)
+endif()
 
 
 add_subdirectory(PillowResize)
@@ -96,36 +101,44 @@ function(create_shared_library target sources)
     install(TARGETS ${target} DESTINATION ${subplugin_libdir})
 endfunction()
 
+create_shared_library(trackerfilter_numsubtaskruns src/AxTrackerFilterNumSubtaskRuns.cpp)
+create_shared_library(trackerattribute_bestscore src/AxTrackerAttributeBestScore.cpp)
 create_shared_library(decode_classification src/AxDecodeClassification.cpp)
 create_shared_library(decode_faceboxes src/AxDecodeFaceBoxes.cpp)
 create_shared_library(decode_facerec src/AxDecodeFaceRec.cpp)
 create_shared_library(decode_faciallandmarks src/AxDecodeLandmarks.cpp)
+create_shared_library(decode_image src/AxDecodeImage.cpp)
+create_shared_library(decode_ctc src/AxDecodeCTC.cpp)
 create_shared_library(decode_retinaface src/AxDecodeRetinaFace.cpp)
 create_shared_library(decode_rtmdet src/AxDecodeRtmDet.cpp)
 create_shared_library(decode_semantic_seg src/AxDecodeSemanticSeg.cpp)
 create_shared_library(decode_ssd2 src/AxDecodeSsd2.cpp)
+create_shared_library(decode_to_raw_tensor src/AxDecodeToRawTensor.cpp)
 create_shared_library(decode_yolo "src/AxDecodeYolo.cpp;src/AxOnnxRuntimeHelper.cpp")
 create_shared_library(decode_yolov5 src/AxDecodeYolo5.cpp)
 create_shared_library(decode_yolov8 src/AxDecodeYolo8.cpp)
 create_shared_library(decode_yolov8seg src/AxDecodeYolo8Seg.cpp)
 create_shared_library(decode_yolox src/AxDecodeYoloX.cpp)
 create_shared_library(inplace_addstreamid src/AxInPlaceAddStreamId.cpp)
+create_shared_library(inplace_addtiles src/AxInPlaceAddTiles.cpp)
 create_shared_library(inplace_draw src/AxInPlaceDraw.cpp)
 create_shared_library(inplace_filterdetections src/AxInPlaceFilterDetections.cpp)
+create_shared_library(inplace_hidemeta src/AxInPlaceHideMeta.cpp)
 create_shared_library(inplace_nms src/AxInPlaceNms.cpp)
-create_shared_library(inplace_trackeraddclassifications src/AxInPlaceTrackerAddClassifications.cpp)
-create_shared_library(inplace_trackeraddkeypoints src/AxInPlaceTrackerAddKeypoints.cpp)
 create_shared_library(transform_centrecropextra src/AxTransformCentreCropExtra.cpp)
 create_shared_library(transform_contrastnormalize src/AxTransformContrastNormalize.cpp)
 create_shared_library(transform_cropresize src/AxTransformCropResize.cpp)
 create_shared_library(transform_dequantize src/AxTransformDequantize.cpp)
 create_shared_library(transform_facealign src/AxTransformFaceAlign.cpp)
 create_shared_library(transform_padding src/AxTransformPadding.cpp)
+create_shared_library(transform_paddingdequantize src/AxTransformPaddingDequantize.cpp)
 create_shared_library(transform_resize src/AxTransformResize.cpp)
 create_shared_library(transform_roicrop src/AxTransformRoiCrop.cpp)
 create_shared_library(transform_totensor src/AxTransformToTensor.cpp)
+create_shared_library(transform_postamble "src/AxTransformPostamble.cpp;src/AxOnnxRuntimeHelper.cpp")
 create_shared_library(transform_yolopreproc src/AxTransformYoloPreProc.cpp)
-
+create_shared_library(decode_multihead src/AxDecodeMultihead.cc)
+create_shared_library(decode_embeddings src/AxDecodeEmbeddings.cc)
 if (OpenCL_FOUND)
     create_shared_library(transform_barrelcorrect_cl src/AxTransformBarrelCorrectCl.cpp)
     create_shared_library(transform_colorconvert src/AxTransformColorConvert.cpp)
@@ -175,6 +188,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND hailo_tap
         ${GST_INCLUDE_DIRS}
         ${hailo_tappas_INCLUDE_DIRS}
         ${gsthailometa_INCLUDE_DIRS}
+        ${libva_INCLUDE_DIRS}
     )
     target_link_libraries(axmetatohailo
         PRIVATE
@@ -183,6 +197,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND hailo_tap
         ${GLIB_LIBRARIES}
         ${GST_LIBRARIES}
         ${gsthailometa_LIBRARIES}
+        ${libva_LIBRARIES}
     )
     target_link_directories(axmetatohailo
         PRIVATE
@@ -191,6 +206,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND hailo_tap
         ${GLIB_LIBRARY_DIRS}
         ${GST_LIBRARY_DIRS}
         ${gsthailometa_LIBRARY_DIRS}
+        ${libva_LIBRARY_DIRS}
     )
     install(TARGETS axmetatohailo DESTINATION ${subplugin_libdir})
 endif()
@@ -237,12 +253,12 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
     endif()
 
     add_executable(unittest_ax
+        tests/ax/unittest_ax_meta.cc
         tests/ax/unittest_ax_nms.cc
         tests/ax/unittest_ax_obj.cc
         tests/ax/unittest_ax_yolopreproc.cc
         tests/ax/unittest_ax.cc
         tests/ax/unittest_axinferencenet.cc
-        tests/ax/unittest_axinference.cc
         tests/ax/unittest_decode_classification.cc
         tests/ax/unittest_decode_ssd2.cc
         tests/ax/unittest_decode_rtmdet.cc
@@ -252,10 +268,14 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
         tests/ax/unittest_decode_yolov8.cc
         tests/ax/unittest_decode_yolox.cc
         tests/ax/unittest_decode_yolov8seg.cc
+        tests/ax/unittest_decode_image.cc
+        tests/ax/unittest_decode_to_raw_tensor.cc
+        tests/ax/unittest_decode_ctc.cc
         tests/ax/unittest_inplace_normalize.cc
         tests/ax/unittest_transform_centrecropextra.cc
         tests/ax/unittest_transform_dequantize.cc
         tests/ax/unittest_transform_padding.cc
+        tests/ax/unittest_transform_paddingdequantize.cc
         tests/ax/unittest_transform_resize.cc
         tests/ax/unittest_transform_resizeratiocropexcess.cc
         tests/ax/unittest_utils.cc
@@ -266,12 +286,15 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
         PRIVATE
         ${GMODULE_INCLUDE_DIRS}
         ${GST_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/onnxruntime/onnxruntime/include
     )
 
     target_link_directories(unittest_ax
         PUBLIC
         ${GST_LIBRARY_DIRS}
         ${GMOCK_LIBRARY_DIRS}
+        ${libva_LIBRARY_DIRS}
+        ${CMAKE_SOURCE_DIR}/onnxruntime/onnxruntime/lib
     )
 
     target_link_libraries(unittest_ax
@@ -282,6 +305,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
         ${GST_LIBRARIES}
         axstreamer
         gstaxstreamer
+        onnxruntime
         )
 
     install(TARGETS unittest_ax DESTINATION ${unittest_install_dir})

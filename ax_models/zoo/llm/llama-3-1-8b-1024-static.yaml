@@ -1,0 +1,19 @@
+axelera-model-format: 1.0.0
+
+name: llama-3-1-8b-1024-static
+
+description: HuggingFace Transformers Llama-3.1-8B-Instruct model, limiting the sequence length to 1024 tokens
+
+models:
+  llama-3-1-8b-1024-static:
+    precompiled_url: https://llm.axelera.ai/icdf/llama8b_1024_model_v2.tar.gz
+    precompiled_path: build/llama-3-1-8b-1024-static/llama8b_1024_model_v2.tar.gz
+    precompiled_md5: f55ef03ab39d295753b9f2a4e2096bec
+    task_category: LanguageModel
+    extra_kwargs:
+      llm:
+        max_tokens: 1024
+        embeddings_url: https://llm.axelera.ai/embeddings/llama_3_1_8b_embeddings.npz
+        model_name: meta-llama/Llama-3.1-8B-Instruct
+        tokenizer_url: https://llm.axelera.ai/embeddings/meta-llama_Llama-3.2-1B-Instruct_tokenizer.zip
+        ddr_requirement_gb: 16

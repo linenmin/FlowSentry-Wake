@@ -1,6 +1,6 @@
 # Copyright Axelera AI, 2024
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PIL import Image as PILImage
 import pytest
@@ -26,6 +26,13 @@ MANIFEST = types.Manifest(
     model_lib_file='lib_export/lib.so',
     postprocess_graph='lib_export/post_process.onnx',
 )
+
+
+def create_mock_task_graph(master_value=""):
+    mock_task_graph = MagicMock()
+    mock_task_graph.get_master.return_value = master_value
+
+    return mock_task_graph
 
 
 @pytest.mark.parametrize(
@@ -66,8 +73,8 @@ def test_exec_torch_obj_confidence_filtering(
         context=operators.PipelineContext(),
         task_name="task_name",
         taskn=0,
-        where=None,
         compiled_model_dir=Path('.'),
+        task_graph=create_mock_task_graph(),
     )
     _, _, o_meta = decoder.exec_torch(the_img, input_tensor, the_meta)
     assert 'task_name' in o_meta
@@ -115,8 +122,8 @@ def test_exec_torch_score_filtering(
         context=operators.PipelineContext(),
         task_name="task_name",
         taskn=0,
-        where=None,
         compiled_model_dir=Path('.'),
+        task_graph=create_mock_task_graph(),
     )
     _, _, o_meta = decoder.exec_torch(the_img, input_tensor, the_meta)
     assert 'task_name' in o_meta
@@ -159,8 +166,8 @@ def test_exec_torch_obj_confidence_filtering_anchor_free(
         context=operators.PipelineContext(),
         task_name="task_name",
         taskn=0,
-        where=None,
         compiled_model_dir=Path('.'),
+        task_graph=create_mock_task_graph(),
     )
     _, _, o_meta = decoder.exec_torch(the_img, input_tensor, the_meta)
     assert 'task_name' in o_meta
@@ -195,8 +202,8 @@ def test_exec_torch_yolonas_merge_input(mock_organize_bboxes):
         context=operators.PipelineContext(),
         task_name="task_name",
         taskn=0,
-        where=None,
         compiled_model_dir=Path('.'),
+        task_graph=create_mock_task_graph(),
     )
     _, _, o_meta = decoder.exec_torch(the_img, input_tensor, the_meta)
     assert 'task_name' in o_meta
@@ -244,7 +251,7 @@ def test_exec_torch_tensor_shape_errors(input_tensor_shape, expected_error):
             context=operators.PipelineContext(),
             task_name="task_name",
             taskn=0,
-            where=None,
             compiled_model_dir=Path('.'),
+            task_graph=create_mock_task_graph(),
         )
         decoder.exec_torch(the_img, input_tensor, the_meta)

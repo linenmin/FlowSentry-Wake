@@ -29,6 +29,20 @@ static GstStaticPadTemplate src_template
 G_DEFINE_TYPE_WITH_CODE(GstAxfunnel, gst_axfunnel, GST_TYPE_AGGREGATOR,
     GST_DEBUG_CATEGORY_INIT(gst_axfunnel_debug, "axfunnel", 0, "axfunnel element"));
 
+
+static void
+create_stream_set(std::set<int> &streams, const std::string &input)
+{
+  streams.clear();
+  for (auto &&token : Ax::Internal::split(input, ',')) {
+    try {
+      streams.insert(std::stoi(std::string(token)));
+    } catch (const std::invalid_argument &e) {
+      throw std::runtime_error("Invalid number '" + std::string(token) + "' in stream_select");
+    }
+  }
+}
+
 static void
 gst_axfunnel_set_property(
     GObject *object, guint property_id, const GValue *value, GParamSpec *pspec)
@@ -39,7 +53,7 @@ gst_axfunnel_set_property(
   switch (property_id) {
     case PROP_STREAM_SELECT:
       str = g_value_get_string(value);
-      muxer->stream_set = Ax::create_stream_set(str);
+      create_stream_set(*muxer->stream_set, str);
       break;
 
     default:
@@ -56,7 +70,7 @@ gst_axfunnel_get_property(GObject *object, guint property_id, GValue *value, GPa
   std::string str;
   switch (property_id) {
     case PROP_STREAM_SELECT:
-      str = Ax::to_string(muxer->stream_set);
+      str = Ax::to_string(*muxer->stream_set);
       g_value_set_string(value, str.c_str());
       break;
     default:
@@ -189,7 +203,7 @@ gst_axfunnel_aggregate(GstAggregator *aggregator, gboolean timeout)
     if (sinkpad_has_buffer) {
       at_least_one_playing = true;
 
-      if (!muxer->stream_set.empty()) {
+      if (!muxer->stream_set->empty()) {
         const auto pad_name = get_pad_name(GST_PAD(sinkpad));
         auto tokens = Ax::Internal::split(pad_name, '_');
         if (tokens.empty()) {
@@ -197,7 +211,7 @@ gst_axfunnel_aggregate(GstAggregator *aggregator, gboolean timeout)
         }
         auto token = std::string{ tokens[1] };
 
-        if (muxer->stream_set.contains(std::stoi(token))) {
+        if (muxer->stream_set->contains(std::stoi(token))) {
           if (GST_FLOW_ERROR
               == gst_aggregator_finish_buffer(GST_AGGREGATOR(muxer),
                   gst_aggregator_pad_pop_buffer(sinkpad))) {
@@ -252,4 +266,5 @@ gst_axfunnel_class_init(GstAxfunnelClass *klass)
 static void
 gst_axfunnel_init(GstAxfunnel *muxer)
 {
+  muxer->stream_set = std::make_unique<std::set<int>>();
 }

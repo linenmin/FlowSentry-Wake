@@ -66,6 +66,7 @@ class OpenCLBarrelDistortionCorrection(preprocessing.CompositePreprocess):
     cx: float = 0.5
     cy: float = 0.5
     distort_coefs: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
+    normalized: bool = True
     format: str = 'rgb'
 
     def _post_init(self) -> None:
@@ -85,7 +86,7 @@ class OpenCLBarrelDistortionCorrection(preprocessing.CompositePreprocess):
         bgra_out = self.format == 'bgr'
         gst.axtransform(
             lib='libtransform_barrelcorrect_cl.so',
-            options=f'camera_props:{self.fx},{self.fy},{self.cx},{self.cy};distort_coefs:{self.distort_coefs};bgra_out:{int(bgra_out)}',
+            options=f'camera_props:{self.fx},{self.fy},{self.cx},{self.cy};distort_coefs:{self.distort_coefs};bgra_out:{int(bgra_out)};normalized_properties:{int(self.normalized)}',
         )
 
 
@@ -183,7 +184,7 @@ class OpenCLResize(preprocessing.CompositePreprocess):
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         options = f'size:{self.size}' if self.size else f'width:{self.width};height:{self.height}'
-        options += f';format:{self.input_color_format}a'
+        options += f';format:{self.input_color_format}'
         gst.axtransform(lib="libtransform_resize_cl.so", options=options)
 
 
@@ -207,36 +208,21 @@ class VAAPICroppedResizeWithExtraCrop(preprocessing.CompositePreprocess):
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         cs = self._w - self.hcrop
         ss = self._w
-        if gst.new_inference:
-            # we don't support vaapi resize. yet
-            if platform.processor() == 'x86_64':
-                gst.axtransform(
-                    lib='libtransform_resizeratiocropexcess.so',
-                    options=f'resize_size:{self.size};final_size_after_crop:{self.size - self.hcrop}',
-                )
-            else:
-                gst.axtransform(
-                    lib='libtransform_centrecropextra.so',
-                    options=f'cropsize:{cs};scalesize:{ss}',
-                )
-                gst.axtransform(
-                    lib='libtransform_resize.so',
-                    options=(f'size:{cs}'),
-                )
-            return
-        gst.axtransform(
-            lib='libtransform_centrecropextra.so',
-            options=f'cropsize:{cs};scalesize:{ss}',
-        )
-        gst.vaapipostproc(
-            {
-                'width': self._w - self.hcrop,
-                'height': self._h - self.vcrop,
-                'format': 'rgba',
-                'scale-method': 0,
-            }
-        )
-        gst.axinplace()
+        # we don't support vaapi resize. yet
+        if platform.processor() == 'x86_64':
+            gst.axtransform(
+                lib='libtransform_resizeratiocropexcess.so',
+                options=f'resize_size:{self.size};final_size_after_crop:{self.size - self.hcrop}',
+            )
+        else:
+            gst.axtransform(
+                lib='libtransform_centrecropextra.so',
+                options=f'cropsize:{cs};scalesize:{ss}',
+            )
+            gst.axtransform(
+                lib='libtransform_resize.so',
+                options=(f'size:{cs}'),
+            )
 
 
 class OpenCLCroppedResizeWithExtraCrop(preprocessing.CompositePreprocess):
@@ -291,7 +277,7 @@ class OpenCLCroppedResizeWithExtraCropWithColor(preprocessing.CompositePreproces
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         cs = self._w - self.hcrop
         ss = self._w
-        input_color_format = f'{_get_input_color_format(self.format)}a'
+        input_color_format = f'{_get_input_color_format(self.format)}'
         gst.axtransform(
             lib='libtransform_colorconvert.so',
             options=(f'format:{input_color_format}'),
@@ -338,8 +324,8 @@ class OpenCLCroppedResizeWithExtraCropAndNormalize(preprocessing.CompositePrepro
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         self.task_name = task_name
         if model_info.manifest and model_info.manifest.is_compiled():
@@ -395,7 +381,7 @@ class OpenCLetterBoxColorConvert(preprocessing.CompositePreprocess):
         return super()._post_init()
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        format = f"{_get_input_color_format(self.format)}a"
+        format = f"{_get_input_color_format(self.format)}"
         gst.axtransform(
             lib='libtransform_resize_cl.so',
             options=(
@@ -435,8 +421,8 @@ class OpenCLResizeToTensorAndNormalize(preprocessing.CompositePreprocess):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         self.task_name = task_name
         if model_info.manifest and model_info.manifest.is_compiled():
@@ -503,8 +489,8 @@ class OpenCLetterBoxToTensorAndNormalize(preprocessing.CompositePreprocess):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         self.task_name = task_name
         if model_info.manifest and model_info.manifest.is_compiled():
@@ -605,8 +591,8 @@ class ToTensorAndLinearScaling(preprocessing.CompositePreprocess):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         self.task_name = task_name
         if model_info.manifest and model_info.manifest.is_compiled():
@@ -663,8 +649,8 @@ class ToTensorAndNormalise(preprocessing.CompositePreprocess):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         self.task_name = task_name
         if model_info.manifest and model_info.manifest.is_compiled():
@@ -729,8 +715,8 @@ class LetterboxToTensorAndNormalise(preprocessing.CompositePreprocess):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         self.task_name = task_name
         if model_info.manifest and model_info.manifest.is_compiled():
@@ -793,8 +779,8 @@ class OpenCLToTensorAndNormalize(preprocessing.CompositePreprocess):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         self.task_name = task_name
         if model_info.manifest and model_info.manifest.is_compiled():

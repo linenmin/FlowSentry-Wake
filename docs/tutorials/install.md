@@ -61,7 +61,8 @@ To run the installer create an Axelera AI account and accept our Software End Us
 > In the Login page, click on the button labeled "customers" which will prompt you to authenticate
 > with your Axelera AI account (or, register a new account if you don't have one already).
 > Once logged in, on the top-right corner of the website under your profile, click **Edit Profile**
-> and then click the button **Generate an Identity Token**. Please make sure to copy and store
+> and then click the button **Generate an Identity Token**. In the Generate Identity Token window, 
+> the token you need to use is found under "Reference Token". Please make sure to copy and store
 > the token somewhere safe.
 
 Note: that for installing only the runtime environment accepting the EULA and providing a token is not required.

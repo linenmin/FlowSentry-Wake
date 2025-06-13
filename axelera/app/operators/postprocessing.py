@@ -2,10 +2,8 @@
 # General post-processing operators
 from __future__ import annotations
 
-import json
 from pathlib import Path
-import tempfile
-from typing import Optional, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 
@@ -44,42 +42,30 @@ class TopK(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         self.labels = model_info.labels
         self.num_classes = model_info.num_classes
+        self._association = context.association or None
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        master_meta_option = str()
-        if self._where:
-            master_meta_option = f'master_meta:{self._where};'
+        master_key = f'master_meta:{self._where};' if self._where else str()
+        association_key = f'association_meta:{self._association};' if self._association else str()
 
         # TODO only k == 1, largest==True, and sorted==True is supported,
         if self._tmp_labels is None:
             self._tmp_labels = utils.create_tmp_labels(self.labels)
-        if not gst.new_inference:
-            conns = {'src': f'decoder_task{self._taskn}{stream_idx}.sink_0'}
-            if self._where:
-                gst.queue(
-                    {'max-size-buffers': 0},
-                    connections=conns,
-                    name=f'queue_decoder_task{self._taskn}{stream_idx}',
-                )
-            else:
-                gst.queue(
-                    connections=conns,
-                    name=f'queue_decoder_task{self._taskn}{stream_idx}',
-                )
 
         gst.decode_muxer(
             name=f'decoder_task{self._taskn}{stream_idx}',
             lib='libdecode_classification.so',
             options=f'meta_key:{str(self.task_name)};'
-            f'{master_meta_option}'
+            f'{master_key}'
+            f'{association_key}'
             f'classlabels_file:{self._tmp_labels};'
             f'top_k:{self.k};'
             f'softmax:{int(self.softmax)}',
@@ -102,6 +88,234 @@ class TopK(AxOperator):
             top_ids.cpu().detach().numpy()[0],
             top_scores.cpu().detach().numpy()[0],
         )
+        axmeta.add_instance(self.task_name, model_meta, self._where)
+        return image, predict, axmeta
+
+
+def _check_single_reducemean_node(file_path):
+    """
+    Checks if an ONNX model file contains exactly one intermediate node
+    and if that node is a ReduceMean operator. Prints the result.
+    """
+    import sys
+
+    import onnx
+
+    try:
+        model = onnx.load(file_path)
+        nodes = model.graph.node
+        num_nodes = len(nodes)
+
+        if num_nodes == 1 and nodes[0].op_type == 'ReduceMean':
+            LOG.trace(
+                f"✅ Verification PASSED for '{file_path}':\n   Exactly one intermediate node found, and it is 'ReduceMean'."
+            )
+            return True
+        elif num_nodes == 1:
+            LOG.trace(
+                f"❌ Verification FAILED for '{file_path}':\n   Exactly one intermediate node found, but it is '{nodes[0].op_type}', not 'ReduceMean'."
+            )
+        else:
+            LOG.trace(
+                f"❌ Verification FAILED for '{file_path}':\n   Found {num_nodes} intermediate node(s), not exactly one."
+            )
+    except FileNotFoundError:
+        LOG.error(
+            f"Error: File not found at '{file_path}'. Please ensure the file name is correct.",
+            file=sys.stderr,
+        )
+    except Exception as e:
+        LOG.error(f"Error processing ONNX file '{file_path}': {e}")
+    return False
+
+
+@builtin
+class CTCDecoder(AxOperator):
+    """
+    Decodes raw sequential output from a model using CTC greedy decoding.
+
+    This operator is designed to post-process the output tensor from a
+    neural network (e.g., RNN, LSTM, Transformer) that has been trained
+    on sequence prediction tasks using a Connectionist Temporal Classification
+    (CTC) loss function.
+
+    It takes the tensor containing probabilities or logits for each character
+    (including a 'blank' character) at each timestep/position in the sequence.
+    It then applies the CTC greedy decoding algorithm, which involves:
+    1. Finding the most likely character index at each timestep (`argmax`).
+    2. Removing consecutive duplicate characters.
+    3. Removing all 'blank' characters.
+
+    The result is the final predicted character sequence as a string.
+
+    **When to use:**
+    Use this operator immediately after an inference operator whose underlying
+    model was trained with CTC loss for tasks like:
+    - Optical Character Recognition (OCR) of text lines.
+    - Automatic Speech Recognition (ASR).
+    - License Plate Recognition (LPR).
+    - Any other task where a variable-length character sequence is predicted
+      from sequential input data using CTC.
+    """
+
+    # Add blank_index as a configurable parameter, defaulting to -1 (auto-detect)
+    blank_index: int = -1
+
+    def _post_init(self):
+        self._tmp_chars: Optional[Path] = None
+        self._gst_decoder_do_reduce_mean = False  # Default value
+        self.cpp_decoder_does_postamble = False  # Default value
+
+    def __del__(self):
+        if self._tmp_chars is not None and self._tmp_chars.exists():
+            self._tmp_chars.unlink()
+
+    def configure_model_and_context_info(
+        self,
+        model_info: types.ModelInfo,
+        context: PipelineContext,
+        task_name: str,
+        taskn: int,
+        compiled_model_dir: Path,
+        task_graph,
+    ):
+        super().configure_model_and_context_info(
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
+        )
+        if not model_info.labels:
+            raise ValueError(f"Missing 'labels' in model_info for {self.task_name}")
+        self.chars = model_info.labels  # List of characters (strings)
+
+        LOG.debug(
+            f"Read {len(self.chars)} labels for {self.task_name}. First label: '{self.chars[0] if self.chars else ''}'"
+        )
+
+        # --- Determine Blank Index ---
+        # Use self.blank_index directly as it's now a class attribute set by config/default
+        configured_blank_index = self.blank_index  # Get value from config or default -1
+
+        if configured_blank_index >= 0:
+            LOG.info(f"[{self.task_name}] Using configured blank_index: {configured_blank_index}")
+            if configured_blank_index >= len(self.chars):
+                raise ValueError(
+                    f"[{self.task_name}] Configured blank_index {configured_blank_index} out of bounds for labels (size {len(self.chars)})"
+                )
+            # Use the configured index
+            self.blank_index = configured_blank_index
+        else:
+            # If not configured (it's -1), detect by finding the empty string ""
+            LOG.info(
+                f"[{self.task_name}] blank_index not configured, attempting to detect empty string ''"
+            )
+            try:
+                # Find the index of the empty string in the list loaded from model_info
+                detected_blank_index = self.chars.index("")
+                # if no empty string found, try to find "-"
+                if detected_blank_index == -1:
+                    detected_blank_index = self.chars.index("-")
+                    LOG.info(
+                        f"[{self.task_name}] Detected hyphen '-' blank token at index: {detected_blank_index}"
+                    )
+                else:
+                    LOG.info(
+                        f"[{self.task_name}] Detected empty string '' blank token at index: {detected_blank_index}"
+                    )
+                self.blank_index = detected_blank_index  # Store the detected index
+            except ValueError:
+                # Error if "" not found and not configured
+                LOG.error(
+                    f"[{self.task_name}] Blank token '' not found in model_info.labels and blank_index not configured."
+                )
+                first_few = [f"'{c}'(len={len(c)})" for c in self.chars[:5]]
+                LOG.error(
+                    f"[{self.task_name}] First few labels read: [{', '.join(first_few)}, ...]"
+                )
+                raise ValueError(
+                    f"[{self.task_name}] Could not determine CTC blank index. Ensure labels list contains '' or set 'blank_index' parameter."
+                )
+        # --- End Blank Index Determination ---
+
+        # GST Related logic (check if needed for your use case)
+        if model_info.manifest and model_info.manifest.is_compiled():
+            postprocess_graph = compiled_model_dir / model_info.manifest.postprocess_graph
+            if postprocess_graph.exists() and _check_single_reducemean_node(postprocess_graph):
+                self._gst_decoder_do_reduce_mean = True
+            else:
+                self._gst_decoder_do_reduce_mean = False
+            LOG.debug(
+                f'[{self.task_name}] _gst_decoder_do_reduce_mean: {self._gst_decoder_do_reduce_mean}'
+            )
+            self.cpp_decoder_does_postamble = self._gst_decoder_do_reduce_mean
+
+    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
+        master_meta_option = str()
+        if self._where:
+            master_meta_option = f'master_meta:{self._where};'
+
+        if self._tmp_chars is None:
+            self._tmp_chars = utils.create_tmp_chars(self.chars)
+
+        gst_options = (
+            f'task_category:{self._task_category.name};'
+            f'meta_key:{str(self.task_name)};'
+            f'{master_meta_option}'
+            f'chars_file:{self._tmp_chars};'
+            f'blank_index:{self.blank_index};'
+            f'do_reduce_mean:{int(self._gst_decoder_do_reduce_mean)};'
+        )
+        gst.decode_muxer(
+            name=f'decoder_task{self._taskn}{stream_idx}',
+            lib='libdecode_ctc.so',
+            options=gst_options,
+        )
+
+    def exec_torch(self, image, predict, axmeta):
+        # Ensure predict is a numpy array
+        if torch.is_tensor(predict):
+            tensor = predict.cpu().detach().numpy()
+        elif isinstance(predict, np.ndarray):
+            tensor = predict
+        else:
+            LOG.error(f"[{self.task_name}] Unexpected input type for predict: {type(predict)}")
+            return image, predict, axmeta  # Or raise error
+
+        # --- CTC Greedy Decode ---
+        try:
+            # Revert to previous logic: Assume axis=1 for argmax
+            # This assumes tensor shape is [Time, Classes] or compatible
+            # Log the shape for verification
+            LOG.debug(
+                f"[{self.task_name}] exec_torch tensor shape: {tensor.shape}. Using axis=1 for argmax."
+            )
+            max_indices = np.argmax(tensor, axis=1).flatten()
+
+        except Exception as e:
+            # More context in error
+            LOG.error(f"[{self.task_name}] Error during np.argmax(axis=1): {e}")
+            LOG.error(f"[{self.task_name}] Tensor shape: {tensor.shape}, dtype: {tensor.dtype}")
+            return image, predict, axmeta
+
+        # Log the blank index being used for decoding
+        blank_idx = self.blank_index
+        LOG.debug(f"[{self.task_name}] Starting CTC decode loop with blank_index: {blank_idx}")
+
+        prev = blank_idx
+        plate = ''
+        for c in max_indices:
+            if c != blank_idx and c != prev:
+                if 0 <= c < len(self.chars):
+                    plate += self.chars[c]
+                else:
+                    LOG.warning(
+                        f"[{self.task_name}] Decoded index {c} out of bounds (0-{len(self.chars)-1})"
+                    )
+            prev = c
+        # --- End Decode ---
+
+        final_plate = plate
+        LOG.trace(f"[{self.task_name}] Decoded plate: '{final_plate}'")
+        model_meta = meta.LicensePlateMeta()
+        model_meta.add_result(final_plate)
         axmeta.add_instance(self.task_name, model_meta, self._where)
         return image, predict, axmeta
 
@@ -141,6 +355,47 @@ def _reorder_embeddings_by_names(
             pass
 
     return names, new_embeddings
+
+
+@builtin
+class DecodeEmbeddings(AxOperator):
+    def configure_model_and_context_info(
+        self,
+        model_info: types.ModelInfo,
+        context: PipelineContext,
+        task_name: str,
+        taskn: int,
+        where: str,
+        compiled_model_dir: Path,
+    ):
+        super().configure_model_and_context_info(
+            model_info, context, task_name, taskn, where, compiled_model_dir
+        )
+
+    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
+        master_meta_option = str()
+        self.meta_type_name = "EmbeddingsMeta"
+        if self._where:
+            master_meta_option = f'master_meta:{self._where};'
+
+        gst.decode_muxer(
+            name=f'decoder_task{self._taskn}{stream_idx}',
+            lib='libdecode_embeddings.so',
+            options=f'meta_key:{str(self.task_name)};'
+            f'decoder_name:{self.meta_type_name};'
+            f'{master_meta_option}',
+        )
+
+    def exec_torch(self, image, predict, axmeta):
+        if isinstance(predict[0], torch.Tensor):
+            embedding = predict[0].cpu().detach().numpy()
+        else:
+            embedding = predict[0]
+        model_meta = meta.EmbeddingsMeta()
+        model_meta.add_results(embedding)
+        axmeta.add_instance(self.task_name, model_meta, self._where)
+
+        return image, predict, axmeta
 
 
 @builtin
@@ -204,11 +459,11 @@ class Recognition(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         self.labels = model_info.labels
 
@@ -299,139 +554,6 @@ class Recognition(AxOperator):
 
 
 @builtin
-class Tracker(AxOperator):
-    '''Configure tracker.'''
-
-    algorithm: str = 'oc-sort'
-    algo_params: dict = None
-    # history_length is now maintained by gst; TODO: support this in Python
-    history_length: int = 30
-    num_subtask_runs: int = 10
-
-    def _post_init(self):
-        supported_algorithms = ['sort', 'scalarmot', 'oc-sort', 'bytetrack']
-        self.algorithm = self.algorithm.lower()
-        assert (
-            self.algorithm in supported_algorithms
-        ), f'Only {supported_algorithms} are supported for now'
-        assert (
-            isinstance(self.algo_params, dict) or self.algo_params is None
-        ), f'algo_params must be a dict or None, got {type(self.algo_params)}'
-        self._verify_params()
-        self._algo_params_json: Optional[Path] = None
-
-    def _verify_params(self):
-        if self.algo_params is None:
-            return
-        if self.algorithm == 'oc-sort':
-            supported_params = [
-                'det_thresh',
-                'max_age',
-                'min_hits',
-                'iou_threshold',
-                'delta',
-                'asso_func',
-                'inertia',
-                'use_byte',
-                'max_id',
-            ]
-        elif self.algorithm == 'bytetrack':
-            supported_params = [
-                'frame_rate',
-                'track_buffer',
-            ]
-        elif self.algorithm == 'sort':
-            supported_params = [
-                'det_thresh',
-                'maxAge',
-                'minHits',
-                'iouThreshold',
-            ]
-        elif self.algorithm == 'scalarmot':
-            supported_params = [
-                'maxLostFrames',
-            ]
-
-        for k in self.algo_params:
-            assert (
-                k in supported_params
-            ), f'Only {supported_params} are supported for {self.algorithm}'
-
-    def __del__(self):
-        if self._algo_params_json is not None and self._algo_params_json.exists():
-            self._algo_params_json.unlink()
-
-    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        if self._algo_params_json is None:
-            with tempfile.NamedTemporaryFile(suffix='.json', mode='w', delete=False) as t:
-                t.write(json.dumps(self.algo_params))
-            self._algo_params_json = Path(t.name)
-        gst.axinplace(
-            lib='libinplace_tracker.so',
-            options=f'meta_key:{str(self.task_name)};'
-            f'history_length:{self.history_length};'
-            f'num_subtask_runs:{self.num_subtask_runs};'
-            f'algorithm:{self.algorithm.lower()};'
-            f'algo_params_json:{self._algo_params_json};',
-        )
-
-    def exec_torch(self, image, predict, axmeta):
-        raise NotImplementedError("Tracker is not yet implemented for torch pipeline")
-
-
-@builtin
-class FilterDetections(AxOperator):
-    min_width: int = 0
-    min_height: int = 0
-
-    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        gst.axinplace(
-            lib='libinplace_filterdetections.so',
-            options=f'meta_key:{self.task_name};min_width:{self.min_width};min_height:{self.min_height}',
-            mode='read',
-        )
-
-    def exec_torch(self, image, predict, axmeta):
-        raise NotImplementedError("FilterDetections is not yet implemented for torch pipeline")
-
-
-@builtin
-class AddClassificationsToTracker(AxOperator):
-    where: str
-
-    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        gst.axinplace(
-            lib='libinplace_trackeraddclassifications.so',
-            options=f'classification_meta_key:{str(self.task_name)};'
-            f'tracking_meta_key:{str(self.where)};',
-            mode='read',
-        )
-
-    def exec_torch(self, image, predict, axmeta):
-        raise NotImplementedError(
-            "AddClassificationsToTracker is not yet implemented for torch pipeline"
-        )
-
-
-@builtin
-class AddKeypointsToTracker(AxOperator):
-    where: str
-
-    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        gst.axinplace(
-            lib='libinplace_trackeraddkeypoints.so',
-            options=f'keypoints_submeta_key:{str(self.where)};'
-            f'tracking_meta_key:{str(self.where)};',
-            mode='read',
-        )
-
-    def exec_torch(self, image, predict, axmeta):
-        raise NotImplementedError(
-            "AddKeypointsToTracker is not yet implemented for torch pipeline"
-        )
-
-
-@builtin
 class SemanticSegmentation(AxOperator):
     '''
     Semantic Segmentation operator.
@@ -465,11 +587,11 @@ class SemanticSegmentation(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         if self.width == 0 and self.height == 0:
             self.width = model_info.input_width
@@ -481,10 +603,6 @@ class SemanticSegmentation(AxOperator):
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         self.meta_type_name = "SemanticSegmentationMeta"
-        if not gst.new_inference:
-            conns = {'src': f'decoder_task{self._taskn}{stream_idx}.sink_0'}
-            gst.queue(name=f'queue_decoder_task{self._taskn}{stream_idx}', connections=conns)
-
         gst.decode_muxer(
             name=f'decoder_task{self._taskn}{stream_idx}',
             lib='libdecode_semantic_seg.so',
@@ -598,4 +716,60 @@ class SemanticSegmentation(AxOperator):
                 palette=[],  # self.palette
             )
             axmeta.add_instance(self.task_name, model_meta, self._where)
+        return image, predict, axmeta
+
+
+@builtin
+class GetRawTensor(AxOperator):
+    """
+    This operator is used to get the raw tensor output from the model.
+    It is useful when the model output is not a valid tensor, such as a list of tensors.
+
+    TODO:
+    - consider using GetRawTensor automatically when --tensor
+    - set default as True when we have a powerful SuperPostamble to handle all the transforms efficiently
+    """
+
+    dequantized_and_depadded: bool = False
+    transposed: bool = False
+    postamble_processed: bool = False
+
+    def _post_init(self):
+        if self.postamble_processed:
+            assert (
+                self.dequantized_and_depadded and self.transposed
+            ), "dequantized_and_depadded and transposed must be True when postamble_processed is True"
+        self.cpp_decoder_does_dequantization_and_depadding = not self.dequantized_and_depadded
+        self.cpp_decoder_does_transpose = not self.transposed
+        self.cpp_decoder_does_postamble = not self.postamble_processed
+
+    def configure_model_and_context_info(
+        self,
+        model_info: types.ModelInfo,
+        context: PipelineContext,
+        task_name: str,
+        taskn: int,
+        where: str,
+        compiled_model_dir: Path,
+    ):
+        super().configure_model_and_context_info(
+            model_info, context, task_name, taskn, where, compiled_model_dir
+        )
+
+    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
+        master_meta_option = str()
+        if self._where:
+            master_meta_option = f'master_meta:{self._where};'
+
+        gst.decode_muxer(
+            name=f'decoder_task{self._taskn}{stream_idx}',
+            lib='libdecode_to_raw_tensor.so',
+            options=f'meta_key:{str(self.task_name)};' f'{master_meta_option}',
+        )
+
+    def exec_torch(self, image, predict, axmeta):
+        model_meta = meta.TensorMeta(
+            tensors=[predict.cpu().detach().numpy()],
+        )
+        axmeta.add_instance(self.task_name, model_meta, self._where)
         return image, predict, axmeta

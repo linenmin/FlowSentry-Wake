@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 # Copyright Axelera AI, 2025
 
-# gi.repository.Gst is requred to set mainloop configs
-import gi
+import os
+import sys
+import time
 
-gi.require_version('Gst', '1.0')
+if not os.environ.get('AXELERA_FRAMEWORK'):
+    sys.exit("Please activate the Axelera environment with source venv/bin/activate and run again")
 
-from gi.repository import Gst
 from tqdm import tqdm
 
 from axelera.app import config, display, inf_tracers, logging_utils, pipe, statistics, yaml_parser
@@ -36,6 +37,7 @@ def init(args, tracers):
         rtsp_latency=args.rtsp_latency,
         device_selector=args.devices,
         specified_frame_rate=args.frame_rate,
+        tile=config.determine_tile_options(args),
     )
     return InferenceStream(pipemanager, frames=args.frames, timeout=args.timeout)
 
@@ -45,6 +47,16 @@ def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
         for sid, source in stream.manager.sources.items():
             wnd.options(sid, title=f"#{sid} - {source}")
 
+    wnd.image(
+        ('48%', '98%'),
+        os.path.join(config.env.framework, "axelera/app/voyager-sdk-logo-white.png"),
+        anchor_x='left',
+        anchor_y='bottom',
+        scale=0.5,
+        fadeout_duration=5,
+        fadeout_start=time.time() + 5,
+    )
+
     for frame_result in tqdm(
         stream,
         desc=f"Detecting... {' ':>30}",
@@ -53,6 +65,7 @@ def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
         bar_format=PBAR,
         disable=None,
     ):
+
         image, meta = frame_result.image, frame_result.meta
         if image is None and meta is None:
             if wnd.is_closed:
@@ -78,10 +91,15 @@ def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
 
 
 if __name__ == "__main__":
+    network_yaml_info = yaml_parser.get_network_yaml_info()
     parser = config.create_inference_argparser(
-        description='Perform inference on an Axelera platform'
+        network_yaml_info, description='Perform inference on an Axelera platform'
     )
     args = parser.parse_args()
+    # early exit if the network is a LLM
+    if network_yaml_info.has_llm(args.network):
+        raise ValueError("inference.py currently supports vision models only")
+
     logging_utils.configure_logging(logging_utils.get_config_from_args(args))
     logging_utils.configure_compiler_level(args)
 

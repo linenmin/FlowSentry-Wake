@@ -20,117 +20,66 @@ class MockMetric:
         return [self]
 
 
-PREFIX_NO_INF = '''\
-===========================================================================
-Element                                         Latency(us)   Effective FPS
-===========================================================================
-qtdemux0                                                 15        64,194.9
-typefind                                                 22        44,309.3
-h265parse0                                               55        17,906.0
-capsfilter0                                             231         4,317.5
-vaapidecode0                                            724         1,380.9
-capsfilter1                                              29        33,918.7
-vaapipostproc0                                          262         3,808.8
-axinplace-addstreamid0                                   34        29,082.2
-input_tee                                                34        29,188.0
-convert_in                                              271         3,677.5
-axinplace0                                               29        33,906.7
-axinplace1                                               39        25,013.8
-axtransform-resizeletterbox0                            778         1,284.8
-axtransform-totensor0                                   199         5,025.0
-axinplace-normalize0                                    305         3,271.1
-axtransform-padding0                                  1,846           541.7'''
-PREFIX_SHORT = (
-    PREFIX_NO_INF
-    + '''
-inference-task0-YOLOv5s-relu-COCO2017                17,719            56.4'''
-)
-
-
-SUFFIX = '''\
-decoder_task0                                        17,094            58.5
-axinplace-nms0                                           70        14,100.7
-===========================================================================
-End-to-end average measurement                                          0.0
-==========================================================================='''
+EXPECTED = '''\
+========================================================================
+Element                                         Time(𝜇s)   Effective FPS
+========================================================================
+qtdemux0                                              11        88,393.0
+h265parse0                                            31        32,002.8
+capsfilter0                                            9       109,694.1
+decodebin-link0                                        9       103,046.1
+axtransform-colorconvert0                          6,389           156.5
+inference-task0:libtransform_resize_cl_0             138         7,246.1
+inference-task0:libtransform_padding_0               501         1,994.8
+inference-task0:inference                          2,760           362.3
+ └─ Metis                                          6,666           150.0
+ └─ Host                                           5,000           200.0
+inference-task0:Inference latency                106,989             n/a
+inference-task0:libdecode_yolov5_0                   254         3,937.0
+inference-task0:libinplace_nms_0                      18        53,637.8
+inference-task0:Postprocessing latency             6,125             n/a
+inference-task0:Total latency                    154,221             n/a
+========================================================================
+End-to-end average measurement                                       0.0
+========================================================================'''
 
 
 def test_format_table_host_and_metis():
     tracers = [MockMetric(200, 'Host'), MockMetric(150, 'Metis')]
     got = statistics.format_table(GOLD_SRC, tracers, statistics.Plain)
-    assert (
-        got
-        == f'''\
-{PREFIX_SHORT}
- └─ Metis                                             6,666           150.0
- └─ Host                                              5,000           200.0
-{SUFFIX}'''
-    )
+    assert got == EXPECTED
 
 
 def test_format_table_host():
     tracers = [MockMetric(200, 'Host')]
     got = statistics.format_table(GOLD_SRC, tracers, statistics.Plain)
-    assert (
-        got
-        == f'''\
-{PREFIX_SHORT}
- └─ Host                                              5,000           200.0
-{SUFFIX}'''
-    )
+    exp = '\n'.join(l for l in EXPECTED.splitlines() if 'Metis' not in l)
+    assert got == exp
 
 
 def test_format_table_metis():
     tracers = [MockMetric(150, 'Metis')]
     got = statistics.format_table(GOLD_SRC, tracers, statistics.Plain)
-    assert (
-        got
-        == f'''\
-{PREFIX_SHORT}
- └─ Metis                                             6,666           150.0
-{SUFFIX}'''
-    )
+    exp = '\n'.join(l for l in EXPECTED.splitlines() if 'Host' not in l)
+    assert got == exp
 
 
 def test_format_table_no_tracers():
     tracers = []
     got = statistics.format_table(GOLD_SRC, tracers, statistics.Plain)
-    assert (
-        got
-        == f'''\
-{PREFIX_SHORT}
-{SUFFIX}'''
-    )
+    exp = '\n'.join(l for l in EXPECTED.splitlines() if 'Host' not in l and 'Metis' not in l)
+    assert got == exp
 
 
 def test_format_table_tracers_present_but_no_value(caplog):
     tracers = [MockMetric(0, 'Host'), MockMetric(0, 'Metis')]
     got = statistics.format_table(GOLD_SRC, tracers, statistics.Plain)
-    assert (
-        got
-        == f'''\
-{PREFIX_SHORT}
-{SUFFIX}'''
-    )
+    exp = '\n'.join(l for l in EXPECTED.splitlines() if 'Host' not in l and 'Metis' not in l)
+    assert got == exp
     assert [r.message for r in caplog.records] == [
         'Unable to determine Host metrics',
         'Unable to determine Metis metrics',
     ]
-
-
-def test_format_table_long_inference_task():
-    long_gold_src = GOLD_SRC.read_text().replace('COCO2017', 'COCO2017-really-really-long')
-    tracers = []
-    with patch.object(pathlib.Path, 'read_text', return_value=long_gold_src):
-        got = statistics.format_table(GOLD_SRC, tracers, statistics.Plain)
-    assert (
-        got
-        == f'''\
-{PREFIX_NO_INF}
-inference-task0-YOLOv5s-relu-COCO2017-really-really-long
-                                                     17,719            56.4
-{SUFFIX}'''
-    )
 
 
 def test_format_empty_table():
@@ -140,12 +89,12 @@ def test_format_empty_table():
     assert (
         got
         == '''\
-===========================================================================
-Element                                         Latency(us)   Effective FPS
-===========================================================================
-===========================================================================
-End-to-end average measurement                                          0.0
-==========================================================================='''
+========================================================================
+Element                                         Time(𝜇s)   Effective FPS
+========================================================================
+========================================================================
+End-to-end average measurement                                       0.0
+========================================================================'''
     )
 
 

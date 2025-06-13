@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 from typing import List, Optional
 
 from axelera import types
 from axelera.app import gst_builder, logging_utils
 from axelera.app.meta import BBoxState, CocoBodyKeypointsMeta
-from axelera.app.operators import AxOperator, PipelineContext, utils
+from axelera.app.operators import AxOperator, PipelineContext
 from axelera.app.torch_utils import torch
 
 LOG = logging_utils.getLogger(__name__)
@@ -29,23 +28,17 @@ class DecodeYoloPose(AxOperator):
 
     box_format: str
     normalized_coord: bool
-    label_filter: Optional[List[str]] = None
     conf_threshold: float = 0.25
     max_nms_boxes: int = 30000
     nms_iou_threshold: float = 0.65
     nms_top_k: int = 300
 
     def _post_init(self):
-        if isinstance(self.label_filter, str) and not self.label_filter.startswith('$$'):
-            stripped = (self.label_filter or '').strip()
-            self.label_filter = [x for x in re.split(r'\s*[,;]\s*', stripped) if x]
-        else:
-            self.label_filter = []
         self._tmp_labels: Optional[Path] = None
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
             raise ValueError(f"Unknown box format {self.box_format}")
         self._nms_class_agnostic = True
-        self.gst_decoder_does_dequantization_and_depadding = True
+        self.cpp_decoder_does_all = True
         super()._post_init()
 
     def __del__(self):
@@ -58,11 +51,11 @@ class DecodeYoloPose(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         self.meta_type_name = "CocoBodyKeypointsMeta"
         if model_info.manifest and model_info.manifest.is_compiled():
@@ -75,11 +68,9 @@ class DecodeYoloPose(AxOperator):
         self.scaled = context.resize_status
         self.model_width = model_info.input_width
         self.model_height = model_info.input_height
+        self._association = context.association or None
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        if not gst.new_inference:
-            conns = {'src': f'decoder_task{self._taskn}{stream_idx}.sink_0'}
-            gst.queue(name=f'queue_decoder_task{self._taskn}{stream_idx}', connections=conns)
         if self._n_padded_ch_outputs:
             paddings = '|'.join(
                 ','.join(str(num) for num in sublist) for sublist in self._n_padded_ch_outputs
@@ -87,15 +78,16 @@ class DecodeYoloPose(AxOperator):
         scales = ','.join(str(s) for s in self._deq_scales)
         zeros = ','.join(str(s) for s in self._deq_zeropoints)
         kpt_shape = ','.join(str(s) for s in self._kpts_shape)
-        master_key = ''
-        if self._where:
-            master_key = f'master_meta:{self._where};'
+        master_key = f'master_meta:{self._where};' if self._where else str()
+        association_key = f'association_meta:{self._association};' if self._association else str()
+
         gst.decode_muxer(
             name=f'decoder_task{self._taskn}{stream_idx}',
             lib='libdecode_yolov8.so',
             mode='read',
             options=f'meta_key:{str(self.task_name)};'
             f'{master_key}'
+            f'{association_key}'
             f'confidence_threshold:{self.conf_threshold};'
             f'scales:{scales};'
             f'padding:{paddings};'

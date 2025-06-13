@@ -21,6 +21,8 @@ struct nms_properties {
   float nms_threshold{ 0.5F };
   int class_agnostic{ true };
   std::string location{ "CPU" };
+  bool flatten{ false };
+  bool merge{ false };
 };
 
 bool
@@ -39,6 +41,7 @@ allowed_properties()
     "nms_threshold",
     "location",
     "master_meta",
+    "flatten_meta",
   };
   return allowed_properties;
 }
@@ -58,6 +61,9 @@ init_and_set_static_properties(
       input, "class_agnostic", "nms_static_properties", prop->class_agnostic);
   prop->location
       = Ax::get_property(input, "location", "nms_static_properties", prop->location);
+  prop->flatten = Ax::get_property(
+      input, "flatten_meta", "nms_static_properties", prop->flatten);
+  prop->merge = Ax::get_property(input, "merge", "nms_static_properties", prop->merge);
   if (!is_valid_location(prop->location)) {
     logger(AX_WARN)
         << prop->location << " is not a valid location. Using CPU." << std::endl;
@@ -91,8 +97,29 @@ run_on_cpu_or_gpu(T &meta, const nms_properties *details, Ax::Logger &logger)
     return;
 #endif
   }
-  meta = non_max_suppression(
-      meta, details->nms_threshold, details->class_agnostic, details->max_boxes);
+  meta = non_max_suppression(meta, details->nms_threshold,
+      details->class_agnostic, details->max_boxes, details->flatten);
+}
+
+template <typename T>
+std::unique_ptr<T>
+flatten_metadata(const std::vector<AxMetaBase *> &meta)
+{
+  auto result = std::make_unique<T>();
+  bool found = false;
+  for (auto m : meta) {
+    if (auto obj = dynamic_cast<T *>(m)) {
+      result->extend(*obj);
+      found = true;
+    } else if (m) {
+      throw std::runtime_error("flatten_metadata : Metadata type not supported yet: "
+                               + std::string(typeid(T).name()));
+    }
+  }
+  if (found) {
+    return result;
+  }
+  return nullptr;
 }
 
 extern "C" void
@@ -107,26 +134,41 @@ inplace(const AxDataInterface &, const nms_properties *details, unsigned int,
       logger(AX_INFO) << "No metadata key in inplace_nms" << std::endl;
       return;
     }
-    metas.push_back(it->second.get());
+    metas = { it->second.get() };
   } else {
     auto master_itr = map.find(details->master_meta);
     if (master_itr == map.end()) {
       logger(AX_ERROR) << "inplace_nms : master_meta not found" << std::endl;
       return;
     }
-    if (!master_itr->second->submeta_map) {
-      logger(AX_ERROR) << "inplace_nms : master_meta has no submeta_map" << std::endl;
-      return;
-    }
-    metas = master_itr->second->submeta_map->get(details->meta_key);
+    metas = master_itr->second->get_submetas(details->meta_key);
   }
 
+  auto flattened = details->flatten ? flatten_metadata<AxMetaObjDetection>(metas) : nullptr;
+  if (flattened) {
+    for (auto m : metas) {
+      if (m) {
+        m->enable_extern = false;
+      }
+    }
+    auto ret = map.try_emplace(details->meta_key, std::move(flattened));
+    if (!ret.second) {
+      logger(AX_ERROR) << "inplace_nms : Failed to insert flattened metadata" << std::endl;
+      return;
+    }
+    metas = { ret.first->second.get() };
+  }
   for (auto m : metas) {
+    if (!m) {
+      continue;
+    }
     if (auto meta = dynamic_cast<AxMetaObjDetection *>(m)) {
       run_on_cpu_or_gpu(*meta, details, logger);
     } else if (auto meta = dynamic_cast<AxMetaKptsDetection *>(m)) {
       run_on_cpu_or_gpu(*meta, details, logger);
     } else if (auto meta = dynamic_cast<AxMetaSegmentsDetection *>(m)) {
+      run_on_cpu_or_gpu(*meta, details, logger);
+    } else if (auto meta = dynamic_cast<AxMetaPoseSegmentsDetection *>(m)) {
       run_on_cpu_or_gpu(*meta, details, logger);
     } else {
       throw std::runtime_error("inplace_nms : Metadata type not supported");

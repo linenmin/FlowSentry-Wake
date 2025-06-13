@@ -215,14 +215,38 @@ class AxEvaluator:
             self.eval_result.print_results(stream)
         else:
             stream.write("Evaluation Metrics:\n")
-            max_metric_length = max(
-                len(f"{metric}_{agg_name}" if agg_name else metric)
-                for metric, agg_name, _ in self.eval_result
-            )
-            max_value_length = max(
-                len(f"{value:.2%}" if isinstance(value, float) else str(value))
-                for _, _, value in self.eval_result
-            )
+            max_metric_length = 0
+            max_value_length = 0
+
+            def _format_metric_value(
+                value: Any, metric: str, agg_name: str, eval_result: types.EvalResult
+            ) -> str:
+                """Helper function to format a metric value."""
+                if isinstance(value, float):
+                    if (metric, agg_name) in eval_result._percentage_metrics:
+                        return f"{value:.2%}"  # Format as percentage
+                    else:
+                        return f"{value:.2f}"  # Format as float
+                elif isinstance(value, (int, str)):
+                    return str(value)  # int or str
+                else:
+                    return "Invalid Value"
+
+            if self.eval_result:
+                max_metric_length = max(
+                    len(f"{metric}_{agg_name}" if agg_name else metric)
+                    for metric, agg_name, _ in self.eval_result
+                )
+
+                value_lengths = []
+                for metric, agg_name, value in self.eval_result:
+                    formatted_value = _format_metric_value(
+                        value, metric, agg_name, self.eval_result
+                    )
+                    value_lengths.append(len(formatted_value))
+
+                if value_lengths:  # check if it is not empty
+                    max_value_length = max(value_lengths)
 
             # Calculate the total width including the border characters
             total_width = max_metric_length + max_value_length + 7  # 7 for "| ", " | ", and " |"
@@ -231,7 +255,7 @@ class AxEvaluator:
             for metric, agg_name, value in self.eval_result:
                 formatted_metric = f"{metric}_{agg_name}" if agg_name else metric
                 metric_padding = ' ' * (max_metric_length - len(formatted_metric))
-                formatted_value = f"{value:.2%}" if isinstance(value, float) else str(value)
+                formatted_value = _format_metric_value(value, metric, agg_name, self.eval_result)
                 value_padding = ' ' * (max_value_length - len(formatted_value))
                 stream.write(
                     f"| {formatted_metric}{metric_padding} | {formatted_value}{value_padding} |\n"

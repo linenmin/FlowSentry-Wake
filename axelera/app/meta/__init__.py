@@ -2,7 +2,18 @@
 # Metadata for streaming pipeline
 
 # Import all meta modules so that subclasses are known about
-from . import classification, keypoint, object_detection, pair_validation, segmentation, tracker
+from . import (
+    classification,
+    image,
+    keypoint,
+    licenseplate,
+    multihead,
+    object_detection,
+    pair_validation,
+    segmentation,
+    tensor,
+    tracker,
+)
 from .base import AxMeta, AxTaskMeta, MetaObject, NoMasterDetectionsError
 from .bbox_state import BBoxState
 from .gst import GstDecoder, GstMetaInfo

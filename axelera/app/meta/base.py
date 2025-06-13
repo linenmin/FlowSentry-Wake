@@ -9,10 +9,9 @@ import functools
 import itertools
 from typing import TYPE_CHECKING, Any, ClassVar, Iterator, Type, TypeVar, final
 
-from .. import display, logging_utils, plot_utils, utils
+from .. import display, exceptions, logging_utils, plot_utils, utils
 
 if TYPE_CHECKING:
-    from .. import display
     from ..eval_interfaces import BaseEvalSample
 
 LOG = logging_utils.getLogger(__name__)
@@ -88,7 +87,11 @@ def _draw_bounding_box(box, score, cls, labels, draw, bbox_label_format, color_m
     p1, p2 = (int(box[0]), int(box[1])), (int(box[2]), int(box[3]))
     label = class_as_label(labels, cls)
     color = _class_as_color(label, int(cls), color_map)
-    txt = bbox_label_format.format(label=label, score=score, scorep=score * 100)
+    # An id less than zero is a manufactured box, so do not label
+    if cls < 0:
+        txt = ''
+    else:
+        txt = bbox_label_format.format(label=label, score=score, scorep=score * 100)
     draw.labelled_box(p1, p2, txt, color)
 
 
@@ -138,13 +141,119 @@ class MetaObject(abc.ABC):
         self._meta = meta
         self._index = index
 
+    def get_secondary_meta(self, task_name):
+        """Get secondary metadata for a specific task
+
+        Args:
+            task_name: The name of the secondary task (e.g., 'classifier')
+
+        Returns:
+            The secondary metadata for this object and the specified task, or None if not found
+        """
+        meta = self._meta
+        if not meta._secondary_metas or task_name not in meta._secondary_metas:
+            return None
+
+        # Check if this object's index is in the secondary_frame_indices for this task
+        if task_name in meta.secondary_frame_indices:
+            indices = meta.secondary_frame_indices[task_name]
+            if self._index in indices:
+                # Get the position in the indices list
+                position = indices.index(self._index)
+                # Use that position to get the corresponding secondary meta
+                if position < len(meta._secondary_metas[task_name]):
+                    return meta._secondary_metas[task_name][position]
+        elif task_name in meta._secondary_metas:
+            # If there are no explicit indices, we assume natural ordering
+            # Return the metadata at position corresponding to this object's index
+            if self._index < len(meta._secondary_metas[task_name]):
+                return meta._secondary_metas[task_name][self._index]
+        return None
+
     @property
     def secondary_meta(self):
-        return self._meta.get_secondary_meta(self._index)
+        """Get secondary metadata for the first available secondary task (backward compatibility)
+
+        Returns:
+            The secondary metadata for this object, or None if not found
+        """
+        meta = self._meta
+        if not hasattr(meta, '_secondary_metas') or not meta._secondary_metas:
+            return None
+
+        # Use the first available secondary task
+        task_names = self.secondary_task_names
+        if task_names:
+            return self.get_secondary_meta(task_names[0])
+
+        return None
+
+    def get_secondary_objects(self, task_name):
+        """Get secondary objects for a specific task
+
+        Args:
+            task_name: The name of the secondary task (e.g., 'classifier')
+
+        Returns:
+            A list of secondary objects, or an empty list if none found
+        """
+        sec_meta = self.get_secondary_meta(task_name)
+        if sec_meta is None:
+            return []
+
+        # Check if the secondary meta has an objects property that returns MetaObject instances
+        if hasattr(sec_meta, 'Object') and sec_meta.Object is not None:
+            # Create MetaObject instances for this secondary meta
+            return [sec_meta.Object(sec_meta, i) for i in range(len(sec_meta))]
+        return []
 
     @property
     def secondary_objects(self):
-        return self.secondary_meta.objects
+        """Get secondary objects for the first available secondary task
+
+        This is a convenience property for backward compatibility.
+        For pipelines with multiple secondary tasks, use get_secondary_objects(task_name) instead.
+
+        Returns:
+            A list of secondary objects, or an empty list if none found
+        """
+        # Use the first available secondary task
+        task_names = self.secondary_task_names
+        if not task_names:
+            return []
+
+        # Use the get_secondary_objects method to ensure consistency
+        return self.get_secondary_objects(task_names[0])
+
+    @property
+    def secondary_task_names(self):
+        """Get the names of all secondary tasks for this object
+
+        Returns:
+            A list of task names that have secondary metadata for this object
+        """
+        meta = self._meta
+        if not hasattr(meta, '_secondary_metas') or not meta._secondary_metas:
+            return []
+
+        # Return all task names for which this object has secondary metadata
+        result = []
+        for task_name in meta._secondary_metas.keys():
+            if (
+                hasattr(meta, 'secondary_frame_indices')
+                and task_name in meta.secondary_frame_indices
+            ):
+                # If there are explicit indices, check if this object's index is in the indices
+                indices = meta.secondary_frame_indices[task_name]
+                if self._index in indices:
+                    result.append(task_name)
+            else:
+                # For naturally ordered secondary metas (without explicit indices)
+                # Check if the index is within the range of available secondary metas
+                if self._index < len(meta._secondary_metas[task_name]):
+                    result.append(task_name)
+
+        return result
 
     @property
     @final
@@ -260,23 +369,61 @@ class AxBaseTaskMeta:
             raise ValueError("Container meta is not set")
         return self.container_meta[self.master_meta_name]
 
-    def add_secondary_meta(self, secondary_task_name: str, meta: AxBaseTaskMeta):
+    def add_secondary_meta(self, secondary_task_name: str, meta: 'AxBaseTaskMeta') -> None:
+        """
+        Add a secondary meta for a given secondary task name.
+        Handles index assignment and ordering logic robustly.
+        """
         if secondary_task_name not in self._secondary_metas:
             object.__setattr__(
                 self, '_secondary_metas', {**self._secondary_metas, secondary_task_name: []}
             )
-        self._secondary_metas[secondary_task_name].append(meta)
+        assigned_metas = self._secondary_metas[secondary_task_name]
+        assigned_indices = self.secondary_frame_indices.get(secondary_task_name, [])
+        naturally_ordered = len(assigned_indices) == 0
+        indices_available = len(assigned_indices) > len(assigned_metas)
+        if not naturally_ordered and not indices_available:
+            raise IndexError(
+                f"No available secondary frame indices for task '{secondary_task_name}'. "
+                f"Assigned metas: {len(assigned_metas)}, indices: {assigned_indices}"
+            )
+        assigned_metas.append(meta)
 
-    def get_secondary_meta(self, secondary_task_name: str, index: int) -> AxBaseTaskMeta:
+    def get_secondary_meta(self, secondary_task_name: str, index: int) -> 'AxBaseTaskMeta':
+        """
+        Retrieve a secondary meta by task name and index.
+        Handles both naturally ordered and indexed cases robustly.
+        """
         if secondary_task_name not in self._secondary_metas:
             raise KeyError(f"No secondary metas found for task: {secondary_task_name}")
         if not isinstance(index, int):
             raise TypeError("Index must be an integer")
-        if index < 0 or index >= len(self._secondary_metas[secondary_task_name]):
-            raise IndexError("Submeta index out of range")
-        return self._secondary_metas[secondary_task_name][index]
+        metas = self._secondary_metas[secondary_task_name]
+        indices = self.secondary_frame_indices.get(secondary_task_name, [])
+        naturally_ordered = len(indices) == 0
+        if naturally_ordered:
+            if not (0 <= index < len(metas)):
+                raise IndexError(
+                    f"Secondary frame index {index} out of range for task: {secondary_task_name}"
+                )
+            return metas[index]
+        # Indexed case: find the position of the requested index
+        try:
+            meta_pos = indices.index(index)
+        except ValueError:
+            raise IndexError(
+                f"Secondary frame index {index} not found for task: {secondary_task_name}"
+            )
+        if not (0 <= meta_pos < len(metas)):
+            raise IndexError(
+                f"Secondary frame index {index} out of range for task: {secondary_task_name}"
+            )
+        return metas[meta_pos]
 
-    def add_secondary_frame_index(self, task_name: str, index: int):
+    def add_secondary_frame_index(self, task_name: str, index: int) -> None:
+        """
+        Add a frame index for a secondary task, initializing if needed.
+        """
         if task_name not in self.secondary_frame_indices:
             object.__setattr__(
                 self, 'secondary_frame_indices', {**self.secondary_frame_indices, task_name: []}
@@ -285,21 +432,16 @@ class AxBaseTaskMeta:
 
     def get_next_secondary_frame_index(self, task_name: str) -> int:
         """
-        Get the next secondary frame index to be used when adding a new secondary meta.
-
-        Returns:
-            int: The next secondary frame index.
-
-        Raises:
-            IndexError: If there are no more secondary frame indices available.
+        Get the next available secondary frame index for a task.
+        Raises if none are available.
         """
         if task_name not in self.secondary_frame_indices:
             raise KeyError(f"No secondary frame indices found for task: {task_name}")
-
-        task_indices = self.secondary_frame_indices[task_name]
-        if len(task_indices) <= self.num_secondary_metas(task_name):
+        indices = self.secondary_frame_indices[task_name]
+        used = self.num_secondary_metas(task_name)
+        if used >= len(indices):
             raise IndexError(f"No more secondary frame indices available for task: {task_name}")
-        return task_indices[self.num_secondary_metas(task_name)]
+        return indices[used]
 
     def num_secondary_metas(self, task_name: str) -> int:
         return len(self._secondary_metas.get(task_name, []))
@@ -315,7 +457,10 @@ class AxBaseTaskMeta:
         callable(self, *args, **kwargs)
         for metas in self._secondary_metas.values():
             for meta in metas:
-                meta.visit(callable, *args, **kwargs)
+                try:
+                    meta.visit(callable, *args, **kwargs)
+                except exceptions.NotSupportedForTask as e:
+                    pass
 
 
 @dataclasses.dataclass(frozen=True)
@@ -445,27 +590,36 @@ class AxMeta(collections.abc.Mapping):
         )
 
     def _add_secondary_meta(
-        self, master_key: str, secondary_meta: AxBaseTaskMeta, secondary_task_name: str
-    ):
+        self,
+        master_key: str,
+        secondary_meta: 'AxBaseTaskMeta',
+        secondary_task_name: str,
+        subframe_index: int = -1,
+    ) -> None:
+        """
+        Add a secondary meta to the master meta, handling index logic robustly.
+        """
         if master_key not in self._meta_map:
             raise KeyError(
-                f"master_key {master_key} for secondary_meta {secondary_meta} not found in meta"
-                f"which contains the following keys: {self._meta_map.keys()}"
+                f"master_key {master_key} for secondary_meta {secondary_meta} not found in meta. "
+                f"Available keys: {list(self._meta_map.keys())}"
             )
-
         master_meta = self._meta_map[master_key]
         if not isinstance(master_meta, AxBaseTaskMeta):
             raise TypeError(f"Master meta {master_key} is not an instance of AxBaseTaskMeta")
-
-        if len(master_meta.secondary_frame_indices) > 0:
-            subframe_index = master_meta.get_next_secondary_frame_index(secondary_task_name)
+        # Decide subframe index
+        if subframe_index == -1:
+            if master_meta.secondary_frame_indices.get(secondary_task_name):
+                subframe_index = master_meta.get_next_secondary_frame_index(secondary_task_name)
+            else:
+                subframe_index = master_meta.num_secondary_metas(secondary_task_name)
         else:
-            subframe_index = master_meta.num_secondary_metas(secondary_task_name)
+            master_meta.add_secondary_frame_index(secondary_task_name, subframe_index)
         secondary_meta.set_container_meta(self)
         secondary_meta.set_master_meta(master_key, subframe_index)
         master_meta.add_secondary_meta(secondary_task_name, secondary_meta)
 
-    def add_instance(self, key, instance, master_meta_name=''):
+    def add_instance(self, key, instance, master_meta_name='', subframe_index=-1):
         self._meta_map.check_type(key, type(instance))
         if isinstance(instance, AxTaskMeta):
             instance.set_container_meta(self)
@@ -474,7 +628,7 @@ class AxMeta(collections.abc.Mapping):
                     raise ValueError(f"Master meta {key} already exists")
                 self._meta_map[key] = instance
             else:
-                self._add_secondary_meta(master_meta_name, instance, key)
+                self._add_secondary_meta(master_meta_name, instance, key, subframe_index)
         else:
             self._meta_map[key] = instance
 

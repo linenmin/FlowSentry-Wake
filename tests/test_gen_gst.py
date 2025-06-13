@@ -3,7 +3,6 @@ import contextlib
 import dataclasses
 import io
 import itertools
-import os
 from pathlib import Path
 import platform
 import re
@@ -11,7 +10,6 @@ import tempfile
 from unittest.mock import Mock, mock_open, patch
 
 import cv2
-import gi
 import pytest
 
 onnxruntime = pytest.importorskip(
@@ -22,9 +20,12 @@ from yaml_clean import yaml_clean
 
 from axelera import types
 from axelera.app import config, network, operators, pipe, transforms
+from axelera.app.pipe import gst_helper
 
-gi.require_version("Gst", "1.0")
+# isort: off
 from gi.repository import Gst
+
+# isort: on
 
 
 def _ncore(manifest: types.Manifest, ncores: int) -> types.Manifest:
@@ -73,6 +74,7 @@ YOLOV5S_V5_MANIFEST = types.Manifest(
     ],
     model_lib_file='lib_export/model.json',
     postprocess_graph='lib_export/post_process.onnx',
+    preprocess_graph='tests/assets/focus_preprocess_graph.onnx',
 )
 
 YOLOV5S_V7_IN_YAML = 'ax_models/model_cards/yolo/object_detection/yolov5s-v7-coco-onnx.yaml'
@@ -195,84 +197,7 @@ def mock_temp(*args, **kwargs):
     return c
 
 
-# This set of mocks (Gst/Element/Pad/Property) is just enough to get build_gst_pipelines running
-# It does not attempt to mimic or actually test correct calling
-class MockGst:
-    PadPresence = Gst.PadPresence
-
-    def __init__(self):
-        self.ElementFactory = self
-        self.Caps = Mock()
-
-    def is_initialized(self):
-        return False
-
-    def init(self, *args, **kwargs):
-        pass
-
-    def type_name(self, value_type):
-        return 'GstNumber'
-
-    def Pipeline(self):
-        return Mock()
-
-    def make(self, instance, name):
-        return MockElement(instance, name)
-
-
-class MockProperty:
-    def __init__(self, name, value_type):
-        self.name = name
-        self.value_type = value_type
-
-
-class MockPad:
-    def __init__(self, name, parent, presence=Gst.PadPresence.REQUEST):
-        self.name = name
-        self.parent = parent
-        self.presence = presence
-
-    def get_parent(self):
-        return self.parent
-
-    def get_name(self):
-        return self.name
-
-    def link(self, other):
-        pass
-
-
-class MockElement:
-    def __init__(self, instance, name):
-        self.instance = instance
-        self.name = name
-
-    def get_name(self):
-        return self.name
-
-    def find_property(self, name):
-        return MockProperty(name, 'GstNumber')
-
-    def set_property(self, name, value):
-        setattr(self, name, value)
-
-    def get_property(self, name):
-        return getattr(self, name)
-
-    def request_pad(self, template, a, b):
-        return MockPad('src', self)
-
-    def get_pad_template(self, connection_key):
-        return MockPad('src', self)
-
-    def get_static_pad(self, other_element_pad_name):
-        return MockPad('src', self)
-
-    def link(self, other):
-        pass
-
-
-def _generate_actual(nn, input, output, hardware_caps, *, ax_precompiled_gst: str = ''):
+def _generate_pipeline(nn, input, output, hardware_caps):
     '''Construct gst E2E pipeline'''
     for task in nn.tasks:
         transforms.run_all_transformers(task.preprocess, hardware_caps=hardware_caps)
@@ -284,8 +209,8 @@ def _generate_actual(nn, input, output, hardware_caps, *, ax_precompiled_gst: st
 
     dm = _mock_device_manager()
     assert ['metis-0:1:0'] == [d.name for d in dm.devices]
-    p = pipe.create_pipe(dm, 'gst', nn, Path('./'), hardware_caps, ax_precompiled_gst, None)
-    mock_gst = MockGst()
+    task_graph = pipe.graph.DependencyGraph(nn.tasks)
+    p = pipe.create_pipe(dm, 'gst', nn, Path('./'), hardware_caps, None, task_graph)
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(tempfile, 'NamedTemporaryFile', mock_temp))
         # prevent ./gst_pipeline.yaml being written by tests
@@ -295,15 +220,7 @@ def _generate_actual(nn, input, output, hardware_caps, *, ax_precompiled_gst: st
         p.propagate_model_and_context_info()
         p.gen_end2end_pipe(input, output)
 
-    # For the sake of better code coverage and to ensure that what we created was maybe
-    # approximately sensible lowlevel yaml,  also build the pipeline
-    with contextlib.ExitStack() as stack:
-        stack.enter_context(patch.object(pipe.gst_helper, 'GObject', new=mock_gst))
-        stack.enter_context(patch.object(pipe.gst_helper, 'Gst', new=mock_gst))
-        pipeline_names = [t.model_info.name for t in p.nn.tasks]
-        # pipe.build_gst_pipelines(p.pipeline, pipeline_names)[-1]
-
-    return yaml.dump(p.pipeline, sort_keys=False)
+    return p.pipeline
 
 
 class MockCapture:
@@ -331,14 +248,11 @@ def _create_pipein(*paths, **kwargs):
     with patch.object(Path, 'exists', return_value=True):
         with patch.object(Path, 'is_file', return_value=True):
             with patch.object(cv2, 'VideoCapture', MockCapture):
-                if len(paths) == 1:
-                    return pipe.io.PipeInput('gst', paths[0], **kwargs)
-                else:
-                    return pipe.io.MultiplexPipeInput('gst', paths, **kwargs)
+                return pipe.io.MultiplexPipeInput('gst', paths, **kwargs)
 
 
 def _video_path(out_name: str) -> Path:
-    return Path(__file__).parent.parent / 'gst' / 'golden' / 'video' / out_name
+    return Path(__file__).parent / 'golden-gst' / out_name
 
 
 def _actual_path(out_name: str) -> Path:
@@ -395,8 +309,6 @@ def _load_highlevel(requested_cores: int, path: str, *manifests):
     network.restrict_cores(nn, 'gst', requested_cores, config.Metis.pcie)
     device_man = _mock_device_manager()
     for manifest, task in itertools.zip_longest(manifests, nn.tasks):
-        task.name = task.model_info.name
-        # task.model_info.name = name
         task.model_info.manifest = manifest
 
         if 'YOLO' in task.model_info.extra_kwargs:
@@ -407,33 +319,37 @@ def _load_highlevel(requested_cores: int, path: str, *manifests):
             ]
 
         config_content = {
-            "quantization_config": {"remove_quantization_of_inputs_outputs_from_graph": True},
-            "frontend_config": {
-                "apply_pword_padding": True,
-                "remove_padding_and_layout_transform_of_inputs_outputs": True,
-            },
-            "backend_config": {
-                "host_arch": "x86_64",
-                "target": "axelera",
-                "aipu_cores": 1,
-                "io_location": "L2",
-                "wgt_location": "L2",
-            },
-            "control_flow_config": {"quantize_only": False},
+            "remove_quantization_of_inputs_outputs_from_graph": True,
+            "apply_pword_padding": True,
+            "remove_padding_and_layout_transform_of_inputs_outputs": True,
+            "host_arch": "x86_64",
+            "target": "axelera",
+            "aipu_cores": 1,
+            "io_location": "L2",
+            "wgt_location": "L2",
+            "quantize_only": False,
         }
 
-        with patch('builtins.open', mock_open()):
-            with patch('json.load', return_value=config_content):
-                task.inference = operators.Inference(
-                    device_man=device_man,
-                    compiled_model_dir=Path('build/manifest.json').parent,
-                    model_name=task.model_info.name,
-                    model=manifest,
-                    input_tensor_layout=task.model_info.input_tensor_layout,
-                    inference_op_config=task.inference_config,
-                )
-                if 'YOLO' not in task.model_info.extra_kwargs:
-                    task.inference._icdf_params = object()  # not None!
+        if task.is_dl_task:
+            with patch('builtins.open', mock_open()):
+                with patch('json.load', return_value=config_content):
+                    task.inference = operators.Inference(
+                        device_man=device_man,
+                        compiled_model_dir=Path('build/manifest.json').parent,
+                        model_name=task.model_info.name,
+                        model=manifest,
+                        input_tensor_layout=task.model_info.input_tensor_layout,
+                        inference_op_config=task.inference_config,
+                    )
+                    # Only patch for the focus preprocess_graph test asset
+                    if (
+                        getattr(manifest, 'preprocess_graph', None)
+                        == 'tests/assets/focus_preprocess_graph.onnx'
+                    ):
+                        task.inference.compiled_model_dir = Path('build')
+                        manifest.model_lib_file = 'lib_export/model.json'
+                    if 'YOLO' not in task.model_info.extra_kwargs:
+                        task.inference._icdf_params = object()  # not None!
     return nn
 
 
@@ -454,19 +370,23 @@ def _expansion_params(manifests, tasks, hardware_caps):
         base.update({f'{name}{n}': _replace(v) for n, v in enumerate(values)})
         base[name] = values[0]
 
-    add('model_lib', [f'build/{m.model_lib_file}' for m in manifests])
+    add('model_lib', [f'build/{m.model_lib_file}' if m else '' for m in manifests])
     add('model_name', [t.model_info.name for t in tasks], replace_dot=True)
+    add('task_name', [t.name for t in tasks], replace_dot=True)
     add('label_file', ['/path/to/sometempfile.txt' for _ in tasks])
     add('tracker_params_json', ['/path/to/sometempfile.txt' for _ in tasks])
-    add('pads', [_pads(m) for m in manifests])
-    add('quant_scale', [m.quantize_params[0][0] for m in manifests])
-    add('quant_zeropoint', [m.quantize_params[0][1] for m in manifests])
-    add('dequant_scale', [m.dequantize_params[0][0] for m in manifests])
-    add('dequant_zeropoint', [m.dequantize_params[0][1] for m in manifests])
+    add('pads', [_pads(m) if m else '0,0,0,0,0,0,0,0' for m in manifests])
+    add('quant_scale', [m.quantize_params[0][0] if m else 0 for m in manifests])
+    add('quant_zeropoint', [m.quantize_params[0][1] if m else 0 for m in manifests])
+    add('dequant_scale', [m.dequantize_params[0][0] if m else 0 for m in manifests])
+    add('dequant_zeropoint', [m.dequantize_params[0][1] if m else 0 for m in manifests])
     post_proc = 'lib_cpu_post_processing.so'
-    add('post_model_lib', [Path(m.model_lib_file).parent / post_proc for m in manifests])
-    add('input_w', [m.input_shapes[0][2] for m in manifests])
-    add('input_h', [m.input_shapes[0][1] for m in manifests])
+    add(
+        'post_model_lib',
+        [Path(m.model_lib_file).parent / post_proc if m else '' for m in manifests],
+    )
+    add('input_w', [m.input_shapes[0][2] if m else 0 for m in manifests])
+    add('input_h', [m.input_shapes[0][1] if m else 0 for m in manifests])
     return dict(
         base,
         force_sw_decoders=not hardware_caps.vaapi,
@@ -486,110 +406,52 @@ AIPU = dataclasses.replace(config.HardwareCaps.AIPU, aipu_cores=1)
 AIPU4 = dataclasses.replace(config.HardwareCaps.AIPU, aipu_cores=4)
 NONE = dataclasses.replace(config.HardwareCaps.NONE, aipu_cores=1)
 OPENCL = dataclasses.replace(config.HardwareCaps.OPENCL, aipu_cores=1)
+OPENCL4 = dataclasses.replace(config.HardwareCaps.OPENCL, aipu_cores=4)
 
-
-@pytest.mark.parametrize(
-    'caps, src, manifest,golden_lowlevel_template',
+gen_gst_marker = pytest.mark.parametrize(
+    'caps, src, manifest, golden_template, num_inputs, proc, limit_fps',
     [
-        # (ALL, SQ_IN_YAML, SQ_MANIFEST, 'gpu/classifier-imagenet.yaml'),
-        # (
-        #     ALL,
-        #     SQ_IN_YAML,
-        #     SQ_MANIFEST4,
-        #     'gpu/classifier-imagenet-4core.yaml',
-        # ),
-        # (AIPU, SQ_IN_YAML, SQ_MANIFEST, 'classifier-imagenet.yaml'),
-        # (AIPU4, SQ_IN_YAML, SQ_MANIFEST4, 'classifier-imagenet-4core.yaml'),
-        # (AIPU, RN34_IN_YAML, RN_MANIFEST, 'classifier-imagenet.yaml'),
-        # (ALL, RN34_IN_YAML, RN_MANIFEST, 'gpu/classifier-imagenet.yaml'),
-        # (AIPU4, RN50_IN_YAML, RN_MANIFEST4, 'classifier-imagenet-4core.yaml'),
-        # (ALL4, RN50_IN_YAML, RN_MANIFEST4, 'gpu/classifier-imagenet-4core.yaml'),
-        # (AIPU, YOLOV5S_V5_IN_YAML, YOLOV5S_V5_MANIFEST, 'yolov5s-axelera-coco-1core.yaml'),
-        # (AIPU, YOLOV5S_V7_IN_YAML, YOLOV5S_V7_MANIFEST, 'yolov5s-v7-coco-1core-nofocus.yaml'),
         (
             AIPU,
             YOLOV8POSE_YOLOV8N_IN_YAML,
             [YOLOV8POSE_MANIFEST, YOLOV8N_MANIFEST],
             'yolov8pose-yolov8n.yaml',
+            1,
+            'x86_64',
+            0,
         ),
-        (OPENCL, SQ_IN_YAML, SQ_MANIFEST, 'opencl/classifier-imagenet.yaml'),
         (
-            OPENCL,
-            YOLOV5S_V5_IN_YAML,
-            YOLOV5S_V5_MANIFEST,
-            'opencl/yolov5s-axelera-coco-1core.yaml',
+            OPENCL4,
+            SQ_IN_YAML,
+            SQ_MANIFEST,
+            'opencl/classifier-imagenet.yaml',
+            1,
+            'x86_64',
+            0,
         ),
         (
             OPENCL,
             YOLO_TRACKER_RN_IN_YAML,
-            [YOLOV5M_V7_MANIFEST, RN_MANIFEST],
+            [YOLOV5M_V7_MANIFEST, None, RN_MANIFEST],
             'opencl/yolov5m-tracker-resnet50.yaml',
+            1,
+            'x86_64',
+            0,
         ),
-    ],
-)
-def test_lowlevel_output(caps, src, manifest, golden_lowlevel_template):
-    nn = _load_highlevel(caps.aipu_cores, src, manifest)
-    pipein = _create_pipein(
-        '/path/to/src0.mp4',
-        hardware_caps=caps,
-        # cpu-templates are not generated with hardware codec
-        allow_hardware_codec=False,
-        color_format=types.ColorFormat.RGB,
-    )
-    with patch.dict(os.environ, AXELERA_AXINFERENCENET='0'):
-        pipeout = pipe.PipeOutput()
-        actual = _generate_actual(nn, pipein, pipeout, hardware_caps=caps)
-
-    manifests = manifest if isinstance(manifest, list) else [manifest]
-    exp = _prepare_expected(golden_lowlevel_template, manifests, nn.tasks, hardware_caps=caps)
-    _compare_yaml(exp, actual, golden_lowlevel_template)
-
-    # if 'yolo' not in golden_lowlevel_template:
-    #     from axelera.app.pipe import gst
-
-    #     with patch.object(gst, '_labels', return_value=SOMETEMPFILE):
-    #         actual = _generate_actual(
-    #             nn, pipein, pipeout, hardware_caps=caps, ax_precompiled_gst='auto'
-    #         )
-    #     _compare_yaml(exp, actual, golden_lowlevel_template)
-
-
-@pytest.mark.parametrize(
-    'caps, src, manifest,golden_lowlevel_template, num_inputs',
-    [
-        (AIPU, SQ_IN_YAML, SQ_MANIFEST4, 'classifier-imagenet-4core-4streams.yaml', 4),
-        (AIPU, SQ_IN_YAML, SQ_MANIFEST4, 'classifier-imagenet-4core-8streams.yaml', 8),
         (
-            AIPU,
-            YOLOV5S_V5_IN_YAML,
-            YOLOV5S_V5_MANIFEST,
-            'yolov5s-axelera-coco-1core-2streams.yaml',
-            2,
+            AIPU4,
+            SQ_IN_YAML,
+            SQ_MANIFEST4,
+            'classifier-imagenet-4core-3streams.yaml',
+            3,
+            'x86_64',
+            0,
         ),
-    ],
-)
-def test_lowlevel_output_multistream(caps, src, manifest, golden_lowlevel_template, num_inputs):
-    nn = _load_highlevel(caps.aipu_cores, src, manifest)
-    inputs = [f'/path/to/src{i}.mp4' for i in range(num_inputs)]
-    pipein = _create_pipein(
-        *inputs, hardware_caps=caps, allow_hardware_codec=False, color_format=types.ColorFormat.RGB
-    )
-    with patch.object(platform, 'processor', return_value='x86_64'):
-        with patch.dict(os.environ, AXELERA_AXINFERENCENET='0'):
-            pipeout = pipe.PipeOutput()
-            actual = _generate_actual(nn, pipein, pipeout, hardware_caps=caps)
-    exp = _prepare_expected(golden_lowlevel_template, [manifest], nn.tasks, hardware_caps=caps)
-    _compare_yaml(exp, actual, golden_lowlevel_template)
-
-
-@pytest.mark.parametrize(
-    'caps, src, manifest, golden_template, num_inputs, proc, limit_fps',
-    [
         (
             AIPU4,
             RN50_IN_YAML,
             RN_MANIFEST4,
-            'classifier-imagenet-axinference.yaml',
+            'classifier-imagenet.yaml',
             1,
             'x86_64',
             0,
@@ -598,7 +460,7 @@ def test_lowlevel_output_multistream(caps, src, manifest, golden_lowlevel_templa
             AIPU4,
             RN50_IN_YAML,
             RN_MANIFEST4,
-            'classifier-imagenet-axinference-limit-fps.yaml',
+            'classifier-imagenet-limit-fps.yaml',
             1,
             'x86_64',
             15,
@@ -607,7 +469,7 @@ def test_lowlevel_output_multistream(caps, src, manifest, golden_lowlevel_templa
             AIPU4,
             RN50_IN_YAML,
             RN_MANIFEST4,
-            'classifier-imagenet-axinference-arm.yaml',
+            'classifier-imagenet-arm.yaml',
             1,
             'arm',
             0,
@@ -616,7 +478,7 @@ def test_lowlevel_output_multistream(caps, src, manifest, golden_lowlevel_templa
             AIPU,
             YOLOV5S_V5_IN_YAML,
             YOLOV5S_V5_MANIFEST,
-            'yolov5s-axelera-coco-axinference-1stream.yaml',
+            'yolov5s-axelera-coco-1stream.yaml',
             1,
             'x86_64',
             0,
@@ -625,7 +487,7 @@ def test_lowlevel_output_multistream(caps, src, manifest, golden_lowlevel_templa
             AIPU,
             YOLOV5S_V5_IN_YAML,
             YOLOV5S_V5_MANIFEST,
-            'yolov5s-axelera-coco-axinference-1stream.yaml',
+            'yolov5s-axelera-coco-1stream.yaml',
             1,
             'arm',
             0,
@@ -634,7 +496,7 @@ def test_lowlevel_output_multistream(caps, src, manifest, golden_lowlevel_templa
             AIPU,
             YOLOV5S_V5_IN_YAML,
             YOLOV5S_V5_MANIFEST,
-            'yolov5s-axelera-coco-axinference-4streams.yaml',
+            'yolov5s-axelera-coco-4streams.yaml',
             4,
             'x86_64',
             0,
@@ -643,7 +505,7 @@ def test_lowlevel_output_multistream(caps, src, manifest, golden_lowlevel_templa
             AIPU,
             'ax_models/reference/image_preprocess/yolov5s-v7-perspective-onnx.yaml',
             YOLOV5S_V5_MANIFEST,
-            'yolov5s-v7-perspective-axinferencenet-4streams.yaml',
+            'yolov5s-v7-perspective-4streams.yaml',
             4,
             'x86_64',
             0,
@@ -652,16 +514,17 @@ def test_lowlevel_output_multistream(caps, src, manifest, golden_lowlevel_templa
             OPENCL,
             'ax_models/reference/image_preprocess/yolov5s-v7-perspective-onnx.yaml',
             YOLOV5S_V5_MANIFEST,
-            'opencl/yolov5s-v7-perspective-axinferencenet-4streams.yaml',
+            'opencl/yolov5s-v7-perspective-4streams.yaml',
             4,
             'x86_64',
             0,
         ),
     ],
 )
-def test_lowlevel_output_new_inference(
-    caps, src, manifest, golden_template, num_inputs, proc, limit_fps
-):
+
+
+@gen_gst_marker
+def test_lowlevel_output(caps, src, manifest, golden_template, num_inputs, proc, limit_fps):
     nn = _load_highlevel(
         caps.aipu_cores, src, *([manifest] if not isinstance(manifest, list) else manifest)
     )
@@ -674,32 +537,37 @@ def test_lowlevel_output_new_inference(
         specified_frame_rate=limit_fps,
     )
     with patch.object(platform, 'processor', return_value=proc):
-        with patch.dict(os.environ, AXELERA_AXINFERENCENET='1'):
-            pipeout = pipe.PipeOutput()
-            actual = _generate_actual(nn, pipein, pipeout, hardware_caps=caps)
-    exp = _prepare_expected(golden_template, [manifest], nn.tasks, hardware_caps=caps)
+        pipeout = pipe.PipeOutput()
+        pipeline = _generate_pipeline(nn, pipein, pipeout, hardware_caps=caps)
+    actual = yaml.dump([{'pipeline': pipeline}], sort_keys=False)
+    manifests = manifest if isinstance(manifest, list) else [manifest]
+    exp = _prepare_expected(golden_template, manifests, nn.tasks, hardware_caps=caps)
     _compare_yaml(exp, actual, golden_template)
 
 
-def test_no_pads_drops_videobox():
-    manifest = dataclasses.replace(RN_MANIFEST, n_padded_ch_inputs=[])
-    nn = _load_highlevel(1, RN34_IN_YAML, manifest)
-
-    hardware_caps = AIPU
+@gen_gst_marker
+def test_gst_pipeline_builder(caps, src, manifest, golden_template, num_inputs, proc, limit_fps):
+    # For the sake of better code coverage and to ensure that what we created was maybe
+    # approximately sensible lowlevel yaml, also build the pipeline, hweever this does
+    # not work in tox env, so allow it to skip if it fails to create a gst element
+    del golden_template
+    nn = _load_highlevel(
+        caps.aipu_cores, src, *([manifest] if not isinstance(manifest, list) else manifest)
+    )
+    inputs = [f'/path/to/src{i}.mp4' for i in range(num_inputs)]
     pipein = _create_pipein(
-        '/path/to/src0.mp4',
-        hardware_caps=hardware_caps,
+        *inputs,
+        hardware_caps=caps,
         allow_hardware_codec=False,
         color_format=types.ColorFormat.RGB,
+        specified_frame_rate=limit_fps,
     )
-    out_name = 'classifier-imagenet.yaml'
-    exp = _prepare_expected(out_name, [manifest], nn.tasks, hardware_caps)
-    # manually drop the videobox...
-    exp = yaml.load(exp, Loader=yaml.FullLoader)
-    exp[0]['pipeline'] = [x for x in exp[0]['pipeline'] if x['instance'] != 'videobox']
-    exp = yaml.dump(exp, sort_keys=False)
-    with patch.object(platform, 'processor', return_value='x86_64'):
-        with patch.dict(os.environ, AXELERA_AXINFERENCENET='0'):
-            pipeout = pipe.PipeOutput()
-            actual = _generate_actual(nn, pipein, pipeout, hardware_caps)
-    _compare_yaml(exp, actual, out_name)
+    with patch.object(platform, 'processor', return_value=proc):
+        pipeout = pipe.PipeOutput()
+        pipeline = _generate_pipeline(nn, pipein, pipeout, hardware_caps=caps)
+    try:
+        gst_helper.build_pipeline(pipeline)
+    except Exception as e:
+        if 'Failed to create element of type' in str(e):
+            pytest.skip('axstreamer plugins not installed')
+        raise

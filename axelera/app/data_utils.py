@@ -139,7 +139,8 @@ def download_repr_dataset_impl(repr_imgs_path: Path, repr_imgs_url: str, repr_im
             )
         else:
             utils.extract(target_file, drop_dirs=drop_dirs)
-        LOG.debug(f"{url_filename} uncompressed. You may now safely delete this file")
+        LOG.debug(f"{url_filename} uncompressed. Delete the archive file")
+        target_file.unlink()
         return True
     return False
 
@@ -185,17 +186,12 @@ class DatasetConfig:
                 assert 'splits' in data, f"Missing 'splits' for {dataset}"
 
                 for split, split_data in data['splits'].items():
-                    assert split in [
-                        'test',
-                        'val',
-                        'train',
-                        'subset',
-                    ], f"Invalid split '{split}' in {dataset}"
                     for item in split_data:
                         assert 'url' in item, f"Missing 'url' in {dataset}.{split}"
-                        assert item['url'].startswith(
-                            's3://'
-                        ), f"Invalid URL format in {dataset}.{split}"
+                        if not item['url'].startswith(('http://', 'https://', 's3://')):
+                            raise ValueError(
+                                f"Invalid URL '{item['url']}' in {dataset}.{split}. Must start with 'https://' or 's3://'."
+                            )
                         assert 'drop_dirs' in item, f"Missing 'drop_dirs' in {dataset}.{split}"
                         if 'md5' in item:
                             assert isinstance(
@@ -432,7 +428,12 @@ def check_and_download_dataset(
     if not url_config.exists():
         if is_private:
             prompt = env.framework / f'ax_datasets/{DatasetYamlFile.DATASET_PROMPT.value}'
-            if prompt.exists():
+            if 'Customer.' in dataset_name:
+                LOG.warning(
+                    f"Dataset '{dataset_name}' is a customer dataset. Please prepare your own dataset yaml file."
+                )
+                return
+            elif prompt.exists():
                 url_config = prompt
                 dataset_yaml_name = DatasetYamlFile.DATASET_PROMPT
                 LOG.trace(f"Using {DatasetYamlFile.DATASET_PROMPT.value}")
@@ -474,8 +475,9 @@ def check_and_download_dataset(
     else:
         LOG.debug(f"Dataset '{dataset_name}' status: {dataset_status.value}\n{status_message}")
 
+    downloaded = False
     if dataset_status in [DatasetStatus.INCOMPLETE, DatasetStatus.NOT_FOUND]:
-        if env.s3_available == '0':
+        if env.s3_available == '0' and is_private:
             # dataset with license concern in a customer environment
             hint = config.get_download_hint(dataset_name, split)
             full_message = f"{status_message}\n\n{hint}"
@@ -483,14 +485,17 @@ def check_and_download_dataset(
             raise RuntimeError("Please follow the hint to download the dataset.")
         else:
             _download_dataset(data_root_dir, dataset_name, split, config)
+            downloaded = True
     elif dataset_status == DatasetStatus.CORRUPTED:
         LOG.warning(f"Dataset '{dataset_name}' appears to be corrupted. Redownloading...")
         _download_dataset(data_root_dir, dataset_name, split, config)
+        downloaded = True
 
     _create_completion_stamp(data_root_dir, dataset_name, split, config)
-    LOG.info(
-        f"Dataset '{dataset_name}' split '{split}' downloaded successfully to {data_root_dir}"
-    )
+    if downloaded:
+        LOG.info(
+            f"Dataset '{dataset_name}' split '{split}' downloaded successfully to {data_root_dir}"
+        )
 
 
 def check_dataset_directory(dataset_root: Path) -> Tuple[bool, str]:
@@ -531,3 +536,13 @@ def get_image_size(image: Union[np.ndarray, Image.Image]) -> Tuple[int, int]:
         return image.shape[:2]
     else:
         return image.size[::-1]
+
+
+def download_custom_dataset(data_root, **kwargs):
+    if 'dataset_url' in kwargs:
+        utils.download_and_extract_asset(
+            kwargs['dataset_url'],
+            data_root / kwargs['dataset_url'].split('/')[-1],
+            md5=kwargs.get('dataset_md5', None),
+            drop_dirs=kwargs.get('dataset_drop_dirs', 0),
+        )

@@ -38,17 +38,22 @@ struct AxVideoInfo {
   int stride = 0;
   int offset = 0;
   AxVideoFormat format = AxVideoFormat::UNDEFINED;
-  bool cropped;
-  int x_offset;
-  int y_offset;
+  bool cropped = false;
+  int x_offset = 0;
+  int y_offset = 0;
+  int actual_height = 0;
 };
 
+//  We never need the definition, this is just a type discriminator
+struct VASurfaceID_proxy;
+
 struct AxVideoInterface {
-  AxVideoInfo info;
+  AxVideoInfo info{};
   void *data{};
-  std::vector<size_t> strides;
-  std::vector<size_t> offsets;
+  std::vector<size_t> strides{};
+  std::vector<size_t> offsets{};
   int fd = -1;
+  VASurfaceID_proxy *vaapi{};
 };
 
 

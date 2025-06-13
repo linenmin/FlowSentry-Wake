@@ -15,22 +15,24 @@ pipeline:
         image_processing:
             - camera-undistort:
                 stream_match: 0
-                fx: 0.614
-                fy: 1.091
-                cx: 0.488
-                cy: 0.482
-                distort_coefs: [-0.37793616, 0.11966818, -0.00115868, -0.00067655, 0]
+                fx: 1180.74606734
+                fy: 1179.14890352
+                cx: 938.45253964
+                cy: 527.68112542
+                distort_coefs: [-0.37793616, 0.11966818, -0.00067655, 0, -0.00115868]
+                normalized: False
             - camera-undistort:
                 stream_match: 1
                 fx: 0.614
                 fy: 1.091
                 cx: 0.488
                 cy: 0.482
-                distort_coefs: [-0.37793616, 0.11966818, -0.00115868, -0.00067655, 0]
+                distort_coefs: [-0.37793616, 0.11966818, -0.00067655, 0, -0.00115868]
+                normalized: True
             - convert-color-input:
                 stream_match:
                   exclude: [0,1]
-                format: rgb
+                format: RGB
 
       postprocess:
         - decodeyolo:
@@ -45,7 +47,7 @@ models:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: weights/yolov5s-v7.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/model_cards/weights/yolo/object_detection/yolov5s-v7.onnx
+    weight_url: https://media.axelera.ai/artifacts/model_cards/weights/yolo/object_detection/yolov5s-v7.onnx
     weight_md5: 5be2dce14ac1d10f3738a3621d9634ac
     task_category: ObjectDetection
     input_tensor_layout: NCHW
@@ -56,7 +58,7 @@ models:
     extra_kwargs:
       YOLO:
         anchors_path: training_yamls/yolov5s.yaml # anchors are the same as yolov5s
-        anchors_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/model_cards/artifacts/yolo/object_detection/cfgs/yolov5s.yaml
+        anchors_url: https://media.axelera.ai/artifacts/model_cards/artifacts/yolo/object_detection/cfgs/yolov5s.yaml
         anchors_md5: a41970402a188912070d5694bc62ed83
         #anchors: # or, specified explicitly
         #- [anchor, anchor, anchor]
@@ -66,14 +68,14 @@ models:
 
 datasets: # Python dataloader
   CocoDataset-COCO2017:
-    class: ObjDataAdaptor
+    class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
           #    # If using a custom dataset, comment out download year and add either
     # repr_imgs or cal_data for calibration and add val_data for validation.
     # You can use your existing training dataset as cal_data
-    download_year: 2017
+    label_type: COCO2017
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa

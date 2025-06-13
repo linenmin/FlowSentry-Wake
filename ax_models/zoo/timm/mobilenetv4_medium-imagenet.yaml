@@ -7,7 +7,22 @@ description: mobilenetv4_conv_medium.e500_r224 from timm, https://huggingface.co
 pipeline:
   - classifier:
       model_name: mobilenetv4_medium-imagenet
-      template_path: $AXELERA_FRAMEWORK/pipeline-template/timm-imagenet.yaml
+      input:
+        type: image
+      preprocess:
+        - resize:
+            size: ${{resize_size}}
+            interpolation: bicubic
+        - centercrop:
+            width: ${{input_width}}
+            height: ${{input_height}}
+        - torch-totensor:
+        - normalize:
+            mean: 0.485, 0.456, 0.406
+            std: 0.229, 0.224, 0.225
+      postprocess:
+        - topk:
+            k: 5
 
 models:
   mobilenetv4_medium-imagenet:
@@ -24,7 +39,6 @@ models:
       timm_model_args:
         name: mobilenetv4_conv_medium.e500_r224_in1k
 
-
 datasets:
   ImageNet-1K:
     class: TorchvisionDataAdapter
@@ -35,7 +49,7 @@ datasets:
     # Suggest selecting 100-400 images from the ImageNet training dataset for representative images and
     # replacing the following representative_coco dataset with the selected images.
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa
     # cal_data: /path/to/the/cal/dir
     # val_data: /path/to/the/val/dir

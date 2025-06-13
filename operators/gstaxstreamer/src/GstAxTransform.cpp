@@ -43,6 +43,7 @@ struct _GstAxtransformData {
   std::shared_ptr<void> subplugin_data;
   std::unique_ptr<Ax::SharedLib> shared;
   Ax::Logger logger{ Ax::Severity::trace, nullptr, gst_axtransform_debug_category };
+  Ax::V1Plugin::Transform fns;
   unsigned int batch = 1;
   unsigned int current_batch = 0;
   std::vector<int> tensor_size{};
@@ -52,8 +53,7 @@ struct _GstAxtransformData {
   double_buffer_details dbl_buffer;
   bool downstream_supports_crop = false;
   std::queue<EventDetails> event_queue;
-
-  Ax::V1Plugin::Transform fns;
+  bool block_on_pool_empty = true;
 };
 
 G_DEFINE_TYPE_WITH_CODE(GstAxtransform, gst_axtransform, GST_TYPE_ELEMENT,
@@ -88,6 +88,59 @@ is_suitable(GstAllocator *allocator)
 {
   return !allocator || allocator == gst_aligned_allocator_get()
          || allocator == gst_tensor_dmabuf_allocator_get(dmabuf_device);
+}
+
+static GstContext *
+get_va_context(GstAxtransform *axtransform, Ax::Logger &logger)
+{
+  GstContext *context = NULL;
+  GstQuery *query = gst_query_new_context("gst.vaapi.Display"); // Request VAAPI context
+
+  if (gst_element_query((GstElement *) axtransform, query)) { // Send query upstream
+    gst_query_parse_context(query, &context);
+  }
+  if (context) {
+    gst_context_ref(context);
+  }
+  gst_query_unref(query);
+  return context;
+}
+
+struct GstVaapiDisplayPrivate {
+  void *parent;
+  GRecMutex mutex;
+  char *display_name;
+  void *display;
+  //  Lots of other stuff we don't care about
+};
+
+struct GstVaapiDisplay {
+  GstObject parent_instance;
+
+  GstVaapiDisplayPrivate *priv;
+};
+
+
+static void *
+get_va_display(GstAxtransform *axtransform, Ax::Logger &logger)
+{
+  GstContext *context = get_va_context(axtransform, logger);
+
+  void *display = nullptr;
+  if (context) {
+    const GstStructure *structure = gst_context_get_structure(context);
+    if (gst_structure_has_field(structure, "gst.vaapi.Display")) {
+      GstVaapiDisplay *va_display = nullptr;
+      if (gst_structure_get(structure, "gst.vaapi.Display.GObject",
+              GST_TYPE_OBJECT, &va_display, NULL)) {
+        display = va_display->priv->display;
+      }
+    }
+    gst_context_unref(context);
+  } else {
+    logger(AX_WARN) << "Failed to get context from query." << std::endl;
+  }
+  return display;
 }
 
 static void
@@ -263,13 +316,22 @@ gst_axtransform_outcaps(GstAxtransform *axtransform, GstCaps *from_event, GstBuf
   return to;
 }
 
+void
+initialise_options(GstAxtransform *axtransform)
+{
+  if (!axtransform->data->options_initialised) {
+    (void) get_va_display; // prevent warning for unused function
+    auto va_display = nullptr;
+    init_options(G_OBJECT(axtransform), axtransform->data->options,
+        axtransform->data->fns, axtransform->data->logger, axtransform->data->subplugin_data,
+        axtransform->data->options_initialised, va_display);
+  }
+}
+
 static gboolean
 gst_axtransform_setcaps(GstAxtransform *axtransform, GstCaps *from_event, GstBuffer *buffer)
 {
-  init_options(G_OBJECT(axtransform), axtransform->data->options,
-      axtransform->data->fns, axtransform->data->logger,
-      axtransform->data->subplugin_data, axtransform->data->options_initialised);
-
+  initialise_options(axtransform);
   GstCaps *to = gst_axtransform_outcaps(axtransform, from_event, buffer);
 
   copy_or_fixate_framerate(from_event, to);
@@ -395,7 +457,15 @@ acquire_buffer(GstAxtransform *axtransform, GstBuffer *in_buffer)
 {
   if (axtransform->pool && gst_buffer_pool_is_active(axtransform->pool)) {
     GstBuffer *outbuf;
-    if (gst_buffer_pool_acquire_buffer(axtransform->pool, &outbuf, NULL) == GST_FLOW_OK) {
+    GstBufferPoolAcquireParams params{
+      .format = GST_FORMAT_UNDEFINED,
+      .start = 0,
+      .stop = 0,
+      .flags = GST_BUFFER_POOL_ACQUIRE_FLAG_DONTWAIT,
+    };
+    GstBufferPoolAcquireParams *p
+        = axtransform->data->block_on_pool_empty ? nullptr : &params;
+    if (gst_buffer_pool_acquire_buffer(axtransform->pool, &outbuf, p) == GST_FLOW_OK) {
       return outbuf;
     }
   }
@@ -441,6 +511,14 @@ can_use_dmabuf(GstAxtransform *self)
 }
 
 bool
+can_use_vaapi(GstAxtransform *self)
+{
+  return self->data->fns.transform && self->data->fns.can_use_vaapi
+         && self->data->fns.can_use_vaapi(
+             self->data->subplugin_data.get(), self->data->logger);
+}
+
+bool
 is_dmabuf(GstBuffer *buffer)
 {
   auto *mem = gst_buffer_peek_memory(buffer, 0);
@@ -451,6 +529,20 @@ bool
 should_pass_fds(GstAxtransform *self, GstBuffer *buffer)
 {
   return can_use_dmabuf(self) && is_dmabuf(buffer);
+}
+
+bool
+should_pass_vaapi(GstAxtransform *self, GstBuffer *buffer)
+{
+  //  Determine if we should pass vaapi pointers to the plugin
+  //  Check if plugin understands vaapi pointers
+  //  Check if buffer is vaapi
+  auto api_type = gst_vaapi_video_meta_api_get_type();
+  if (!api_type) {
+    return false;
+  }
+  auto *meta = gst_buffer_get_meta(buffer, api_type);
+  return meta && can_use_vaapi(self);
 }
 
 static GstFlowReturn
@@ -553,6 +645,10 @@ gst_axtransform_sink_chain(GstPad *pad, GstObject *parent, GstBuffer *buffer)
   std::vector<GstMapInfo> inmap;
   if (should_pass_fds(axtransform, buffer)) {
     assign_fds_to_interface(input, buffer);
+  } else if (should_pass_vaapi(axtransform, buffer)) {
+    //  Need to add
+    inmap = get_mem_map(buffer, GstMapFlags(0 | GST_MAP_VAAPI), G_OBJECT(parent));
+    assign_vaapi_ptrs_to_interface(inmap, input);
   } else {
     inmap = get_mem_map(buffer, GST_MAP_READ, G_OBJECT(parent));
     assign_data_ptrs_to_interface(inmap, input);
@@ -610,7 +706,7 @@ static gboolean
 add_allocation_proposal(GstAxtransform *sink, GstQuery *query)
 {
   init_options(G_OBJECT(sink), sink->data->options, sink->data->fns, sink->data->logger,
-      sink->data->subplugin_data, sink->data->options_initialised);
+      sink->data->subplugin_data, sink->data->options_initialised, nullptr); // TODO display?
 
   //  Tell the upstream element that we support GstVideoMeta. This allows it
   //  to give us buffers with "unusual" strides and offsets.
@@ -641,12 +737,13 @@ add_allocation_proposal(GstAxtransform *sink, GstQuery *query)
   }
 
   if (need_pool) {
-    constexpr int min_buffers = 4;
+    const int min_buffers = 4;
+    const int max_buffers = 16;
     self->data->pool = Ax::as_handle(gst_buffer_pool_new());
     GstStructure *config = gst_buffer_pool_get_config(self->data->pool.get());
     guint size = ax_size_from_caps(caps);
 
-    gst_buffer_pool_config_set_params(config, caps, size, min_buffers, 0);
+    gst_buffer_pool_config_set_params(config, caps, size, min_buffers, max_buffers);
     gst_buffer_pool_config_set_allocator(config, self->data->allocator.get(), NULL);
     if (!gst_buffer_pool_set_config(self->data->pool.get(), config)) {
       self->data->allocator.reset();
@@ -654,7 +751,7 @@ add_allocation_proposal(GstAxtransform *sink, GstQuery *query)
       GST_ERROR_OBJECT(self, "Failed to set pool configuration");
       return TRUE;
     }
-    gst_query_add_allocation_pool(query, self->data->pool.get(), size, min_buffers, 0);
+    gst_query_add_allocation_pool(query, self->data->pool.get(), size, min_buffers, max_buffers);
   }
 
   gst_query_add_allocation_param(query, self->data->allocator.get(), NULL);

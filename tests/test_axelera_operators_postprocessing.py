@@ -25,6 +25,25 @@ class MockAxMeta:
 
     def add_instance(self, name, instance, master_meta_name=''):
         self.instances[name] = instance
+        # Set up the secondary meta relationship if needed
+        if master_meta_name and isinstance(instance, meta.AxTaskMeta):
+            master = self.instances.get(master_meta_name)
+            if master and isinstance(master, meta.AxTaskMeta):
+                # Add the task name as a secondary meta to the master
+                if not hasattr(master, 'secondary_frame_indices'):
+                    setattr(master, 'secondary_frame_indices', {})
+                if name not in master.secondary_frame_indices:
+                    master.secondary_frame_indices[name] = []
+                master.secondary_frame_indices[name].append(
+                    len(master.secondary_frame_indices.get(name, []))
+                )
+
+                # Make sure _secondary_metas is initialized
+                if not hasattr(master, '_secondary_metas'):
+                    setattr(master, '_secondary_metas', {})
+                if name not in master._secondary_metas:
+                    master._secondary_metas[name] = []
+                master._secondary_metas[name].append(instance)
 
 
 FACE_RECOGNITION_MODEL_INFO = types.ModelInfo('FaceRecognition', 'Classification', [3, 160, 160])
@@ -213,6 +232,18 @@ def test_recognition_operator_as_secondary_task_exec_torch(temp_embeddings_file)
         np.array(classification_meta1._scores), np.array([[1.0, 0.9981909319700831]])
     )
 
+    # Test the new MetaObject interface for secondary metadata access
+    detection_objects = detection_meta.objects
+    assert len(detection_objects) == 2
+
+    # Test first detection's classification
+    classifier_meta0 = detection_objects[0].get_secondary_meta("task_name")
+    assert classifier_meta0 is classification_meta0
+
+    # Test task names
+    assert detection_objects[0].secondary_task_names == ["task_name"]
+    assert detection_objects[1].secondary_task_names == ["task_name"]
+
 
 @pytest.mark.parametrize('temp_embeddings_file', [True], indirect=True)
 def test_recognition_operator_exec_torch_eval_mode(temp_embeddings_file):
@@ -305,3 +336,68 @@ def test_recognition_no_reference_embedding():
             distance_metric=embeddings.DistanceMetric.euclidean_distance,
             k=2,
         )
+
+
+def test_object_access_for_cascaded_pipeline():
+    """Test that MetaObject properly exposes the new interfaces for cascaded pipelines"""
+    torch = pytest.importorskip("torch")
+
+    # Create a detection meta with objects
+    axmeta = meta.AxMeta('id')
+    detection_meta = meta.ObjectDetectionMeta(
+        boxes=np.array([[0, 10, 10, 20], [10, 20, 20, 30], [30, 40, 40, 50]]),
+        scores=np.array([0.8, 0.7, 0.6]),
+        class_ids=np.array([0, 1, 2]),
+    )
+    axmeta.add_instance('Detection', detection_meta)
+
+    # Create two different secondary task metas
+    classification_meta1 = meta.ClassificationMeta()
+    classification_meta1.add_result([1, 0], [0.9, 0.1])
+    axmeta.add_instance('classifier', classification_meta1, master_meta_name='Detection')
+
+    classification_meta2 = meta.ClassificationMeta()
+    classification_meta2.add_result([2, 0], [0.8, 0.2])
+    axmeta.add_instance('classifier', classification_meta2, master_meta_name='Detection')
+
+    segmentation_meta = meta.ClassificationMeta()
+    segmentation_meta.add_result([3, 1], [0.7, 0.3])
+    axmeta.add_instance('segmenter', segmentation_meta, master_meta_name='Detection')
+
+    # Manually adjust the secondary_frame_indices to associate specific secondary tasks with specific detection objects
+    # Set indices for classifier: object 0 and object 1
+    detection_meta.secondary_frame_indices['classifier'] = [0, 1]
+    # Set indices for segmenter: only object 1
+    detection_meta.secondary_frame_indices['segmenter'] = [1]
+
+    # Test object-based access to metadata
+    detection_objects = detection_meta.objects
+    assert len(detection_objects) == 3
+
+    # Test task names
+    assert set(detection_objects[0].secondary_task_names) == {'classifier'}
+    assert set(detection_objects[1].secondary_task_names) == {'classifier', 'segmenter'}
+    assert set(detection_objects[2].secondary_task_names) == set()  # No secondary tasks
+
+    # Test get_secondary_meta
+    classifier_meta0 = detection_objects[0].get_secondary_meta('classifier')
+    assert classifier_meta0 is classification_meta1
+
+    classifier_meta1_obj = detection_objects[1].get_secondary_meta('classifier')
+    assert classifier_meta1_obj is classification_meta2
+
+    segmenter_meta = detection_objects[1].get_secondary_meta('segmenter')
+    assert segmenter_meta is segmentation_meta
+
+    # Test get_secondary_objects
+    classifier_objects0 = detection_objects[0].get_secondary_objects('classifier')
+    assert len(classifier_objects0) > 0
+
+    # Test non-existent task
+    assert detection_objects[0].get_secondary_meta('nonexistent') is None
+    assert detection_objects[0].get_secondary_objects('nonexistent') == []
+
+    # Test object with no secondary tasks
+    assert detection_objects[2].get_secondary_meta('classifier') is None
+    assert detection_objects[2].get_secondary_objects('classifier') == []
+    assert detection_objects[2].secondary_task_names == []

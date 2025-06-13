@@ -5,7 +5,8 @@
   - [Configuration & Advanced Usage](#configuration--advanced-usage)
     - [--pipe `<type>`](#--pipe-)
     - [--frames `<frame-count>`](#--frames-)
-    - [--no-display](#--no-display)
+    - [--display/--no-display](#--display--no-display)
+    - [--window-size](#--window-size)
     - [--save-output `<path>`](#--save-output-)
     - [--enable-hardware-codec](#--enable-hardware-codec)
     - [--enable/disable-vaapi, --enable/disable-opencl](#--enabledisable-vaapi---enabledisable-opencl)
@@ -88,15 +89,34 @@ argument is used with multiple input media, the frame count is the sum of frames
 sources. For example, if running with four streams and `--frames 100`, this will run 25 frames across
 each input source (assuming each source is processed at the same frame rate).
 
-### --no-display
+### --display/--no-display
 
-By default, inference output will be rendered to an OpenGL or OpenCV window. The `--no-display` argument
-may be used to remove the display. This will, in addition, disable all rendering. As rendering can be
-quite compute intensive, this can be useful to obtain more accurate CPU usage information data. In a typical
-application usage, rendering would not be required to make application logic decisions. If the host is CPU
-constrained (for example on an embedded system) this can sometimes improve system FPS as well, though in
-general rendering is not a direct bottleneck, as rendering will be dropped if the inference
-results are arriving too quickly.
+By default, inference output will be rendered to an OpenGL or OpenCV window. OpenGL is preferred as
+it is much more efficient as much of the drawing is offloaded to the OpenGL library. If the
+environment variable `DISPLAY` is not set then a console based renderer will be used. This can be
+useful to check inference output remotely.
+
+The `--display` and the `--no-display` argument allow you to control which renderer to use, or
+completely disable rendering.  With `--display` use one of the options 
+
+* `auto` - the default, which chooses renderers in preference of the order here:
+* `opengl` - use the OpenGL renderer, and fail if it is not available.
+* `opencv` - use the OpenCV renderer, and fail if it is not available.
+* `console` - render to the console/terminal using ansi to achieve color.
+* `none` - do not render anything (`--no-display` is an alias for `none`).
+
+As rendering (particularly using OpenCV) can be quite compute intensive, this can be useful to
+obtain more accurate CPU usage information data. In a typical application usage, rendering would
+not be required to make application logic decisions. If the host is CPU constrained (for example on
+an embedded system) this can sometimes impact system FPS as well, though rendering is never a
+direct bottleneck on the pipeline, as rendering will be dropped if the inference results are
+arriving too quickly.
+
+### --window-size
+
+When the rendering is enabled (see above), this argument controls the initial window size.  The size 
+can be specified as either WxH, just the width, or `fullscreen`. For example, `--window-size=1920x180`,
+`--window-size=1920` (will use 16:10 ratio to set height as 1200), or `--window-size=fullscreen`.
 
 ### --save-output `<path>`
 
@@ -111,7 +131,7 @@ if four input streams are used in this case, the output files will be `output00.
 `output02.mp4`, `output03.mp4`.
 
 Note that when saving output all frames must be rendered, therefore the system FPS may be bottlenecked
-by the rendering in this case.
+by the rendering and video encoding in this case.
 
 ### --enable-hardware-codec
 

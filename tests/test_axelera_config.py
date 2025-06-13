@@ -12,105 +12,11 @@ import pytest
 
 from axelera.app import config, utils, yaml_parser
 
-schema = {
-    "$id": "data-path-commands-schema.json",
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "A representation of a person, company, organization, or place",
-    "title": "Axelera compiler configuration schema",
-    "type": "object",
-    "additionalProperties": False,
-    "$defs": {
-        "frontend_config": {
-            "properties": {
-                "apply_pword_padding": {"type": "boolean"},
-            },
-        },
-        "backend_config": {
-            "properties": {
-                "host_arch": {"enum": ["x86_64", "aarch64"]},
-                "target": {"enum": ["x86-emu", "axelera", "axelera-qemu", "aicore-simulator"]},
-            },
-        },
-        "control_flow_config": {
-            "properties": {
-                "quantize_only": {"type": "boolean"},
-            },
-        },
-    },
-    "properties": {
-        "frontend_config": {"$ref": "#/$defs/frontend_config"},
-        "backend_config": {"$ref": "#/$defs/backend_config"},
-        "control_flow_config": {"$ref": "#/$defs/control_flow_config"},
-    },
-}
-
-
-@pytest.fixture
-def mock_load_schema():
-    with patch('axelera.app.config._load_schema', return_value=schema) as mock:
-        yield mock
-
 
 @pytest.fixture
 def mock_log():
     with patch('axelera.app.config.LOG') as mock:
         yield mock
-
-
-def test_valid_config(mock_load_schema, mock_log):
-    valid_config = {
-        'control_flow_config': {'quantize_only': False},
-        'frontend_config': {'apply_pword_padding': False},
-    }
-    assert config._get_validated_config(valid_config) == valid_config
-    mock_log.warning.assert_not_called()
-
-
-def test_remove_undefined_section(mock_load_schema, mock_log):
-    valid_config = {
-        'control_flow_config': {'quantize_only': False},
-    }
-    config_with_invalid_section = {
-        'invalid_section': {'key': 'value'},
-        'control_flow_config': {'quantize_only': False},
-    }
-    assert config._get_validated_config(config_with_invalid_section) == valid_config
-    mock_log.warning.assert_called()
-
-
-def test_remove_undefined_key(mock_load_schema, mock_log):
-    valid_config = {
-        'control_flow_config': {'quantize_only': False},
-    }
-    config_with_invalid_key = {
-        'control_flow_config': {'quantize_only': False, 'invalid_key': 'value'},
-    }
-    assert config._get_validated_config(config_with_invalid_key) == valid_config
-    mock_log.warning.assert_called()
-
-
-def test_schema_validation_error(mock_load_schema):
-    config_with_validation_error = {
-        'control_flow_config': {'quantize_only': 'invalid_type'},
-    }
-    with pytest.raises(ValueError) as exc_info:
-        config._get_validated_config(config_with_validation_error)
-
-
-@pytest.mark.parametrize(
-    "input_schema",
-    [
-        ({'properties': {"name": {"type": "str"}}}),
-    ],
-)
-def test_invalid_schema(mock_load_schema, input_schema):
-    mock_load_schema.return_value = input_schema
-    valid_config = {
-        'control_flow_config': {'quantize_only': False},
-        'frontend_config': {'apply_pword_padding': False},
-    }
-    with pytest.raises(ValueError) as exc_info:
-        config._get_validated_config(valid_config)
 
 
 def _caps(vaapi, opencl, opengl, aipu_cores):
@@ -373,10 +279,20 @@ DEFAULT_BUILD_ROOT = Path('/some_build_root')
         ('yolo dataset --build-root=/temp', dict(build_root=Path('/temp'))),
         ('yolo dataset --build-root=~/temp', dict(build_root=Path('/homer/temp'))),
         ('yolo dataset', dict(show_stats=False, aipu_cores=4, show_system_fps=True)),
-        ('yolo dataset --no-show-system-fps', dict(show_system_fps=False, display=True)),
+        ('yolo dataset --no-show-system-fps', dict(show_system_fps=False, display='auto')),
         (
             'yolo dataset --show-system-fps --no-display',
             dict(show_system_fps=True, display=False),
+        ),
+        ('yolo dataset --no-display', dict(enable_opengl=config.HardwareEnable.disable)),
+        ('yolo dataset --display=opengl', dict(enable_opengl=config.HardwareEnable.enable)),
+        (
+            'yolo dataset --display=auto --enable-opengl',
+            dict(display='auto', enable_opengl=config.HardwareEnable.enable),
+        ),
+        (
+            'yolo dataset --display=auto',
+            dict(display='auto', enable_opengl=config.HardwareEnable.disable),
         ),
         ('yolo dataset --show-stats', dict(show_stats=True)),
         ('yolo dataset --show-stats --pipe=torch', dict(show_stats=False)),

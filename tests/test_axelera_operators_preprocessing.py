@@ -31,7 +31,10 @@ convert = {'instance': 'axtransform', 'lib': 'libtransform_resize.so', 'options'
 
 
 def _gen_gst(op, stream_idx=''):
-    gst = gst_builder.Builder()
+    # note we use the old builder so we can test the gst output, the new builder
+    # consumes the gst output in readiness for an axinferencenet. A forthcoming
+    # PR will tidy this up  by having explicit begin/end axinferencenet
+    gst = gst_builder._OldBuilder()
     op.build_gst(gst, stream_idx)
     return list(gst)
 

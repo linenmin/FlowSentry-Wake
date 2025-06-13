@@ -4,8 +4,8 @@ preprocess:
   - resize:
       size: 256
   - centercrop:
-      width: {{input_width}}
-      height: {{input_height}}
+      width: ${{input_width}}
+      height: ${{input_height}}
   - torch-totensor:
   - normalize:
       mean: 0.485, 0.456, 0.406

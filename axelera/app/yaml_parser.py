@@ -7,9 +7,10 @@ import difflib
 import os
 from pathlib import Path
 import textwrap
-from typing import List
 
 import yaml
+
+from axelera import types
 
 _YELLOW = "\x1b[33;20m"
 _RESET = "\x1b[0m"
@@ -54,12 +55,20 @@ _AXELERA_FORMAT_KEY = 'axelera-model-format'
 _EXPECTED_MODEL_FORMAT = '1.0.0'
 
 _expected_model_keys = {
-    None: set(['name', 'description', 'pipeline', 'models', 'datasets']),
-    '1.0.0': set([_AXELERA_FORMAT_KEY, 'name', 'description', 'pipeline', 'models', 'datasets']),
+    None: {
+        None: set(['name', 'description', 'pipeline', 'models', 'datasets']),
+        '1.0.0': set(
+            [_AXELERA_FORMAT_KEY, 'name', 'description', 'pipeline', 'models', 'datasets']
+        ),
+    },
+    types.TaskCategory.LanguageModel: {
+        None: set(['name', 'description', 'model']),
+        '1.0.0': set([_AXELERA_FORMAT_KEY, 'name', 'description', 'models']),
+    },
 }
 
 
-def model_sanity_check(model, path) -> List[str] | None:
+def model_sanity_check(model, path) -> list[str] | None:
     # check for expected sections
     # TODO: could be an enforced schema instead
     msgs = []
@@ -68,11 +77,15 @@ def model_sanity_check(model, path) -> List[str] | None:
         msgs += [
             f'{path}: Expected {_AXELERA_FORMAT_KEY}: {_EXPECTED_MODEL_FORMAT} but found {axelera_model_format}'
         ]
-
-    expected_keys = _expected_model_keys.get(_EXPECTED_MODEL_FORMAT)
+    # At the moment we can't mix vision and language model task
+    task_category = getattr(
+        types.TaskCategory, next(iter(model['models'].values()))['task_category']
+    )
+    task_category = task_category if task_category == types.TaskCategory.LanguageModel else None
+    expected_keys = _expected_model_keys.get(task_category).get(_EXPECTED_MODEL_FORMAT)
     model_keys = set(model.keys())
     if not expected_keys.issubset(model_keys):
-        if model_keys == _expected_model_keys.get(None):
+        if model_keys == _expected_model_keys.get(task_category).get(None):
             msgs += [
                 f'{path}: Accepting unversioned model since it contains the expected sections'
             ]
@@ -222,7 +235,18 @@ def gen_model_envs(nn):
 
 class ModelCollection(
     collections.namedtuple(
-        'ModelCollection', ['local', 'zoo', 'cards', 'customers', 'reference', 'tutorial']
+        'ModelCollection',
+        [
+            'local',
+            'zoo',
+            'cards',
+            'customers',
+            'reference',
+            'tutorial',
+            'llm_local',
+            'llm_cards',
+            'llm_zoo',
+        ],
     )
 ):
     def all_models(self):
@@ -238,26 +262,42 @@ def get_model_details(
     model_cards_only: bool = False,
     check_customer_models: bool = False,
     apply_framework_dir: bool = True,
+    llm_in_model_cards: bool = False,
 ) -> ModelCollection:
     prefix = os.path.expandvars("$AXELERA_FRAMEWORK/") if apply_framework_dir else ""
     model_cards = get_models(f"{prefix}ax_models/model_cards", "mc-")
-    model_customers = get_models(f"{prefix}customers", "c-")
-    if model_cards_only:  # Return only model-cards for CI tests
+    model_customers = get_models(f"{prefix}customers", "")
+    model_llm_local = get_models(f"{prefix}ax_models/llm", "")
+    model_llm_zoo = get_models(f"{prefix}ax_models/zoo/llm", "")
+    model_llm_cards = get_models(f"{prefix}ax_models/model_cards/llm", "mc-")
+    # Remove LLMs from model_cards if not requested
+    if not llm_in_model_cards:
+        llm_card_names = {m[0] for m in model_llm_cards}
+        model_cards = [m for m in model_cards if m[0] not in llm_card_names]
+    if model_cards_only:
         customer_cards = []
         if check_customer_models:
             customer_cards = [card for card in model_customers if 'internal-model-card' in card[2]]
         return ModelCollection(
-            [], [], model_cards, customer_cards, [], []
-        )  # TODO: include model_customers in CI
+            [],
+            [],
+            model_cards,
+            customer_cards,
+            [],
+            [],
+            model_llm_local,
+            model_llm_cards,
+            model_llm_zoo,
+        )
 
     model_reference = get_models("ax_models/reference", "")
     model_tutorial = get_models("ax_models/tutorials", "")
     model_local = get_models(
         "ax_models",
         "",
-        exclude_dirs=["zoo", "model_cards", "customers", "reference", "tutorials"],
+        exclude_dirs=["zoo", "model_cards", "customers", "reference", "tutorials", "llm"],
     )
-    model_zoo = get_models(f"{prefix}ax_models/zoo", "")
+    model_zoo = get_models(f"{prefix}ax_models/zoo", "", exclude_dirs=["llm"])
     return ModelCollection(
         local=model_local,
         zoo=model_zoo,
@@ -265,6 +305,9 @@ def get_model_details(
         customers=model_customers,
         reference=model_reference,
         tutorial=model_tutorial,
+        llm_local=model_llm_local,
+        llm_cards=model_llm_cards,
+        llm_zoo=model_llm_zoo,
     )
 
 
@@ -296,7 +339,23 @@ def gen_model_help():
     print_model_help(model_collection.tutorial, "TUTORIALS")
     print_model_help(model_collection.reference, "REFERENCE APPLICATION PIPELINES")
     print_model_help(model_collection.customers, "CUSTOMER MODELS [Confidential]")
+    if model_collection.llm_local or model_collection.llm_cards:
+        print_model_help(
+            model_collection.llm_local + model_collection.llm_cards, "LARGE LANGUAGE MODELS (LLM)"
+        )
 
+    print_header()
+    print_newline()
+    print_wrapped_line("Note:")
+    print_wrapped_line(
+        "- Model names ending with '-onnx' mean the model was converted from an ONNX input model."
+    )
+    print_wrapped_line(
+        "- Model names ending with '-static' mean the model is statically compiled by Axelera R&D tools and does not support redeployment with custom weights."
+    )
+    print_wrapped_line(
+        "- If a model name does not end with either, it is from a native training framework such as PyTorch or TensorFlow."
+    )
     print_header()
 
 
@@ -309,13 +368,19 @@ class NetworkYamlInfo:
     def __init__(self):
         self.info = {}
 
-    def add_info(self, name: str, yaml_path: str, model: dict, prefix: str, build: str) -> None:
+    def add_info(
+        self,
+        name: str,
+        yaml_path: str,
+        model: dict,
+        prefix: str,
+        build: str,
+    ) -> None:
         yaml_name = f'{prefix}{name}'
-        if not (models := model.get('models', {})):
+        if not (models := model.get('models', model.get('model', {}))):
             raise ValueError(f"{yaml_path} has no models section!")
         cascaded = len(models) > 1
         info = NetworkYamlBase(name, yaml_name, yaml_path, cascaded)
-
         self.info[yaml_name] = info
         self.info[yaml_path] = info
 
@@ -326,6 +391,8 @@ class NetworkYamlInfo:
             resolved_key = key
 
         if (info := self.info.get(key) or self.info.get(resolved_key)) is not None:
+            return info
+        if (info := self.info.get(f'mc-{key}')) is not None:
             return info
 
         suffix = '.yaml' if key.endswith('.yaml') else ''
@@ -353,6 +420,25 @@ class NetworkYamlInfo:
         # Filter out paths to only return names
         return [key for key in self.info if not key.endswith('.yaml')]
 
+    def remove(self, info):
+        del self.info[info.yaml_name]
+        del self.info[info.yaml_path]
+
+    def has_llm(self, key: str) -> bool:
+        """
+        Returns True if any model in the given network (by name or path) is a Language Model (LLM).
+        """
+        info = self.get_info(key)
+        model = model_from_path(info.yaml_path)
+        if not model:
+            return False
+        models = model.get('models', {})
+        for m in models.values():
+            task_cat = m.get('task_category')
+            if task_cat and str(task_cat).lower() == "languagemodel":
+                return True
+        return False
+
 
 def _get_network_yaml_info(models):
     network_yaml_info = NetworkYamlInfo()
@@ -365,7 +451,7 @@ def get_network_yaml_info(
     model_cards_only: bool = False,
     check_customer_models: bool = False,
     apply_framework_dir: bool = True,
-    include_collections: List[str] | None = None,
+    include_collections: list[str] | None = None,
 ):
     """Get network YAML information for specified model collections.
 
@@ -374,22 +460,38 @@ def get_network_yaml_info(
         check_customer_models: If True, include customer model cards when model_cards_only is True
         apply_framework_dir: If True, prepend AXELERA_FRAMEWORK to paths
         include_collections: List of collections to include. If None, includes all.
-                           Valid values: ['local', 'zoo', 'cards', 'customers', 'reference', 'tutorial']
+                           Valid values: ['local', 'zoo', 'cards', 'customers', 'reference', 'tutorial', 'llm_local', 'llm_cards', 'llm_zoo']
     """
     model_collection = get_model_details(
-        model_cards_only, check_customer_models, apply_framework_dir
+        model_cards_only,
+        check_customer_models,
+        apply_framework_dir,
+        llm_in_model_cards=not model_cards_only,
     )
 
-    if include_collections is not None:
+    if model_cards_only:
+        # Only include model cards (and optionally customer cards)
+        all_models = []
+        all_models.extend(model_collection.cards)
+        if check_customer_models:
+            all_models.extend(model_collection.customers)
+    elif include_collections is not None:
         # Filter to only requested collections
         all_models = []
         collection_dict = model_collection._asdict()
         for collection in include_collections:
             if collection in collection_dict:
                 all_models.extend(collection_dict[collection])
+        # TODO: Filter models by family when include_collections is not None
     else:
         all_models = model_collection.all_models()
 
     if msgs := any_parse_msgs():
         print(f"{_YELLOW}WARNING: {_RESET}{msgs}")
     return _get_network_yaml_info(all_models)
+
+
+def print_wrapped_line(line=""):
+    # Wrap the line to fit within the print width minus borders
+    for wrapped in textwrap.wrap(line, _print_width - 4, break_long_words=True):
+        print_line(wrapped)

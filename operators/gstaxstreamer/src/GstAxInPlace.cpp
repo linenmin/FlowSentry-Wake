@@ -200,7 +200,7 @@ gst_axinplace_transform_ip(GstBaseTransform *trans, GstBuffer *buffer)
 
   init_options(G_OBJECT(trans), axinplace->data->options, axinplace->data->fns,
       axinplace->data->logger, axinplace->data->subplugin_data,
-      axinplace->data->options_initialised);
+      axinplace->data->options_initialised, nullptr);
 
   if (!axinplace->data->fns.inplace) {
     return GST_FLOW_OK;

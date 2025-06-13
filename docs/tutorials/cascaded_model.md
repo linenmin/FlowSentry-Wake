@@ -35,12 +35,9 @@ pipeline:
         type: image
         source: roi
         where: SSD-MobileNetV1-COCO
-        classes: bottle
+        label_filter: bottle
         which: CENTER # AREA, SCORE, CENTER
         top_k: 10
-        expand_margin: 0
-        resize_width: 224
-        resize_height: 224
       preprocess:
         - torch-totensor:
         - normalize:

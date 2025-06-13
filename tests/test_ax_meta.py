@@ -440,8 +440,8 @@ def test_meta_object():
             super().__init__()
             object.__setattr__(self, '_secondary_metas', {"secondary": [AxTaskMeta()]})
 
-        def get_secondary_meta(self, index):
-            return self._secondary_metas["secondary"][index]
+        def get_secondary_meta(self, task_name, index):
+            return self._secondary_metas[task_name][index]
 
     meta = MockTaskMeta()
     meta_object = MetaObject(meta, 0)
@@ -466,6 +466,150 @@ def test_meta_object():
 
     assert isinstance(new_meta_object.secondary_objects[0], MetaObject)
     assert len(new_meta_object.secondary_objects) == 1
+
+
+def test_meta_object_get_secondary_meta():
+    """Test the get_secondary_meta method of MetaObject"""
+
+    class MockTaskMeta(AxTaskMeta):
+        def __init__(self):
+            super().__init__()
+            # Create secondary frame indices
+            object.__setattr__(self, 'secondary_frame_indices', {'classifier': [0, 2, 4]})
+            # Create secondary metas
+            object.__setattr__(
+                self,
+                '_secondary_metas',
+                {'classifier': [AxTaskMeta(), AxTaskMeta(), AxTaskMeta()]},
+            )
+
+        def __len__(self):
+            return 5  # Mock having 5 detections
+
+    meta = MockTaskMeta()
+
+    # Create different objects with different indices
+    obj0 = MetaObject(meta, 0)  # Should have secondary meta
+    obj1 = MetaObject(meta, 1)  # Should not have secondary meta
+    obj2 = MetaObject(meta, 2)  # Should have secondary meta
+
+    # Test object with secondary meta
+    assert obj0.get_secondary_meta('classifier') is not None
+    assert obj0.get_secondary_meta('classifier') is meta._secondary_metas['classifier'][0]
+
+    # Test object without secondary meta
+    assert obj1.get_secondary_meta('classifier') is None
+
+    # Test another object with secondary meta
+    assert obj2.get_secondary_meta('classifier') is not None
+    assert obj2.get_secondary_meta('classifier') is meta._secondary_metas['classifier'][1]
+
+    # Test with non-existent task name
+    assert obj0.get_secondary_meta('nonexistent') is None
+
+
+def test_meta_object_get_secondary_objects():
+    """Test the get_secondary_objects method of MetaObject"""
+
+    class MockObject(MetaObject):
+        pass
+
+    class MockSecondaryTaskMeta(AxTaskMeta):
+        Object = MockObject
+
+        def __init__(self):
+            super().__init__()
+            object.__setattr__(self, '_data', [1, 2])  # Mock data for __len__
+
+        def __len__(self):
+            return len(self._data)
+
+    class MockTaskMeta(AxTaskMeta):
+        def __init__(self):
+            super().__init__()
+            # Create secondary frame indices
+            sec_meta1 = MockSecondaryTaskMeta()
+            sec_meta2 = MockSecondaryTaskMeta()
+
+            object.__setattr__(
+                self, 'secondary_frame_indices', {'classifier': [0, 2], 'segmenter': [1, 3]}
+            )
+
+            object.__setattr__(
+                self,
+                '_secondary_metas',
+                {'classifier': [sec_meta1, sec_meta2], 'segmenter': [MockSecondaryTaskMeta()]},
+            )
+
+        def __len__(self):
+            return 4  # Mock having 4 detections
+
+    meta = MockTaskMeta()
+
+    # Create objects with different indices
+    obj0 = MetaObject(meta, 0)  # Should have classifier but not segmenter
+    obj1 = MetaObject(meta, 1)  # Should have segmenter but not classifier
+
+    # Test object with classifier
+    classifier_objects = obj0.get_secondary_objects('classifier')
+    assert len(classifier_objects) == 2
+    assert all(isinstance(obj, MockObject) for obj in classifier_objects)
+
+    # Test object with segmenter
+    segmenter_objects = obj1.get_secondary_objects('segmenter')
+    assert len(segmenter_objects) == 2
+    assert all(isinstance(obj, MockObject) for obj in segmenter_objects)
+
+    # Test with non-existent task
+    assert obj0.get_secondary_objects('nonexistent') == []
+
+    # Test secondary_objects property (backward compatibility)
+    assert len(obj0.secondary_objects) == 2  # Should return classifier objects
+    assert all(isinstance(obj, MockObject) for obj in obj0.secondary_objects)
+
+
+def test_meta_object_secondary_task_names():
+    """Test the secondary_task_names property of MetaObject"""
+
+    class MockTaskMeta(AxTaskMeta):
+        def __init__(self):
+            super().__init__()
+            # Create secondary frame indices for multiple tasks
+            object.__setattr__(
+                self,
+                'secondary_frame_indices',
+                {'classifier': [0, 2, 4], 'segmenter': [0, 3], 'tracker': [1, 2]},
+            )
+
+            # Initialize secondary metas (contents don't matter for this test)
+            object.__setattr__(
+                self,
+                '_secondary_metas',
+                {
+                    'classifier': [AxTaskMeta(), AxTaskMeta(), AxTaskMeta()],
+                    'segmenter': [AxTaskMeta(), AxTaskMeta()],
+                    'tracker': [AxTaskMeta(), AxTaskMeta()],
+                },
+            )
+
+        def __len__(self):
+            return 5  # Mock having 5 detections
+
+    meta = MockTaskMeta()
+
+    # Create objects with different indices
+    obj0 = MetaObject(meta, 0)  # Should have classifier and segmenter
+    obj1 = MetaObject(meta, 1)  # Should have tracker
+    obj2 = MetaObject(meta, 2)  # Should have classifier and tracker
+    obj3 = MetaObject(meta, 3)  # Should have segmenter
+    obj4 = MetaObject(meta, 4)  # Should have classifier
+
+    # Test secondary task names for each object
+    assert set(obj0.secondary_task_names) == {'classifier', 'segmenter'}
+    assert set(obj1.secondary_task_names) == {'tracker'}
+    assert set(obj2.secondary_task_names) == {'classifier', 'tracker'}
+    assert set(obj3.secondary_task_names) == {'segmenter'}
+    assert set(obj4.secondary_task_names) == {'classifier'}
 
 
 def test_ax_base_task_meta():

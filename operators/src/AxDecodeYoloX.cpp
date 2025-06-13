@@ -39,7 +39,8 @@ struct properties {
   int topk{ 2000 };
   bool multiclass{ true };
   std::string meta_name{};
-  std::string decoder_name{};
+  std::string master_meta{};
+  std::string association_meta{};
   bool scale_up{ true };
   bool letterbox{ true };
   int model_width{};
@@ -246,7 +247,7 @@ decode_tensors(const AxTensorsInterface &tensors, const properties &prop,
 
 extern "C" void
 decode_to_meta(const AxTensorsInterface &in_tensors,
-    const yolox_decode::properties *prop, unsigned int, unsigned int,
+    const yolox_decode::properties *prop, int subframe_index, int number_of_subframes,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
     const AxDataInterface &video_interface, Ax::Logger &logger)
 {
@@ -261,17 +262,29 @@ decode_to_meta(const AxTensorsInterface &in_tensors,
   auto predictions = yolox_decode::decode_tensors(tensors, *prop, padding, logger);
   predictions = ax_utils::topk(predictions, prop->topk);
 
-  auto boxes = ax_utils::scale_boxes(predictions.boxes,
-      std::get<AxVideoInterface>(video_interface), prop->model_width,
-      prop->model_height, prop->scale_up, prop->letterbox);
+  std::vector<BboxXyxy> pixel_boxes;
+  if (prop->master_meta.empty()) {
+    pixel_boxes = ax_utils::scale_boxes(predictions.boxes,
+        std::get<AxVideoInterface>(video_interface), prop->model_width,
+        prop->model_height, prop->scale_up, prop->letterbox);
+  } else {
+    const auto &box_key = prop->association_meta.empty() ? prop->master_meta :
+                                                           prop->association_meta;
+    auto master_meta = ax_utils::get_meta<AxMetaBbox>(box_key, map, "yolox_decode");
+    auto master_box = master_meta->get_box_xyxy(subframe_index);
+    pixel_boxes = ax_utils::scale_shift_boxes(predictions.boxes, master_box,
+        prop->model_width, prop->model_height, prop->scale_up, prop->letterbox);
+  }
+  auto [boxes, scores, class_ids] = ax_utils::remove_empty_boxes(
+      pixel_boxes, predictions.scores, predictions.class_ids);
 
-  map[prop->meta_name] = std::make_unique<AxMetaObjDetection>(std::move(boxes),
-      std::move(predictions.scores), std::move(predictions.class_ids));
-
+  ax_utils::insert_and_associate_meta<AxMetaObjDetection>(map, prop->meta_name,
+      prop->master_meta, subframe_index, number_of_subframes, prop->association_meta,
+      std::move(boxes), std::move(scores), std::move(class_ids));
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-  logger(AX_INFO) << "decode_to_meta : Decoding took " << duration.count()
-                  << " microseconds" << std::endl;
+  logger(AX_DEBUG) << "decode_to_meta : Decoding took " << duration.count()
+                   << " microseconds" << std::endl;
 }
 
 extern "C" const std::unordered_set<std::string> &
@@ -279,6 +292,8 @@ allowed_properties()
 {
   static const std::unordered_set<std::string> allowed_properties{
     "meta_key",
+    "master_meta",
+    "association_meta",
     "classlabels_file",
     "confidence_threshold",
     "label_filter",
@@ -288,7 +303,6 @@ allowed_properties()
     "multiclass",
     "classes",
     "padding",
-    "decoder_name",
     "scale_up",
     "letterbox",
     "model_width",
@@ -304,14 +318,16 @@ init_and_set_static_properties(
   auto props = std::make_shared<yolox_decode::properties>();
   props->meta_name = Ax::get_property(
       input, "meta_key", "detection_static_properties", props->meta_name);
+  props->master_meta = Ax::get_property(
+      input, "master_meta", "detection_static_properties", props->master_meta);
+  props->association_meta = Ax::get_property(input, "association_meta",
+      "detection_static_properties", props->association_meta);
   props->zero_points = Ax::get_property(
       input, "zero_points", "detection_static_properties", props->zero_points);
   props->scales = Ax::get_property<float>(
       input, "scales", "detection_static_properties", props->scales);
   props->num_classes = Ax::get_property(
       input, "classes", "detection_static_properties", props->num_classes);
-  props->decoder_name = Ax::get_property(
-      input, "decoder_name", "detection_static_properties", props->decoder_name);
   auto topk
       = Ax::get_property(input, "topk", "detection_static_properties", props->topk);
   if (topk > 0) {
@@ -319,7 +335,6 @@ init_and_set_static_properties(
   }
   props->scale_up = Ax::get_property(
       input, "scale_up", "detection_static_properties", props->scale_up);
-
   props->model_width = Ax::get_property(
       input, "model_width", "detection_static_properties", props->model_width);
   props->model_height = Ax::get_property(

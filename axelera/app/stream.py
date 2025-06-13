@@ -8,7 +8,7 @@ import queue
 import signal
 import sys
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 from . import config, logging_utils, pipe, utils
 
@@ -115,7 +115,7 @@ class InferenceStream:
         if pipe_mgr is None:
             raise ValueError("pipe_mgr must be provided")
         self.timeout = timeout if timeout > 0 and not pipe_mgr.eval_mode else None
-        self._queue = queue.Queue()
+        self._queue = queue.Queue(maxsize=10)
         self.pipe_mgr = pipe_mgr
         self.pipe_mgr.setup_callback(self.feed_result)
         _pipe_frames = self.pipe_mgr.number_of_frames
@@ -129,6 +129,9 @@ class InferenceStream:
         self.pipe_mgr.init_pipe()
         self.lock = threading.Lock()
         self._interrupt_handler = InterruptHandler(self)
+        self.hardware_caps = self.pipe_mgr.hardware_caps
+        self._done = False
+        self._queue_blocked = False
 
     @classmethod
     def from_config(cls, config: InferenceConfig) -> 'InferenceStream':
@@ -144,7 +147,7 @@ class InferenceStream:
         return self.pipe_mgr
 
     @property
-    def sources(self) -> list[str]:
+    def sources(self) -> dict[int, str]:
         '''Return the list of input sources'''
         return self.pipe_mgr.sources
 
@@ -152,7 +155,21 @@ class InferenceStream:
         return self.frames
 
     def feed_result(self, result: pipe.FrameResult | None):
-        self._queue.put(result)
+        while not self._done:
+            try:
+                self._queue.put(result, timeout=0.2)
+                if self._queue_blocked and self._queue.qsize() < self._queue.maxsize // 2:
+                    LOG.info(
+                        f"InferencedStream is being processed quickly enough again (backlog={self._queue.qsize()})"
+                    )
+                    self._queue_blocked = False
+                break
+            except queue.Full:
+                if not self._queue_blocked:
+                    LOG.warning(
+                        f"New inference data is ready, but the InferencedStream is not being processed fast enough (backlog={self._queue.qsize()})"
+                    )
+                self._queue_blocked = True
 
     def __iter__(self):
         self.pipe_mgr.run_pipe()
@@ -160,11 +177,10 @@ class InferenceStream:
         try:
             n = 0
             while not self.frames or n < self.frames:
-                if self._interrupt_raised or self._interrupt_handler.is_interrupted():
-                    print("Interrupted")
+                if self.is_interrupted:
                     break
                 try:
-                    result = self._queue.get(block=True, timeout=self.timeout)
+                    result = self._queue.get(timeout=self.timeout)
                     if result is None or self._interrupt_raised:
                         break
                     if self.pipe_mgr.evaluator:
@@ -179,40 +195,89 @@ class InferenceStream:
                 yield result
                 n += 1
         finally:
+            self._done = True
             self._frames_executed = max(n - 2, 0)
             self._timer.stop()
             self.pipe_mgr.stop_pipe()
             self.report_summary()
 
-    def stream_select(self, streams):
+    def stream_select(self, streams: Iterable[int] | str) -> None:
+        '''Configure streams to be in paused or resumed state.
+
+        Args:
+            streams: A list of stream IDs that should be in the playing state.
+
+        NOTE: This is only supported by GStreamer pipelines.
+        NOTE: For compatiblity reasons a string of the form '0,2,3' is also supported, but
+              this is deprecated and will raise a DeprecationWarning.
+        '''
         with self.lock:
             self.pipe_mgr.stream_select(streams)
-            LOG.info(f"Active streams: {streams}")
 
-    def add_source(self, source, idx=-1):
+    def get_stream_select(self) -> list[int]:
+        '''Get the list of currently playing streams, as configured by stream_select().
+
+        NOTE: This is only supported by GStreamer pipelines.
+        '''
         with self.lock:
-            LOG.info(f"Adding new source: {source}")
-            self.pipe_mgr.pause_pipe()
-            if idx == -1:
-                idx = self.pipe_mgr.add_source(source)
-            else:
-                self.pipe_mgr.add_source_with_id(source, idx)
+            ids = self.pipe_mgr.get_stream_select()
+        sids = set(ids)
+        valid_ids = set(self.sources.keys())
+        if paused := valid_ids - sids:
+            spaused = ' '.join(str(x) for x in paused)
+            LOG.debug(f"stream ids in source but not in stream_select (paused): {spaused}")
+        if unknown := sids - valid_ids:
+            sunknown = ' '.join(str(x) for x in unknown)
+            LOG.error(f"stream ids in stream_select but not in sources (unknown): {sunknown}")
+        return ids
 
-            self.pipe_mgr.play_pipe()
-            LOG.info(f"New source: {source} added {idx}")
-            return idx
-
-    def remove_source(self, idx):
+    def add_source(self, source: str, source_id: int = -1) -> int:
+        '''Add a new source to the pipeline.
+        Args:
+            source: The source to add. (see.... TODO)
+            source_id: The source id of the source to add. If -1, a new source_id will be assigned.
+        Returns:
+            The source id of the new source.
+        NOTE: This is only supported by GStreamer pipelines.
+        '''
         with self.lock:
-            LOG.info(f"Removing slot: {idx}")
             self.pipe_mgr.pause_pipe()
-            self.pipe_mgr.remove_source(idx)
+            source_id = self.pipe_mgr.add_source(source, source_id)
             self.pipe_mgr.play_pipe()
-            LOG.info(f"Slot: {idx} removed")
+        LOG.info(f"Added new source: {source} as {source_id=}")
+        return source_id
+
+    def remove_source(self, source_id):
+        '''Remove a source from the pipeline.
+        Args:
+            source_id: The source id of the source to remove.
+        NOTE: This is only supported by GStreamer pipelines.
+        '''
+        with self.lock:
+            self.pipe_mgr.pause_pipe()
+            self.pipe_mgr.remove_source(source_id)
+            self.pipe_mgr.play_pipe()
+
+    @property
+    def is_interrupted(self) -> bool:
+        '''Returns True if the stream has been interrupted by a signal.'''
+        return self._interrupt_raised or self._interrupt_handler.is_interrupted()
 
     def stop(self):
         self._interrupt_raised = True
-        self._queue.put(None)  # unblock the queue
+        # put a None, but if the queue is full flush it, do this in a loop until we succeed
+        # otherwise the queue may be being fed by the producer
+        while 1:
+            try:
+                self._queue.put(None, timeout=0)  # unblock the queue
+                break
+            except queue.Full:
+                pass
+            while not self._queue.empty():
+                try:
+                    self._queue.get(timeout=0)
+                except queue.Empty:
+                    break
 
     def is_single_image(self) -> bool:
         '''True if the input stream is a single image.'''

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as TF
@@ -9,6 +10,9 @@ import torch.nn.functional as TF
 from axelera import types
 from axelera.app import gst_builder, logging_utils, meta
 from axelera.app.operators import AxOperator, PipelineContext
+
+if TYPE_CHECKING:
+    from axelera.app.pipe import graph
 
 LOG = logging_utils.getLogger(__name__)
 
@@ -55,11 +59,11 @@ class TopKDecoderOutputMeta(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         # here you can get infomation from the compiled model_info
         self.labels = model_info.labels
@@ -89,7 +93,7 @@ class TopKDecoderOutputMeta(AxOperator):
         model_meta.add_result(top_ids, top_scores)
         for i in range(self.k):
             LOG.debug(
-                f"Top {i+1} result: classified as {self.labels[top_ids[i]]} with score {top_scores[i]}"
+                f"Top {i+1} result: classified as {self.labels(top_ids[i]).name} with score {top_scores[i]}"
             )
 
         axmeta.add_instance(self.task_name, model_meta)
@@ -107,11 +111,11 @@ class TopKDecoderWithMySimplifiedGstPlugin(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         self.labels = model_info.labels
         self.num_classes = model_info.num_classes
@@ -149,11 +153,11 @@ class TopKDecoderWithMyGstPlugin(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         self.labels = model_info.labels
         self.num_classes = model_info.num_classes
@@ -179,7 +183,7 @@ class TopKDecoderWithMyGstPlugin(AxOperator):
         model_meta.add_result(top_ids, top_scores)
         for i in range(self.k):
             LOG.debug(
-                f"Top {i+1} result: classified as {self.labels[top_ids[i]]} with score {top_scores[i]}"
+                f"Top {i+1} result: classified as {self.labels(top_ids[i]).name} with score {top_scores[i]}"
             )
 
         axmeta.add_instance(self.task_name, model_meta)

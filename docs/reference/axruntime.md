@@ -341,7 +341,7 @@ AXR_EXPORT axrResult axr_configure_device (
 
 * `context` the context
 * `device` the device to configure
-* `properties` the options to change. Currently supported options are clock\_profile:int - the clock profile to use, frequency in MHz. ddr\_size:int - the DDR size to use, in bytes.
+* `properties` the options to change. Currently supported options are clock\_profile:int - the clock profile to use, frequency in MHz.
 
 
 **Returns:**

@@ -1,4 +1,7 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
+
+_Last updated: 2025-04-15_
+
 # AxInferenceNet C++ Integration Tutorial
 
 - [AxInferenceNet C++ Integration Tutorial](#axinferencenet-c-integration-tutorial)
@@ -8,6 +11,7 @@
   - [Setting up the inference loop](#setting-up-the-inference-loop)
   - [The main inference loop](#the-main-inference-loop)
   - [Cleanup](#cleanup)
+  - [Using AxInferenceNet for Raw Tensor Output and Custom Postprocessing](#using-axinferencenet-for-raw-tensor-output-and-custom-postprocessing)
 
 **Note:** This interface is still under development, and so this example is subject to change. The core functionality will remain the same, but interfaces and type names may change.
 
@@ -197,39 +201,26 @@ main(int argc, char **argv)
 
 Next, we use a utility from `AxStreamerUtils.hpp` called `Ax::BlockingQueue`. This is similar to the Python `queue.Queue` class and provides an easy way to communicate from one thread to another. In this case, we will use it to pass back the inference result from the `frame_completed` callback to the main loop.
 
-We then define the `frame_completed` callback. We use a lambda, but it can be any callable in a `std::function`.
+We need to pass a `frame_completed` callback to AxInferenceNet. This callback can inspect the result and handle it in any way desired, but in most cases the callback needs to check for the `end_of_input` signal and stop the inference or pass the result on to another AxInferenceNet or push it to a queue.
 
-In the callback, we check for the `end_of_input` signal, and if found, we push a `stop` event onto the `Ax::BlockingQueue ready` queue. If this callback is not the result of an `end_of_input` signal, then we cast the `buffer_handle` back to a `std::shared_ptr<Frame>` and push that onto our `ready` queue so that the main loop can collect it when it is ready to.
-
-```cpp
-  // We use BlockingQueue to communicate between the frame_completed callback and the main loop
-  Ax::BlockingQueue<std::shared_ptr<Frame>> ready;
-
-  auto frame_completed = [&ready](auto &completed) {
-    // This function is called whenever an inference result is ready.
-    // We first check to see if inference is complete and in which case stop
-    // the ready queue to indicate to the main loop to exit.
-    if (completed.end_of_input) {
-      ready.stop();
-    }
-    // If we have a valid inference result, we cast the buffer handle to our own
-    // Frame type and push it to the ready queue
-    auto frame = std::exchange(completed.buffer_handle, {});
-    ready.push(std::static_pointer_cast<Frame>(frame));
-  };
-```
+Here we use the `forward_to` adapter to create a callback that pushes the result onto the `ready` queue.
 
 We are now ready to create the `AxInferenceNet` object. We convert the `.axnet` file into an
 `Ax::InferenceNetProperties` object and call `Ax::create_inference_net`, passing it the properties,
 a logger, and the `frame_completed` callback.
 
+```cpp
+
+  // We use BlockingQueue to communicate between the frame_completed callback and the main loop
+  Ax::BlockingQueue<std::shared_ptr<Frame>> ready;
+  auto props = Ax::read_inferencenet_properties(model_properties, logger);
+  auto net = Ax::create_inference_net(props, logger, Ax::forward_to(ready));
+
+```
+
 We then start the reader_thread and initialize the OpenCV window.
 
 ```cpp
-  Ax::Logger logger(Ax::Severity::warning, nullptr, nullptr);
-  const auto props = Ax::properties_from_string(model_properties, logger);
-  auto net = Ax::create_inference_net(props, logger, frame_completed);
-
   // Start the reader thread which reads frames from the video source and pushes
   // them to the inference network
   std::thread reader(reader_thread, std::ref(cap), std::ref(*net));
@@ -277,3 +268,91 @@ In order to perform a well-behaved shutdown, we first stop `AxInferenceNet`, the
 
   cv::destroyWindow(wndname);
 ```
+
+## Using AxInferenceNet for Raw Tensor Output and Custom Postprocessing
+
+In addition to the end-to-end pipeline example, the SDK provides `axinferencenet_tensor.cpp`, which demonstrates how to use AxInferenceNet to obtain raw tensor outputs from your model and implement your own postprocessing logic in C++, and another example `axinferencenet_cascaded.cpp` which demonstrates how to chain multiple AxInferenceNet instances together, and how to use the built-in OpenCV rendering.
+
+### How to use raw tensor output (user workflow)
+
+To extract the raw tensor data and shape from the meta map, use the following workflow:
+
+```cpp
+#include <AxMetaRawTensor.hpp>
+// ...
+auto& tensor_wrapper = dynamic_cast<AxMetaRawTensor&>(*frame->meta["detections"]);
+if (tensor_wrapper.get_tensor() && tensor_wrapper.get_tensor()->num_tensors() > 0) {
+    std::vector<int64_t> dims = get_tensor_shape(tensor_wrapper);
+    const float* data = get_tensor_data<float>(tensor_wrapper);
+    auto detections = postprocess_yolov8(
+        data, dims, 0.25f, 0.45f, 100,
+        frame->bgr.cols, frame->bgr.rows,
+        model_input_width, model_input_height,
+        letterboxed
+    );
+    render_detections(detections, frame->bgr, labels);
+}
+```
+
+- The data pointer type (`float*`, `int8_t*`, etc.) depends on your model output. Use the correct type for your model.
+- The shape is always available as a vector of `int64_t`.
+- These helpers make it easy to extract the tensor data and shape for any tensor index.
+
+### Why and When to Use Raw Tensor Output?
+
+In the standard pipeline (e.g., yolov8-coco), postprocessing is handled by the pipeline and you receive ready-to-use detection objects. With raw tensor output, you have full control and responsibility for postprocessing, which is ideal for custom models or integration with your own analytics pipeline.
+
+- **Support for custom models:**  If you have a model that is not supported in the Axelera model zoo, you may not have a corresponding prebuilt decoder or meta type. Using raw tensor output allows you to integrate and use your own postprocessing logic, as long as you can successfully compile your model.
+- **No need to understand Axelera's metadata:**  You only need to know how to extract the tensor using `AxMetaRawTensor`. You do not need to learn or depend on our object detection meta types.
+- **Easy integration:**  You can define your own detection/object structures and postprocessing, making it easier to plug AxInferenceNet into your existing pipeline or codebase.
+- **Flexible and educational:**  You can experiment with different postprocessing algorithms, visualize intermediate results, and use your own object types and pipeline logic.
+
+### Pipeline Configuration: Standard vs. Raw Tensor Output
+
+The type of output you receive from AxInferenceNet depends on how your model YAML (and resulting `.axnet`) is configured:
+
+| Pipeline Type      | YAML/.axnet Postprocess Steps                | Output Meta Type           | User Responsibility         |
+|--------------------|----------------------------------------------|----------------------------|----------------------------|
+| Standard           | `libdecode_yolov8`, `libinplace_nms`         | `AxMetaObjDetection`       | None (ready-to-use output) |
+| Raw Tensor Output  | `libtransform_*`, `libdecode_to_raw_tensor`  | `AxMetaRawTensor`   | All postprocessing         |
+
+**Standard pipeline example:**
+```yaml
+postprocess:
+  - decodeyolo:
+      max_nms_boxes: 30000
+      conf_threshold: 0.25
+      nms_iou_threshold: 0.45
+      nms_class_agnostic: True
+      nms_top_k: 300
+```
+Produces `.axnet` lines like:
+```
+postprocess0_lib=libdecode_yolov8.so
+postprocess1_lib=libinplace_nms.so
+```
+
+**Raw tensor output example:**
+
+The `get-raw-tensor` postprocess step has several flags that control how much processing is done before the tensor is returned to your application:
+- If a flag (such as `dequantized_and_depadded` or `transposed`) is `True`, AxInferenceNet will perform that transform before returning the tensor.
+- If a flag is `False`, you are responsible for handling that transform after receiving the tensor.
+- If `postamble_processed` is `True`, then `dequantized_and_depadded` and `transposed` will also be enabled automatically, so the output tensor will fully align with the source ONNX model's output nodes.
+
+Here is a YAML example:
+```yaml
+postprocess:
+  - get-raw-tensor:
+      dequantized_and_depadded: True
+      transposed: True
+      postamble_processed: True
+```
+
+With the standard pipeline, you receive ready-to-use detection objects in `meta["detections"]` (an `AxMetaObjDetection`). With the raw tensor output, you receive a tensor in `meta["detections"]` (an `AxMetaRawTensor`) and must implement all postprocessing (decoding, NMS, etc.) yourself.
+
+
+### Performance note
+
+This path is not as optimized as the default pipeline, especially for large batch sizes or high-throughput. If you want maximum speed, we encourage you to build a standard decoder (as done for models in the Axelera model zoo), which allows the pipeline to use fully optimized postprocessing. The raw tensor path is intended for flexibility, experimentation, and integration—not for maximum speed. We plan to improve this path by optimizing how we perform postprocessing before providing the tensor output in future releases.
+
+See the full source in [`axinferencenet_tensor.cpp`](/examples/axinferencenet/axinferencenet_tensor.cpp).

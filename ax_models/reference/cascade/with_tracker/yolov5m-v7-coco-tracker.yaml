@@ -23,9 +23,23 @@ pipeline:
             nms_class_agnostic: False
             nms_top_k: 100
             use_multi_label: False
+  - pedestrian_and_vehicle_tracker:
+      model_name: oc_sort
+      input:
+        source: full
+        color_format: RGB
+      cv_process:
         - tracker:
             algorithm: oc-sort
+            bbox_task_name: detections
+            label_filter:
+              - person
             history_length: 30
+            algo_params:
+              max_age: 50
+              min_hits: 1
+              iou_threshold: 0.3
+              max_id: 0
 
 operators:
   decodeyolo:
@@ -37,7 +51,7 @@ models:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: weights/yolov5m-v7.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/weights/yolo/op17/yolov5m-v7.onnx
+    weight_url: https://media.axelera.ai/artifacts/weights/yolo/op17/yolov5m-v7.onnx
     weight_md5: aad63caa41a389d409717a0bbaa17311
     task_category: ObjectDetection
     input_tensor_layout: NCHW
@@ -52,14 +66,21 @@ models:
         - [30,61, 62,45, 59,119]
         - [116,90, 156,198, 373,326]
         strides: [8, 16, 32]  # specify if you are using a special version
+  oc_sort:
+    model_type: CLASSICAL_CV
+    task_category: ObjectTracking
+
 
 datasets: # Python dataloader
   CocoDataset-COCO2017:
-    class: ObjDataAdaptor
+    class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
-    download_year: 2017
+    label_type: COCO2017
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa
+    # relative/path/to/your/cal_custom.json or dir with darknet label txt files
+    # cal_data: train2017-400.txt
+    # val_data: val2017.txt

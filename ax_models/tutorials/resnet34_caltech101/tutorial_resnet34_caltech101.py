@@ -87,6 +87,7 @@ def download_and_extract_tar_gz(url, extract_to_dir):
 
     :param url: The URL of the .tar.gz file.
     :param extract_to_dir: The directory where the contents of the .tar.gz will be extracted.
+    :return: True if download and extraction was successful, False otherwise
     """
     if not os.path.exists(extract_to_dir):
         os.makedirs(extract_to_dir)
@@ -105,11 +106,12 @@ def download_and_extract_tar_gz(url, extract_to_dir):
         with tarfile.open(file_path, "r:gz") as tar:
             tar.extractall(path=extract_to_dir)
 
-        # Remove the downloaded .tar.gz file
         os.remove(file_path)
         print("Extraction complete.")
+        return True
     else:
         print(f"Failed to download file from {url}. Status code: {response.status_code}")
+        return False
 
 
 def train_val_test_loaders(
@@ -120,11 +122,32 @@ def train_val_test_loaders(
 ):
     # Downloading the dataset from axelera cloud because torchvision.datasets.Caltech101
     # has an issue with downloading the dataset from the original source
-    if not os.path.exists(root):
-        download_and_extract_tar_gz(
-            'https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/Caltech101.tar.gz', root
+    if not os.path.exists(os.path.join(root, '101_ObjectCategories')):
+        print(f"Dataset not found in {root}. Downloading from Axelera cloud...")
+        success = download_and_extract_tar_gz(
+            'https://media.axelera.ai/artifacts/data/Caltech101.tar.gz', root
         )
-    full_dataset = datasets.Caltech101(root=root, download=False)
+        if not success:
+            raise RuntimeError("Failed to download and extract dataset.")
+
+    try:
+        full_dataset = datasets.Caltech101(root=root, download=False)
+    except RuntimeError as e:
+        if "Dataset not found or corrupted" in str(e):
+            print(f"Dataset structure seems incorrect. Attempting clean download...")
+            # Try cleaning up and downloading again
+            if os.path.exists(root):
+                import shutil
+
+                shutil.rmtree(root)
+            success = download_and_extract_tar_gz(
+                'https://media.axelera.ai/artifacts/data/Caltech101.tar.gz', root
+            )
+            if not success:
+                raise RuntimeError("Failed to download and extract dataset.")
+            full_dataset = datasets.Caltech101(root=root, download=False)
+        else:
+            raise
 
     class_names = full_dataset.categories
     class_file = Path(__file__).parent / "caltech101_classes.txt"

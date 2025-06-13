@@ -36,12 +36,6 @@ def test_no_devices_found():
             device_manager.create_device_manager('gst')
 
 
-def test_no_devices_found_emulate():
-    with mock_runtime([]):
-        with device_manager.create_device_manager('gst', emulate='CPU') as dm:
-            assert dm.get_metis_type() == config.Metis.none
-
-
 def test_no_devices_found_override_metis():
     with mock_runtime([]):
         with device_manager.create_device_manager('gst', override_metis=config.Metis.pcie) as dm:
@@ -51,7 +45,7 @@ def test_no_devices_found_override_metis():
 @pytest.mark.parametrize('board_type', ['ALPHA_PCIE', 'ALPHA_M2'])
 def test_alpha_devices_found(board_type):
     with mock_runtime([board_type]):
-        with pytest.raises(RuntimeError, match='Metis Alpha not supported'):
+        with pytest.raises(RuntimeError, match='Failed to detect metis-0:1:0'):
             device_manager.create_device_manager('gst')
 
 
@@ -78,39 +72,49 @@ DEVICES = [[_make_device_info(devicen=n) for n in range(n)] for n in range(5)]
 
 
 @pytest.mark.parametrize(
-    'available, selector, expected, messages',
+    'available, level, selector, expected, messages',
     [
-        (DEVICES[1], '', ['metis-0:1:0'], 'Using device metis-0:1:0'),
-        (DEVICES[1], 'metis-0:1:0', ['metis-0:1:0'], 'Selected device metis-0:1:0'),
+        (DEVICES[1], logging.DEBUG, '', ['metis-0:1:0'], 'Using device metis-0:1:0'),
+        (DEVICES[1], logging.DEBUG, 'metis-0:1:0', ['metis-0:1:0'], 'Selected device metis-0:1:0'),
         (
             DEVICES[2],
+            logging.INFO,
             'metis-0:1:0',
             ['metis-0:1:0'],
             'Selected device metis-0:1:0 (deselected 1 other device)',
         ),
         (
             DEVICES[3],
+            logging.INFO,
             'metis-0:1:0',
             ['metis-0:1:0'],
             'Selected device metis-0:1:0 (deselected 2 other devices)',
         ),
         (
             DEVICES[2],
+            logging.INFO,
             '1',
             ['metis-0:2:0'],
             'Selected device metis-0:2:0 (deselected 1 other device)',
         ),
         (
             DEVICES[2],
+            logging.DEBUG,
             '0,1',
             ['metis-0:1:0', 'metis-0:2:0'],
             'Selected devices metis-0:1:0, metis-0:2:0',
         ),
-        (DEVICES[2], '', ['metis-0:1:0', 'metis-0:2:0'], 'Using devices metis-0:1:0, metis-0:2:0'),
+        (
+            DEVICES[2],
+            logging.DEBUG,
+            '',
+            ['metis-0:1:0', 'metis-0:2:0'],
+            'Using devices metis-0:1:0, metis-0:2:0',
+        ),
     ],
 )
-def test_device_selector_messages(caplog, available, selector, expected, messages):
-    caplog.set_level(logging.INFO)
+def test_device_selector_messages(caplog, level, available, selector, expected, messages):
+    caplog.set_level(level)
     got = device_manager._select_devices(available, selector)
     assert [x.name for x in got] == expected
     assert [rec.message for rec in caplog.records] == messages.splitlines()
@@ -204,23 +208,20 @@ def test_tracer_clock_correct(caplog, clock, expected, warnings):
 
 
 @pytest.mark.parametrize(
-    'in_env,in_clock,in_metis,in_mvm,clock,size,mvm',
+    'in_env,in_clock,in_metis,in_mvm,clock,mvm',
     [
-        (None, 600, 'OMEGA_PCIE', 88, 600, 0x80000000, 88),
-        ('', 600, 'OMEGA_PCIE', 88, 600, 0x80000000, 88),
-        ('', 600, 'OMEGA_SBC', 88, 600, 0x80000000, 88),
-        ('0', 600, 'OMEGA_PCIE', 88, None, None, None),
-        ('1', 600, 'OMEGA_PCIE', 88, 600, 0x80000000, 88),
-        ('400', 600, 'OMEGA_PCIE', 88, 400, 0x80000000, 88),
-        ('400,0x10000000', 600, 'OMEGA_PCIE', 88, 400, 0x10000000, 88),
-        ('400', 600, 'OMEGA_PCIE', 88, 400, 0x80000000, 88),
-        ('400', 600, 'OMEGA_SBC', 88, 400, 0x80000000, 88),
-        ('400,0x10000000', 600, 'OMEGA_M2', 88, 400, 0x10000000, 88),
-        ('400,,99', 600, 'OMEGA_M2', 88, 400, 0x40000000, 99),
-        ('400,0x10000000,99', 600, 'OMEGA_M2', 88, 400, 0x10000000, 99),
+        (None, 600, 'OMEGA_PCIE', 88, 600, 88),
+        ('', 600, 'OMEGA_PCIE', 88, 600, 88),
+        ('', 600, 'OMEGA_SBC', 88, 600, 88),
+        ('0', 600, 'OMEGA_PCIE', 88, None, None),
+        ('1', 600, 'OMEGA_PCIE', 88, 600, 88),
+        ('400', 600, 'OMEGA_PCIE', 88, 400, 88),
+        ('400', 600, 'OMEGA_SBC', 88, 400, 88),
+        ('400', 600, 'OMEGA_M2', 88, 400, 88),
+        ('400,99', 600, 'OMEGA_M2', 88, 400, 99),
     ],
 )
-def test_configure_board(in_env, in_clock, in_metis, in_mvm, clock, size, mvm):
+def test_configure_board(in_env, in_clock, in_metis, in_mvm, clock, mvm):
     with contextlib.ExitStack() as c:
         newenv = {'AXELERA_CONFIGURE_BOARD': in_env} if in_env is not None else {}
         c.enter_context(patch.dict(os.environ, newenv))
@@ -239,7 +240,6 @@ def test_configure_board(in_env, in_clock, in_metis, in_mvm, clock, size, mvm):
                 ctx.list_devices()[0],
                 device_firmware='1',
                 clock_profile_core_0=clock,
-                ddr_size=size,
                 mvm_utilisation_core_0=mvm,
             )
         else:
@@ -251,11 +251,7 @@ def test_configure_board(in_env, in_clock, in_metis, in_mvm, clock, size, mvm):
     [
         ('spam,100', 'Invalid literal for int'),
         ('spam', 'Invalid literal for int'),
-        ('100,spam', 'Invalid literal for int'),
-        ('100,0xspam', 'Invalid literal for int'),
-        ('100,0x10000000,spam', 'Invalid literal for int'),
-        ('100,abcd', 'Invalid literal for int'),
-        ('400,,abc', "Invalid literal"),
+        ('400,abc', "Invalid literal"),
     ],
 )
 def test_configure_board_bad_input(in_env, err):
@@ -276,15 +272,6 @@ def test_configure_board_bad_input(in_env, err):
 @pytest.mark.parametrize(
     "key, value, expected",
     [
-        ('ddr_size', 0x80000000, '2.0GB'),
-        ('ddr_size', 0x60000000, '1.5GB'),
-        ('ddr_size', 0x40000000, '1.0GB'),
-        ('ddr_size', 0x20000000, '512.0MB'),
-        ('ddr_size', 0x100000, '1.0MB'),
-        ('ddr_size', 0x80000, '512.0KB'),
-        ('ddr_size', 0x400, '1.0KB'),
-        ('ddr_size', 0x200, '512B'),
-        ('ddr_size', 0x1, '1B'),
         ('mvm_utilisation_core_0', 100, '100%'),
         ('mvm_utilisation_core_1', 50, '50%'),
         ('mvm_utilisation_core_2', 37.5, '37.5%'),

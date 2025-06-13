@@ -228,7 +228,7 @@ TEST(Conversion, yuyv2rgb)
     // clang-format on
   };
 
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2);
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
   auto expected = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF,
@@ -271,7 +271,7 @@ TEST(Conversion, i4202rgb)
     // clang-format on
   };
 
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2);
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
   auto expected = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF,
@@ -312,7 +312,7 @@ TEST(Conversion, nv12torgb)
     // clang-format on
   };
 
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2);
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
   auto expected = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF,
@@ -322,6 +322,395 @@ TEST(Conversion, nv12torgb)
     // clang-format on
   };
 
+  std::vector<size_t> strides{ 6, 6 };
+  std::vector<size_t> offsets{ 0, 12 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::NV12 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+
+TEST(Conversion, i4202rgb_clockwise)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "clockwise" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    // clang-format on
+  };
+
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    // clang-format on
+  };
+  std::vector<size_t> strides{ 6, 3, 3 };
+  std::vector<size_t> offsets{ 0, 12, 18 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 2 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+TEST(Conversion, i4202rgb_counterclockwise)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "counterclockwise" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    // clang-format on
+  };
+
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    // clang-format on
+  };
+  std::vector<size_t> strides{ 6, 3, 3 };
+  std::vector<size_t> offsets{ 0, 12, 18 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 2 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+TEST(Conversion, i4202rgb_upper_left_diagonal)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "upper-left-diagonal" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    // clang-format on
+  };
+
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    // clang-format on
+  };
+  std::vector<size_t> strides{ 6, 3, 3 };
+  std::vector<size_t> offsets{ 0, 12, 18 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 2 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+TEST(Conversion, i4202rgb_upper_right_diagonal)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "upper-right-diagonal" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    // clang-format on
+  };
+
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    // clang-format on
+  };
+  std::vector<size_t> strides{ 6, 3, 3 };
+  std::vector<size_t> offsets{ 0, 12, 18 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 2 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+
+TEST(Conversion, i4202rgb_horizontal_flip)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "horizontal-flip" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    // clang-format on
+  };
+
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    // clang-format on
+  };
+  std::vector<size_t> strides{ 6, 3, 3 };
+  std::vector<size_t> offsets{ 0, 12, 18 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+TEST(Conversion, i4202rgb_vertical_flip)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "vertical-flip" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    // clang-format on
+  };
+
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    // clang-format on
+  };
+  std::vector<size_t> strides{ 6, 3, 3 };
+  std::vector<size_t> offsets{ 0, 12, 18 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+TEST(Conversion, i4202rgb_rotate180)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "rotate-180" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    // clang-format on
+  };
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    // clang-format on
+  };
+  std::vector<size_t> strides{ 6, 3, 3 };
+  std::vector<size_t> offsets{ 0, 12, 18 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+
+TEST(Conversion, yuyv_rotate180)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "rotate-180" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // clang-format on
+  };
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    // clang-format on
+  };
+  std::vector<size_t> strides{ 12 };
+  std::vector<size_t> offsets{ 0 };
+
+  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::YUY2 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+TEST(Conversion, nv122rgb_rotate180)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "rgba" },
+    { "flip_method", "rotate-180" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    // clang-format off
+    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00,
+    // clang-format on
+  };
+  auto out_buf = std::vector<uint8_t>(in_buf.size() * 8 / 3, 0x99);
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
+    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
+    // clang-format on
+  };
   std::vector<size_t> strides{ 6, 6 };
   std::vector<size_t> offsets{ 0, 12 };
 

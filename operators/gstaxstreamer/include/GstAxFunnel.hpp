@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gst/base/gstaggregator.h>
+#include <memory>
 #include <set>
 G_BEGIN_DECLS
 
@@ -21,7 +22,7 @@ typedef struct _GstAxfunnelData GstAxfunnelData;
 
 struct _GstAxfunnel {
   GstAggregator parent;
-  std::set<int> stream_set;
+  std::unique_ptr<std::set<int>> stream_set;
 };
 
 struct _GstAxfunnelClass {

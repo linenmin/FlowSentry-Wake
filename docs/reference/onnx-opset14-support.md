@@ -1,202 +1,59 @@
 <!--- SPDX-License-Identifier: Apache-2.0 -->
-![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-# AIPU support of ONNX opset14 operators
+## AIPU support of ONNX opset14 operators
 
-- [AIPU support of ONNX opset14 operators](#aipu-support-of-onnx-opset14-operators)
-  - [Onnx Operators](#onnx-operators)
-    - [Add](#add)
-      - [Parameters](#parameters)
-      - [Outputs](#outputs)
-      - [Type Constraints](#type-constraints)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints)
-    - [AveragePool](#averagepool)
-      - [Parameters](#parameters-1)
-      - [Outputs](#outputs-1)
-      - [Type Constraints](#type-constraints-1)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-1)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-1)
-    - [BatchNormalization](#batchnormalization)
-      - [Parameters](#parameters-2)
-      - [Outputs (1 - 3)](#outputs-1---3)
-      - [Type Constraints](#type-constraints-2)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-2)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-2)
-    - [Clip](#clip)
-      - [Parameters (1 - 3)](#parameters-1---3)
-      - [Outputs](#outputs-2)
-      - [Type Constraints](#type-constraints-3)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-3)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-3)
-    - [Concat](#concat)
-      - [Parameters (1 - ∞)](#parameters-1---)
-      - [Outputs](#outputs-3)
-      - [Type Constraints](#type-constraints-4)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-4)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-4)
-    - [Conv](#conv)
-      - [Parameters (2 - 3)](#parameters-2---3)
-      - [Outputs](#outputs-4)
-      - [Type Constraints](#type-constraints-5)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-5)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-5)
-    - [ConvTranspose](#convtranspose)
-      - [Parameters (2 - 3)](#parameters-2---3-1)
-      - [Outputs](#outputs-5)
-      - [Type Constraints](#type-constraints-6)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-6)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-6)
-    - [Gemm](#gemm)
-      - [Parameters (2 - 3)](#parameters-2---3-2)
-      - [Outputs](#outputs-6)
-      - [Type Constraints](#type-constraints-7)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-7)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-7)
-    - [GlobalAveragePool](#globalaveragepool)
-      - [Parameters](#parameters-3)
-      - [Outputs](#outputs-7)
-      - [Type Constraints](#type-constraints-8)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-8)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-8)
-    - [GlobalMaxPool](#globalmaxpool)
-      - [Parameters](#parameters-4)
-      - [Outputs](#outputs-8)
-      - [Type Constraints](#type-constraints-9)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-9)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-9)
-    - [HardSigmoid](#hardsigmoid)
-      - [Parameters](#parameters-5)
-      - [Outputs](#outputs-9)
-      - [Type Constraints](#type-constraints-10)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-10)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-10)
-    - [LeakyRelu](#leakyrelu)
-      - [Parameters](#parameters-6)
-      - [Outputs](#outputs-10)
-      - [Type Constraints](#type-constraints-11)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-11)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-11)
-    - [MaxPool](#maxpool)
-      - [Parameters](#parameters-7)
-      - [Outputs (1 - 2)](#outputs-1---2)
-      - [Type Constraints](#type-constraints-12)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-12)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-12)
-    - [Mul](#mul)
-      - [Parameters](#parameters-8)
-      - [Outputs](#outputs-11)
-      - [Type Constraints](#type-constraints-13)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-13)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-13)
-    - [PRelu](#prelu)
-      - [Parameters](#parameters-9)
-      - [Outputs](#outputs-12)
-      - [Type Constraints](#type-constraints-14)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-14)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-14)
-    - [Pad](#pad)
-      - [Parameters (2 - 3)](#parameters-2---3-3)
-      - [Outputs](#outputs-13)
-      - [Type Constraints](#type-constraints-15)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-15)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-15)
-    - [Relu](#relu)
-      - [Parameters](#parameters-10)
-      - [Outputs](#outputs-14)
-      - [Type Constraints](#type-constraints-16)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-16)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-16)
-    - [Resize](#resize)
-      - [Parameters (1 - 4)](#parameters-1---4)
-      - [Outputs](#outputs-15)
-      - [Type Constraints](#type-constraints-17)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-17)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-17)
-    - [Selu](#selu)
-      - [Parameters](#parameters-11)
-      - [Outputs](#outputs-16)
-      - [Type Constraints](#type-constraints-18)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-18)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-18)
-    - [Sigmoid](#sigmoid)
-      - [Parameters](#parameters-12)
-      - [Outputs](#outputs-17)
-      - [Type Constraints](#type-constraints-19)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-19)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-19)
-    - [Slice](#slice)
-      - [Parameters (3 - 5)](#parameters-3---5)
-      - [Outputs](#outputs-18)
-      - [Type Constraints](#type-constraints-20)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-20)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-20)
-    - [Split](#split)
-      - [Parameters (1 - 2)](#parameters-1---2)
-      - [Outputs (1 - ∞)](#outputs-1---)
-      - [Type Constraints](#type-constraints-21)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-21)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-21)
-    - [Sub](#sub)
-      - [Parameters](#parameters-13)
-      - [Outputs](#outputs-19)
-      - [Type Constraints](#type-constraints-22)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-22)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-22)
-    - [Tanh](#tanh)
-      - [Parameters](#parameters-14)
-      - [Outputs](#outputs-20)
-      - [Type Constraints](#type-constraints-23)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-23)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-23)
-    - [Transpose](#transpose)
-      - [Parameters](#parameters-15)
-      - [Outputs](#outputs-21)
-      - [Type Constraints](#type-constraints-24)
-      - [Axelera's notes for developers](#axeleras-notes-for-developers-24)
-        - [AIPU Acceleration Constraints](#aipu-acceleration-constraints-24)
+*This file is automatically generated from the ONNX operator definitions
+            and Axelera's AIPU operators acceleration support definitions.
 
-## Onnx Operators
+### ai.onnx
 
 |**Operator**|**AIPU Acceleration**|
 |-|:-:|
-|[Add](#add)|Constrained|
-|[AveragePool](#averagepool)|Constrained|
-|[BatchNormalization](#batchnormalization)|Supported|
-|[Concat](#concat)|Constrained|
-|[Conv](#conv)|Constrained|
-|[ConvTranspose](#convtranspose)|Constrained|
-|[Gemm](#gemm)|Constrained|
-|[GlobalAveragePool](#globalaveragepool)|Supported|
-|[GlobalMaxPool](#globalmaxpool)|Supported|
-|[LeakyRelu](#leakyrelu)|Supported|
-|[MaxPool](#maxpool)|Constrained|
-|[Mul](#mul)|Constrained|
-|[PRelu](#prelu)|Constrained|
-|[Pad](#pad)|Constrained|
-|[Resize](#resize)|Constrained|
-|[Sigmoid](#sigmoid)|Supported|
-|[Slice](#slice)|Constrained|
-|[Split](#split)|Constrained|
-|[Sub](#sub)|Constrained|
-|[Tanh](#tanh)|Supported|
-|[Transpose](#transpose)|Constrained|
+|<a href="#Add">Add</a>|Constrained|
+|<a href="#AveragePool">AveragePool</a>|Constrained|
+|<a href="#BatchNormalization">BatchNormalization</a>|Supported|
+|<a href="#Concat">Concat</a>|Constrained|
+|<a href="#Conv">Conv</a>|Constrained|
+|<a href="#ConvTranspose">ConvTranspose</a>|Constrained|
+|<a href="#Flatten">Flatten</a>|Constrained|
+|<a href="#Gemm">Gemm</a>|Constrained|
+|<a href="#GlobalAveragePool">GlobalAveragePool</a>|Supported|
+|<a href="#GlobalMaxPool">GlobalMaxPool</a>|Supported|
+|<a href="#LeakyRelu">LeakyRelu</a>|Supported|
+|<a href="#MaxPool">MaxPool</a>|Constrained|
+|<a href="#Mul">Mul</a>|Constrained|
+|<a href="#PRelu">PRelu</a>|Constrained|
+|<a href="#Pad">Pad</a>|Constrained|
+|<a href="#Resize">Resize</a>|Constrained|
+|<a href="#Sigmoid">Sigmoid</a>|Supported|
+|<a href="#Slice">Slice</a>|Constrained|
+|<a href="#Split">Split</a>|Constrained|
+|<a href="#Squeeze">Squeeze</a>|Constrained|
+|<a href="#Sub">Sub</a>|Constrained|
+|<a href="#Tanh">Tanh</a>|Supported|
+|<a href="#Transpose">Transpose</a>|Constrained|
 
 
 |**Function**|**AIPU Acceleration**|
 |-|:-:|
-|[Clip](#clip)|Constrained|
-|[HardSigmoid](#hardsigmoid)|Constrained|
-|[Relu](#relu)|Supported|
-|[Selu](#selu)|Constrained|
+|<a href="#Clip">Clip</a>|Constrained|
+|<a href="#HardSigmoid">HardSigmoid</a>|Constrained|
+|<a href="#HardSwish">HardSwish</a>|Supported|
+|<a href="#Relu">Relu</a>|Supported|
+|<a href="#Selu">Selu</a>|Constrained|
 
----
-### Add
+## ai.onnx
+
+### <a name="Add"></a><a name="add">**Add**</a>
 
   Performs element-wise binary addition (with Numpy-style broadcasting support).
 
   This operator supports **multidirectional (i.e., Numpy-style) broadcasting**.
 
   (Opset 14 change): Extend supported types to include uint8, int8, uint16, and int16.
+
+#### Version
+
+This version of the operator has been available since version 14 of the default ONNX operator set.
 
 #### Parameters
 
@@ -223,15 +80,14 @@
 
 #### Axelera's notes for developers
 
-Given an operand with shape [N, C, H, W], Addition is supported with other operands with shape [N, C, H, W], [1, C, 1, 1], and scalars.
+Given an operand with shape [N, C, H, W], Addition is supported with other operands with shape [N, C, H, W], [1, C, 1, 1], and scalars. If operands have the same shapes, they must be non-constant.
 
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>allow_config</tt> : A.shape == B.shape</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]==1 and B.shape==(0)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]==1 and A.shape==(0)</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]!=1 and B.shape==(1, A.shape[1], 1, 1)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]!=1 and A.shape==(1, B.shape[1], 1, 1)</dt></dl>
+<dt><tt>allow_config</tt> : A.shape == B.shape and not A.is_constant and not B.is_constant</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]==1 and B.shape==(0)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]==1 and A.shape==(0)</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]!=1 and (B.shape==(1, A.shape[1], 1, 1) or B.shape==())</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]!=1 and (A.shape==(1, B.shape[1], 1, 1) or A.shape==())</dt></dl>
 
----
-### AveragePool
+### <a name="AveragePool"></a><a name="averagepool">**AveragePool**</a>
 
   AveragePool consumes an input tensor X and applies average pooling across
    the tensor according to kernel sizes, stride sizes, and pad lengths.
@@ -268,6 +124,10 @@ Given an operand with shape [N, C, H, W], Addition is supported with other opera
    ```
    The output of each pooling window is divided by the number of elements (exclude pad when attribute count_include_pad is zero).
 
+
+#### Version
+
+This version of the operator has been available since version 11 of the default ONNX operator set.
 
 #### Parameters
 
@@ -309,10 +169,9 @@ Only AveragePool operators with explicit padding (i.e., auto_pad = "NOTSET") are
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>rule</tt> : auto_pad=="NOTSET"</dt><dt><tt>rule</tt> : len(pads)==4</dt><dt><tt>rule</tt> : (pads[0]==pads[2] and pads[1]==pads[3] and pads[0]<=0.5*kernel.shape[0] and pads[1]<=0.5*kernel.shape[1]) or (pads[0]!=pads[2]) or (pads[1]!=pads[3])</dt><dt><tt>rule</tt> : (pads!=[0, 0, 0, 0] and count_include_pad==1) or (pads==[0, 0, 0, 0])</dt></dl>
+<dt><tt>rule</tt> : auto_pad=="NOTSET"</dt><dt><tt>rule</tt> : len(pads)==4</dt><dt><tt>rule</tt> : (pads[0]==pads[2] and pads[1]==pads[3] and pads[0]<=0.5*kernel_shape[0] and pads[1]<=0.5*kernel_shape[1]) or (pads[0]!=pads[2]) or (pads[1]!=pads[3])</dt><dt><tt>rule</tt> : (pads!=[0, 0, 0, 0] and count_include_pad==1) or (pads==[0, 0, 0, 0])</dt></dl>
 
----
-### BatchNormalization
+### <a name="BatchNormalization"></a><a name="batchnormalization">**BatchNormalization**</a>
 
   Carries out batch normalization as described in the paper
   https://arxiv.org/abs/1502.03167. Depending on the mode it is being run,
@@ -353,6 +212,10 @@ Only AveragePool operators with explicit padding (i.e., auto_pad = "NOTSET") are
   For previous (depreciated) non-spatial cases, implementors are suggested
   to flatten the input shape to (N x C * D1 * D2 * ... * Dn) before a BatchNormalization Op.
   This operator has **optional** inputs/outputs. An empty string may be used in the place of an actual argument's name to indicate a missing argument. Trailing optional arguments (those not followed by an argument that is present) may also be simply omitted.
+
+#### Version
+
+This version of the operator has been available since version 14 of the default ONNX operator set.
 
 #### Parameters
 
@@ -404,12 +267,15 @@ Only AveragePool operators with explicit padding (i.e., auto_pad = "NOTSET") are
 <dt><tt>Operator is supported in any configurations.</tt>
 </dl>
 
----
-### Clip
+### <a name="Clip"></a><a name="clip">**Clip**</a>
 
   Clip operator limits the given input within an interval. The interval is
   specified by the inputs 'min' and 'max'. They default to
   numeric_limits::lowest() and numeric_limits::max(), respectively.
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
 
 #### Parameters (1 - 3)
 
@@ -445,10 +311,13 @@ Only Clip operators implementing ReLU6 (min=0, max=6) and HardTanh (min=-1, max=
 <dl>
 <dt><tt>allow_config</tt> : min==0 and max==6</dt><dt><tt>allow_config</tt> : min==-1 and max==1</dt></dl>
 
----
-### Concat
+### <a name="Concat"></a><a name="concat">**Concat**</a>
 
   Concatenate a list of tensors into a single tensor. All input tensors must have the same shape, except for the dimension size of the axis to concatenate on.
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
 
 #### Parameters (1 - &#8734;)
 
@@ -480,13 +349,16 @@ Only concatenation along the channel dimension for a 4-d feature map is currentl
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>allow_config</tt> : axis == 1</dt><dt><tt>allow_config</tt> : all([len(x) == 4 for x in inputs.shapes]) and axis == -3</dt></dl>
+<dt><tt>allow_config</tt> : axis == 1</dt><dt><tt>allow_config</tt> : all([len(x.shape) == 4 for x in inputs]) and axis == -3</dt></dl>
 
----
-### Conv
+### <a name="Conv"></a><a name="conv">**Conv**</a>
 
   The convolution operator consumes an input tensor and a filter, and
   computes the output.
+
+#### Version
+
+This version of the operator has been available since version 11 of the default ONNX operator set.
 
 #### Parameters (2 - 3)
 
@@ -527,15 +399,14 @@ Only concatenation along the channel dimension for a 4-d feature map is currentl
 
 #### Axelera's notes for developers
 
-Only Conv operators with explicit padding (i.e., auto_pad = "NOTSET") are currently supported. Grouped convolutions that are not depthwise (i.e., group = nr_channels) are not supported. In the case of depthwise convolutions, only symmetric kernels are supported.
+Only Conv operators with explicit padding (i.e., auto_pad = "NOTSET") are currently supported. Grouped convolutions that are not depthwise (i.e., group = nr_channels) are not supported. In the case of depthwise convolutions, only symmetric kernels/strides/dilations are supported.
 
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>rule</tt> : auto_pad == "NOTSET"</dt><dt><tt>rule</tt> : group == 1 or (group == X.shape[1] and kernel.shape[0] == kernel.shape[1])</dt></dl>
+<dt><tt>rule</tt> : auto_pad == "NOTSET"</dt><dt><tt>rule</tt> : group == 1 or (group == X.shape[1] and kernel_shape[0] == kernel_shape[1] and (dilations is None or dilations[0] == dilations[1]) and (strides is None or strides[0] == strides[1]))</dt></dl>
 
----
-### ConvTranspose
+### <a name="ConvTranspose"></a><a name="convtranspose">**ConvTranspose**</a>
 
   The convolution transpose operator consumes an input tensor and a filter,
   and computes the output.
@@ -551,6 +422,10 @@ Only Conv operators with explicit padding (i.e., auto_pad = "NOTSET") are curren
     Else: pads[start_i] = total_padding[i] - (total_padding[i]/2); pads[end_i] = (total_padding[i]/2).
 
 
+
+#### Version
+
+This version of the operator has been available since version 11 of the default ONNX operator set.
 
 #### Parameters (2 - 3)
 
@@ -600,10 +475,52 @@ Only ConvTranspose operators with explicit padding (i.e., auto_pad = "NOTSET") a
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>rule</tt> : auto_pad == "NOTSET"</dt></dl>
+<dt><tt>rule</tt> : auto_pad == "NOTSET"</dt><dt><tt>rule</tt> : group == 1</dt></dl>
 
----
-### Gemm
+### <a name="Flatten"></a><a name="flatten">**Flatten**</a>
+
+  Flattens the input tensor into a 2D matrix. If input tensor has shape
+  (d_0, d_1, ... d_n) then the output will have shape
+  (d_0 X d_1 ... d_(axis-1), d_axis X d_(axis+1) ... X dn).
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
+
+#### Parameters
+
+<dl>
+<dt><tt>input</tt> : T</dt>
+<dd>A tensor of rank >= axis.</dd>
+<dt><tt>axis</tt> : int (default is 1)</dt>
+<dd>Indicate up to which input dimensions (exclusive) should be flattened to the outer dimension of the output. The value for axis must be in the range [-r, r], where r is the rank of the input tensor. Negative value means counting dimensions from the back. When axis = 0, the shape of the output tensor is (1, (d_0 X d_1 ... d_n), where the shape of the input tensor is (d_0, d_1, ... d_n). </dd>
+</dl>
+
+#### Outputs
+
+<dl>
+<dt><tt>output</tt> : T</dt>
+<dd>A 2D tensor with the contents of the input tensor, with input dimensions up to axis flattened to the outer dimension of the output and remaining input dimensions flattened into the inner dimension of the output.</dd>
+</dl>
+
+#### Type Constraints
+
+<dl>
+<dt><tt>T</tt> : tensor(uint8), tensor(uint16), tensor(uint32), tensor(uint64), tensor(int8), tensor(int16), tensor(int32), tensor(int64), tensor(bfloat16), tensor(float16), tensor(float), tensor(double), tensor(string), tensor(bool), tensor(complex64), tensor(complex128)</dt>
+<dd>Constrain input and output to all tensor types.</dd>
+</dl>
+
+#### Axelera's notes for developers
+
+The Flatten operations is only supported in specific scenario, such as before a Gemm layer, or at the end of a model. Note that, even in the cases where it is supported, Flatten should have axes specified as >= 0.
+
+##### AIPU Acceleration Constraints
+
+<dl>
+<dt><tt>Operator is not supported in any configurations.</tt>
+</dl>
+
+### <a name="Gemm"></a><a name="gemm">**Gemm**</a>
 
   General Matrix multiplication:
   https://en.wikipedia.org/wiki/Basic_Linear_Algebra_Subprograms#Level_3
@@ -617,6 +534,10 @@ Only ConvTranspose operators with explicit padding (i.e., auto_pad = "NOTSET") a
   computation if attribute transA is non-zero, same for B and transB.
   This operator supports **unidirectional broadcasting** (tensor C should be unidirectional broadcastable to tensor A * B).
   This operator has **optional** inputs/outputs. An empty string may be used in the place of an actual argument's name to indicate a missing argument. Trailing optional arguments (those not followed by an argument that is present) may also be simply omitted.
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
 
 #### Parameters (2 - 3)
 
@@ -660,13 +581,16 @@ Gemm with automatic transposition of the first operand (i.e., transA == 1) is no
 <dl>
 <dt><tt>rule</tt> : transA == 0</dt></dl>
 
----
-### GlobalAveragePool
+### <a name="GlobalAveragePool"></a><a name="globalaveragepool">**GlobalAveragePool**</a>
 
   GlobalAveragePool consumes an input tensor X and applies average pooling across
    the values in the same channel. This is equivalent to AveragePool with kernel size
    equal to the spatial dimension of input tensor.
 
+#### Version
+
+This version of the operator has been available since version 1 of the default ONNX operator set.
+
 #### Parameters
 
 <dl>
@@ -697,13 +621,16 @@ Gemm with automatic transposition of the first operand (i.e., transA == 1) is no
 <dt><tt>Operator is supported in any configurations.</tt>
 </dl>
 
----
-### GlobalMaxPool
+### <a name="GlobalMaxPool"></a><a name="globalmaxpool">**GlobalMaxPool**</a>
 
   GlobalMaxPool consumes an input tensor X and applies max pooling across
    the values in the same channel. This is equivalent to MaxPool with kernel size
    equal to the spatial dimension of input tensor.
 
+#### Version
+
+This version of the operator has been available since version 1 of the default ONNX operator set.
+
 #### Parameters
 
 <dl>
@@ -734,12 +661,15 @@ Gemm with automatic transposition of the first operand (i.e., transA == 1) is no
 <dt><tt>Operator is supported in any configurations.</tt>
 </dl>
 
----
-### HardSigmoid
+### <a name="HardSigmoid"></a><a name="hardsigmoid">**HardSigmoid**</a>
 
   HardSigmoid takes one input data (Tensor<T>) and produces one output data
   (Tensor<T>) where the HardSigmoid function, y = max(0, min(1, alpha * x + beta)),
   is applied to the tensor elementwise.
+
+#### Version
+
+This version of the operator has been available since version 6 of the default ONNX operator set.
 
 #### Parameters
 
@@ -768,19 +698,62 @@ Gemm with automatic transposition of the first operand (i.e., transA == 1) is no
 
 #### Axelera's notes for developers
 
-Only HardSigmoid operators with pytorch-like parameters (alpha=0.16666, beta=0.5) are supported.
+Only HardSigmoid operators with pytorch-like parameters (alpha=1/6, beta=0.5) are supported.
 
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>rule</tt> : alpha == 0.16666</dt><dt><tt>rule</tt> : beta == 0.5</dt></dl>
+<dt><tt>rule</tt> : abs(alpha - 0.166667) < 5e-6</dt><dt><tt>rule</tt> : abs(beta - 0.5) < 5e-6</dt></dl>
 
----
-### LeakyRelu
+### <a name="HardSwish"></a><a name="hardswish">**HardSwish**</a>
+
+  HardSwish takes one input data (Tensor<T>) and produces one output data (Tensor<T>) where
+  the HardSwish function, y = x * max(0, min(1, alpha * x + beta)) = x * HardSigmoid<alpha, beta>(x),
+  where alpha = 1/6 and beta = 0.5, is applied to the tensor elementwise.
+
+#### Version
+
+This version of the operator has been available since version 14 of the default ONNX operator set.
+
+#### Parameters
+
+<dl>
+<dt><tt>X</tt> : T</dt>
+<dd>Input tensor</dd>
+</dl>
+
+#### Outputs
+
+<dl>
+<dt><tt>Y</tt> : T</dt>
+<dd>Output tensor</dd>
+</dl>
+
+#### Type Constraints
+
+<dl>
+<dt><tt>T</tt> : tensor(float16), tensor(float), tensor(double)</dt>
+<dd>Constrain input and output types to float tensors.</dd>
+</dl>
+
+#### Axelera's notes for developers
+
+
+##### AIPU Acceleration Constraints
+
+<dl>
+<dt><tt>Operator is supported in any configurations.</tt>
+</dl>
+
+### <a name="LeakyRelu"></a><a name="leakyrelu">**LeakyRelu**</a>
 
   LeakyRelu takes input data (Tensor<T>) and an argument alpha, and produces one
   output data (Tensor<T>) where the function `f(x) = alpha * x for x < 0`,
   `f(x) = x for x >= 0`, is applied to the data tensor elementwise.
+
+#### Version
+
+This version of the operator has been available since version 6 of the default ONNX operator set.
 
 #### Parameters
 
@@ -814,8 +787,7 @@ Only HardSigmoid operators with pytorch-like parameters (alpha=0.16666, beta=0.5
 <dt><tt>Operator is supported in any configurations.</tt>
 </dl>
 
----
-### MaxPool
+### <a name="MaxPool"></a><a name="maxpool">**MaxPool**</a>
 
   MaxPool consumes an input tensor X and applies max pooling across
    the tensor according to kernel sizes, stride sizes, and pad lengths.
@@ -849,6 +821,10 @@ Only HardSigmoid operators with pytorch-like parameters (alpha=0.16666, beta=0.5
    ```
    The output of each pooling window is maximum number of elements exclude pad.
 
+
+#### Version
+
+This version of the operator has been available since version 12 of the default ONNX operator set.
 
 #### Parameters
 
@@ -898,14 +874,17 @@ Only MaxPool operators with explicit padding (i.e., auto_pad = "NOTSET") and row
 <dl>
 <dt><tt>rule</tt> : auto_pad=="NOTSET"</dt><dt><tt>rule</tt> : storage_order==0</dt></dl>
 
----
-### Mul
+### <a name="Mul"></a><a name="mul">**Mul**</a>
 
   Performs element-wise binary multiplication (with Numpy-style broadcasting support).
 
   This operator supports **multidirectional (i.e., Numpy-style) broadcasting**.
 
   (Opset 14 change): Extend supported types to include uint8, int8, uint16, and int16.
+
+#### Version
+
+This version of the operator has been available since version 14 of the default ONNX operator set.
 
 #### Parameters
 
@@ -937,15 +916,18 @@ Given an operand with shape [N, C, H, W], Multiplication is supported with other
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>allow_config</tt> : A.shape == B.shape</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]==1 and B.shape==(0)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]==1 and A.shape==(0)</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]!=1 and B.shape==(1, A.shape[1], 1, 1)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]!=1 and A.shape==(1, B.shape[1], 1, 1)</dt></dl>
+<dt><tt>allow_config</tt> : A.shape == B.shape and not A.is_constant and not B.is_constant</dt><dt><tt>allow_config</tt> : (A.shape==() and len(B.shape)==4) or (B.shape==() and len(A.shape)==4)</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]==1 and B.shape==(0)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]==1 and A.shape==(0)</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]!=1 and B.shape==(1, A.shape[1], 1, 1)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]!=1 and A.shape==(1, B.shape[1], 1, 1)</dt></dl>
 
----
-### PRelu
+### <a name="PRelu"></a><a name="prelu">**PRelu**</a>
 
   PRelu takes input data (Tensor<T>) and slope tensor as input, and produces one
   output data (Tensor<T>) where the function `f(x) = slope * x for x < 0`,
   `f(x) = x for x >= 0`., is applied to the data tensor elementwise.
   This operator supports **unidirectional broadcasting** (tensor slope should be unidirectional broadcastable to input tensor X).
+
+#### Version
+
+This version of the operator has been available since version 9 of the default ONNX operator set.
 
 #### Parameters
 
@@ -979,8 +961,7 @@ Due to torch runtime constraints, Prelu is supported with either scalar or per-c
 <dl>
 <dt><tt>allow_config</tt> : slope.size == 1</dt><dt><tt>allow_config</tt> : np.array_equal([x for x in slope.shape if x != 1], [X.shape[1]])</dt></dl>
 
----
-### Pad
+### <a name="Pad"></a><a name="pad">**Pad**</a>
 
   Given a tensor containing the data to be padded (`data`), a tensor containing the number of start and end pad values for axis (`pads`), (optionally) a `mode`, and (optionally) `constant_value`,
   a padded tensor (`output`) is generated.
@@ -1058,6 +1039,10 @@ Due to torch runtime constraints, Prelu is supported with either scalar or per-c
     ]
 
 
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
+
 #### Parameters (2 - 3)
 
 <dl>
@@ -1087,19 +1072,22 @@ Due to torch runtime constraints, Prelu is supported with either scalar or per-c
 
 #### Axelera's notes for developers
 
-Pad is currently supported only for the "constant" mode. Moreover, padding along the batch and channel dimensions is not supported, and should be specified as 0 in the pads parameter.
+Pad is currently supported only for the "constant" mode. Moreover, padding along the batch dimension is not supported, and should be specified as 0 in the pads parameter. Padding along the channel dimension should be a multiple of PWORD_LEN (64).
 
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>rule</tt> : mode not in ["reflect", "edge"]</dt><dt><tt>rule</tt> : pads[:2] == [0, 0]</dt><dt><tt>rule</tt> : pads[2] == pads[3]</dt></dl>
+<dt><tt>rule</tt> : constant_value is None or constant_value == 0.0</dt><dt><tt>rule</tt> : mode not in ["reflect", "edge"]</dt><dt><tt>rule</tt> : len(pads) == 2 * len(data.shape) and pads[0] == pads[len(data.shape)] == 0</dt><dt><tt>rule</tt> : len(pads) == 2 * len(data.shape) and pads[1] % 64 == pads[1 + len(data.shape)] % 64 == 0</dt></dl>
 
----
-### Relu
+### <a name="Relu"></a><a name="relu">**Relu**</a>
 
   Relu takes one input data (Tensor<T>) and produces one output data
   (Tensor<T>) where the rectified linear function, y = max(0, x), is applied to
   the tensor elementwise.
+
+#### Version
+
+This version of the operator has been available since version 14 of the default ONNX operator set.
 
 #### Parameters
 
@@ -1131,12 +1119,15 @@ Pad is currently supported only for the "constant" mode. Moreover, padding along
 <dt><tt>Operator is supported in any configurations.</tt>
 </dl>
 
----
-### Resize
+### <a name="Resize"></a><a name="resize">**Resize**</a>
 
   Resize the input tensor. In general, it calculates every value in the output tensor as a weighted average of neighborhood (a.k.a. sampling locations) in the input tensor.
   Each dimension value of the output tensor is:
     output_dimension = floor(input_dimension * (roi_end - roi_start) * scale) if input \"sizes\" is not specified.
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
 
 #### Parameters (1 - 4)
 
@@ -1205,15 +1196,18 @@ Resize is currently supported for the nearest and linear modes. The roi paramete
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>rule</tt> : roi is None</dt><dt><tt>rule</tt> : mode in ["nearest", "linear"]</dt><dt><tt>rule</tt> : (mode == "linear" and Y.shape[-2] % X.shape[-2] == Y.shape[-1] % X.shape[-1]) or mode == "nearest"</dt><dt><tt>rule</tt> : (mode == "linear" and Y.shape[-2] % X.shape[-2] == 0) or mode == "nearest"</dt><dt><tt>rule</tt> : (mode == "linear" and Y.shape[-1] % X.shape[-1] == 0) or mode == "nearest"</dt></dl>
+<dt><tt>rule</tt> : roi is None</dt><dt><tt>rule</tt> : mode in ["nearest", "linear"]</dt><dt><tt>rule</tt> : (mode == "linear" and Y.shape[-2] // X.shape[-2] == Y.shape[-1] // X.shape[-1]) or mode == "nearest"</dt><dt><tt>rule</tt> : (mode == "linear" and Y.shape[-2] % X.shape[-2] == 0) or mode == "nearest"</dt><dt><tt>rule</tt> : (mode == "linear" and Y.shape[-1] % X.shape[-1] == 0) or mode == "nearest"</dt></dl>
 
----
-### Selu
+### <a name="Selu"></a><a name="selu">**Selu**</a>
 
   Selu takes one input data (Tensor<T>) and produces one output data
   (Tensor<T>) where the scaled exponential linear unit function,
   `y = gamma * (alpha * e^x - alpha) for x <= 0`, `y = gamma * x for x > 0`,
   is applied to the tensor elementwise.
+
+#### Version
+
+This version of the operator has been available since version 6 of the default ONNX operator set.
 
 #### Parameters
 
@@ -1247,14 +1241,17 @@ Selu operators are supported if the alpha and gamma parameters are set to the de
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>rule</tt> : alpha == 1.67326</dt><dt><tt>rule</tt> : gamma == 1.0507</dt></dl>
+<dt><tt>rule</tt> : abs(alpha - 1.67326) < 5e-6</dt><dt><tt>rule</tt> : abs(gamma - 1.0507) < 5e-6</dt></dl>
 
----
-### Sigmoid
+### <a name="Sigmoid"></a><a name="sigmoid">**Sigmoid**</a>
 
   Sigmoid takes one input data (Tensor<T>) and produces one output data
   (Tensor<T>) where the sigmoid function, y = 1 / (1 + exp(-x)), is applied to the
   tensor elementwise.
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
 
 #### Parameters
 
@@ -1286,8 +1283,7 @@ Selu operators are supported if the alpha and gamma parameters are set to the de
 <dt><tt>Operator is supported in any configurations.</tt>
 </dl>
 
----
-### Slice
+### <a name="Slice"></a><a name="slice">**Slice**</a>
 
   Produces a slice of the input tensor along multiple axes. Similar to numpy:
   https://numpy.org/doc/stable/user/basics.indexing.html?highlight=slice#slicing-and-striding
@@ -1352,6 +1348,10 @@ Selu operators are supported if the alpha and gamma parameters are set to the de
   ]
   ```
 
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
+
 #### Parameters (3 - 5)
 
 <dl>
@@ -1385,19 +1385,22 @@ Selu operators are supported if the alpha and gamma parameters are set to the de
 
 #### Axelera's notes for developers
 
-Slice is supported along one axis only, which must be specified as input to the operator. Stepped slice is currently not supported.
+Slice is supported along one axis only, which must be specified as input to the operator. Stepped slice is currently not supported. Slicing along other than channel axis requires that the channels num to be multiple of PWORD_LEN (64).
 
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>rule</tt> : steps is None</dt><dt><tt>rule</tt> : axes is not None and len(axes) == 1</dt></dl>
+<dt><tt>rule</tt> : steps is None</dt><dt><tt>rule</tt> : axes is not None and len(axes) == 1</dt><dt><tt>rule</tt> : (axes[0] != 1 and data.shape[1] % 64 == 0) or axes[0] == 1</dt></dl>
 
----
-### Split
+### <a name="Split"></a><a name="split">**Split**</a>
 
   Split a tensor into a list of tensors, along the specified
   'axis'. Lengths of the parts can be specified using input 'split'.
   Otherwise, the tensor is split to equal sized parts.
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
 
 #### Parameters (1 - 2)
 
@@ -1433,14 +1436,61 @@ Split is supported for axis different than 0. Negative axis values are not suppo
 <dl>
 <dt><tt>rule</tt> : axis > 0</dt></dl>
 
----
-### Sub
+### <a name="Squeeze"></a><a name="squeeze">**Squeeze**</a>
+
+  Remove single-dimensional entries from the shape of a tensor.
+  Takes an input `axes` with a list of axes to squeeze.
+  If `axes` is not provided, all the single dimensions will be removed from
+  the shape. If an axis is selected with shape entry not equal to one, an error is raised.
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
+
+#### Parameters (1 - 2)
+
+<dl>
+<dt><tt>data</tt> : T</dt>
+<dd>Tensors with at least max(dims) dimensions.</dd>
+<dt><tt>axes</tt> : tensor(int64)</dt>
+<dd>List of integers indicating the dimensions to squeeze. Negative value means counting dimensions from the back. Accepted range is [-r, r-1] where r = rank(data).</dd>
+</dl>
+
+#### Outputs
+
+<dl>
+<dt><tt>squeezed</tt> : T</dt>
+<dd>Reshaped tensor with same data as input.</dd>
+</dl>
+
+#### Type Constraints
+
+<dl>
+<dt><tt>T</tt> : tensor(uint8), tensor(uint16), tensor(uint32), tensor(uint64), tensor(int8), tensor(int16), tensor(int32), tensor(int64), tensor(bfloat16), tensor(float16), tensor(float), tensor(double), tensor(string), tensor(bool), tensor(complex64), tensor(complex128)</dt>
+<dd>Constrain input and output types to all tensor types.</dd>
+</dl>
+
+#### Axelera's notes for developers
+
+The Squeeze operations is only supported in specific scenario, such as before a Gemm layer, or at the end of a model.
+
+##### AIPU Acceleration Constraints
+
+<dl>
+<dt><tt>Operator is not supported in any configurations.</tt>
+</dl>
+
+### <a name="Sub"></a><a name="sub">**Sub**</a>
 
   Performs element-wise binary subtraction (with Numpy-style broadcasting support).
 
   This operator supports **multidirectional (i.e., Numpy-style) broadcasting**.
 
   (Opset 14 change): Extend supported types to include uint8, int8, uint16, and int16.
+
+#### Version
+
+This version of the operator has been available since version 14 of the default ONNX operator set.
 
 #### Parameters
 
@@ -1467,17 +1517,20 @@ Split is supported for axis different than 0. Negative axis values are not suppo
 
 #### Axelera's notes for developers
 
-Given an operand with shape [N, C, H, W], Subtraction is supported with other operands with shape [N, C, H, W], [1, C, 1, 1], and scalars.
+Given an operand with shape [N, C, H, W], Subtraction is supported with other operands with shape [1, C, 1, 1] or scalars.
 
 ##### AIPU Acceleration Constraints
 
 <dl>
-<dt><tt>allow_config</tt> : A.shape == B.shape</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]==1 and B.shape==(0)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]==1 and A.shape==(0)</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]!=1 and B.shape==(1, A.shape[1], 1, 1)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]!=1 and A.shape==(1, B.shape[1], 1, 1)</dt></dl>
+<dt><tt>allow_config</tt> : (A.shape==() and len(B.shape)==4) or (B.shape==() and len(A.shape)==4)</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]==1 and B.shape==(0)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]==1 and A.shape==(0)</dt><dt><tt>allow_config</tt> : len(A.shape)==4 and A.shape[1]!=1 and B.shape==(1, A.shape[1], 1, 1)</dt><dt><tt>allow_config</tt> : len(B.shape)==4 and B.shape[1]!=1 and A.shape==(1, B.shape[1], 1, 1)</dt></dl>
 
----
-### Tanh
+### <a name="Tanh"></a><a name="tanh">**Tanh**</a>
 
   Calculates the hyperbolic tangent of the given input tensor element-wise.
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
 
 #### Parameters
 
@@ -1509,12 +1562,15 @@ Given an operand with shape [N, C, H, W], Subtraction is supported with other op
 <dt><tt>Operator is supported in any configurations.</tt>
 </dl>
 
----
-### Transpose
+### <a name="Transpose"></a><a name="transpose">**Transpose**</a>
 
   Transpose the input tensor similar to numpy.transpose. For example, when
   perm=(1, 0, 2), given an input tensor of shape (1, 2, 3), the output shape
   will be (2, 1, 3).
+
+#### Version
+
+This version of the operator has been available since version 13 of the default ONNX operator set.
 
 #### Parameters
 

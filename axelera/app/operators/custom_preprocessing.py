@@ -90,8 +90,8 @@ class Letterbox(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         # TODO: implement SQUISH and LETTERBOX_CONTAIN mode in torch and verify accuracy on YOLOs
         self.task_name = task_name
@@ -214,8 +214,8 @@ class ConvertColor(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         self.task_name = task_name
         input_format, output_format = self.format.split('2')
@@ -239,7 +239,7 @@ class ConvertColor(PreprocessOperator):
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         vaapi = gst.getconfig() is not None and gst.getconfig().vaapi
         opencl = gst.getconfig() is not None and gst.getconfig().opencl
-        format = f'{self.format.split("2")[1].lower()}a'
+        format = f'{self.format.split("2")[1].lower()}'
         insert_color_convert(gst, vaapi, opencl, format)
 
     def exec_torch(
@@ -275,7 +275,7 @@ class ConvertColorInput(PreprocessOperator):
         vaapi = gst.getconfig() is not None and gst.getconfig().vaapi
         opencl = gst.getconfig() is not None and gst.getconfig().opencl
 
-        insert_color_convert(gst, vaapi, opencl, f'{self.format.name.lower()}a')
+        insert_color_convert(gst, vaapi, opencl, f'{self.format.name.lower()}')
 
     def exec_torch(
         self, image: Union[torch.Tensor, types.Image]
@@ -302,11 +302,11 @@ class FaceAlign(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
@@ -328,7 +328,7 @@ class FaceAlign(PreprocessOperator):
 
 @builtin
 class Perspective(PreprocessOperator):
-    camera_matrix: list[float] | str
+    camera_matrix: List[float]
     format: str = 'rgb'
 
     def _post_init(self):
@@ -358,7 +358,7 @@ class Perspective(PreprocessOperator):
             )
         else:
             vaapi = False  # Gst perspective element doesn't respect from offsets and strides in VAsurfaces (GstVideoMeta)
-            insert_color_convert(gst, vaapi, opencl, f"{self.format.lower()}a")
+            insert_color_convert(gst, vaapi, opencl, f"{self.format.lower()}")
             gst.perspective(matrix=matrix)
 
     def exec_torch(self, image):
@@ -374,6 +374,7 @@ class CameraUndistort(PreprocessOperator):
     cx: float
     cy: float
     distort_coefs: List[float]
+    normalized: bool = True
     bgra_out: bool = False
 
     def _post_init(self):
@@ -386,11 +387,15 @@ class CameraUndistort(PreprocessOperator):
         if gst.getconfig().opencl:
             gst.axtransform(
                 lib='libtransform_barrelcorrect_cl.so',
-                options=f'camera_props:{self.fx},{self.fy},{self.cx},{self.cy};distort_coefs:{",".join(str(coef) for coef in self.distort_coefs)};bgra_out:{int(self.bgra_out)}',
+                options=f'camera_props:{self.fx},{self.fy},{self.cx},{self.cy};normalized_properties:{int(self.normalized)};distort_coefs:{",".join(str(coef) for coef in self.distort_coefs)};bgra_out:{int(self.bgra_out)}',
             )
 
         else:
             # for non OpenCL path camera matrix need to be denormalized in yaml file
+            if self.normalized:
+                raise ValueError(
+                    "CameraUndistort only supports non normalized camera matrix in non OpenCL path"
+                )
             gst.videoconvert()
             gst.capsfilter(caps=f"video/x-raw,format={'BGRA' if self.bgra_out == 1 else 'RGBA'}")
             config = f'<?xml version=\"1.0\"?><opencv_storage><cameraMatrix type_id=\"opencv-matrix\"><rows>3</rows><cols>3</cols><dt>f</dt><data>{self.fx} 0. {self.cx} 0. {self.fy} {self.cy} 0. 0. 1.</data></cameraMatrix><distCoeffs type_id=\"opencv-matrix\"><rows>5</rows><cols>1</cols><dt>f</dt><data>{" ".join(str(coef) for coef in self.distort_coefs)}</data></distCoeffs></opencv_storage>'

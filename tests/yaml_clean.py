@@ -13,8 +13,8 @@ parser.add_argument(
 
 def yaml_clean(s):
     got = yaml.load(s, Loader=yaml.FullLoader)
-    got = gst._add_element_names(got)
-    return yaml.dump(got, sort_keys=False)
+    got = gst._add_element_names(got[0]['pipeline'])
+    return yaml.dump([{'pipeline': got}], sort_keys=False)
 
 
 if __name__ == '__main__':

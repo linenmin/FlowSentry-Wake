@@ -129,6 +129,11 @@ class Environment:
         return '$AXELERA_FRAMEWORK/exported'
 
     @_var
+    def llm_root(self) -> Path:
+        '''Location of LLM directory.'''
+        return '$AXELERA_FRAMEWORK/llm'
+
+    @_var
     def max_compiler_cores(self) -> int:
         '''Determine fall back batch size
 
@@ -153,20 +158,18 @@ class Environment:
 
     @_var
     def configure_board(self) -> str:
-        '''Prevent or override setting of clock profile, ddr size, and mvm limitation.
+        '''Prevent or override setting of clock profile, and mvm limitation.
 
-        0 = Do not set clock profile or ddr size
-        1 = (default) set the clock profile and ddr size
+        0 = Do not set clock profile
+        1 = (default) set the clock profile
 
-        Or a 3 tuple, comma separated: [clock],[ddr_size],[mvm_limitation]. Any part may be
-        missing. For example ,,90 will override mvm limitation but not change the core clock or
-        ddr size, or 400 will set core clock but not change ddr size or mvm.
+        Or a 2 tuple, comma separated: [clock],[mvm_limitation]. Any part may be
+        missing. For example ,90 will override mvm limitation but not change the core clock,
+        or 400 will set core clock but not change mvm.
 
-        clock:int : set clock profile to N and ddr size to 0x20000000 for m2 or 0x40000000 for
-                    pcie. N should be one of 100, 200, 400, 600, 800 today, but other values may be
+        clock:int : set clock profile to N.
+                    N should be one of 100, 200, 400, 600, 800 today, but other values may be
                     supported in the future.
-        ddr_size:int : set ddr size to size. supports hex (prefix 0x) or decimal.
-
         mvm_limitation:int : set the runtime mvm limitation, as % from 1-100 (the hardware actually
                              supports ~65 increments so approx 1.5% increments are used, the
                              nearest will be selected.)
@@ -247,11 +250,6 @@ class Environment:
         '''Set to 1 to show the current render queue buffer on the display.'''
         return False
 
-    @_var
-    def axinferencenet(self) -> bool:
-        '''Enable new AxInferenceNet gstreamer element in pipeline generation.'''
-        return True
-
     # this makes the main instance of Environment behave like a module,
     # e.g. config.env.UseDmaBuf.INPUTS
     UseDmaBuf = globals()['UseDmaBuf']
@@ -272,6 +270,19 @@ class Environment:
         '''Enable double buffering in the inference pipeline.
 
         This improves performance but at present also increases latency.
+        '''
+        return True
+
+    @_var
+    def use_cl_double_buffer(self) -> bool:
+        '''Enable OpenCL double buffering in the inference pipeline.
+
+        Enabling double buffering in the OpenCL pipeline will use a second buffer to increase
+        utilisation of the GPU.
+
+        This improves performance but at present also increases latency. It also complicates
+        the interpretation of measurement of per-element measued using --show-stas, so when
+        inspecting --show-stats it is recommended to disable this option.
         '''
         return True
 

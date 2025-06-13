@@ -1,8 +1,7 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
-import cv2
 import numpy as np
 import pytest
 from test_axelera_operators_preprocessing import arithmetic
@@ -15,7 +14,10 @@ from axelera.app import gst_builder, operators
 
 
 def _gen_gst(op, stream_idx=''):
-    gst = gst_builder.Builder()
+    # note we use the old builder so we can test the gst output, the new builder
+    # consumes the gst output in readiness for an axinferencenet. A forthcoming
+    # PR will tidy this up  by having explicit begin/end axinferencenet
+    gst = gst_builder._OldBuilder()
     op.build_gst(gst, stream_idx)
     return list(gst)
 
@@ -45,8 +47,8 @@ def test_resize_and_convert():
             operators.PipelineContext(color_format='BGR'),
             'task_name',
             0,
-            '',
             Path('.'),
+            task_graph=None,
         )
         i = types.Image.fromarray(np.zeros((20, 40, 3), dtype=np.uint8), types.ColorFormat.BGR)
         torch_out = op.exec_torch(i)
@@ -161,8 +163,10 @@ def test_ax_to_tensor_and_in_place_3_channels_with_pads_and_quant():
     op = operators.mega.ToTensorAndNormalise(
         mean='104/255, 117/255, 123/255', std='1/255, 1/255, 1/255'
     )
+    mock_task_graph = MagicMock()
+    mock_task_graph.get_master.return_value = "mocked_master_value"
     op.configure_model_and_context_info(
-        mi, operators.PipelineContext(), "task_name", 0, '', Path('.')
+        mi, operators.PipelineContext(), "task_name", 0, Path('.'), task_graph=mock_task_graph
     )
     assert _gen_gst(op) == [
         {'instance': 'axtransform', 'lib': 'libtransform_totensor.so', 'options': 'type:int8'},
@@ -191,8 +195,10 @@ def test_ax_opencl_to_tensor_normalize():
     op = operators.mega.OpenCLToTensorAndNormalize(
         mean='104/255, 117/255, 123/255', std='1/255, 1/255, 1/255'
     )
+    mock_task_graph = MagicMock()
+    mock_task_graph.get_master.return_value = "mocked_master_value"
     op.configure_model_and_context_info(
-        mi, operators.PipelineContext(), "task_name", 0, '', Path('.')
+        mi, operators.PipelineContext(), "task_name", 0, Path('.'), task_graph=mock_task_graph
     )
     print(_gen_gst(op))
     assert _gen_gst(op) == [

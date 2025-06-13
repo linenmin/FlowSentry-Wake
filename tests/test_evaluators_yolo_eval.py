@@ -1,10 +1,10 @@
 # Copyright Axelera AI, 2024
 from unittest.mock import Mock, patch
 
-from ax_evaluators.yolo_eval import (
+from ax_evaluators.obj_eval import (
     EvaluationMetrics,
+    ObjEvaluator,
     YoloEvalmAPCalculator,
-    YoloEvaluator,
     ap_per_class,
     box_iou,
     compute_ap,
@@ -97,7 +97,7 @@ def test_smooth():
     np.testing.assert_almost_equal(smoothed_y[:-1], expected_smoothed_y, decimal=6)
 
 
-def test_yolo_eval_kpt_map_calculator():
+def test_obj_eval_kpt_map_calculator():
     calculator = YoloEvalmAPCalculator(is_pose=True, is_lazy=False)
     pred_all = [
         {
@@ -131,6 +131,7 @@ def test_yolo_eval_kpt_map_calculator():
     label_all = [
         {
             'boxes': np.array([[412.0, 157.0, 465.0, 295.0]]),
+            'area': np.array([7314.0]),
             'keypoints': np.array(
                 [
                     [
@@ -193,47 +194,47 @@ def mock_evaluator():
 
 
 @pytest.fixture
-def yolo_evaluator(mock_evaluator):
-    return YoloEvaluator(evaluator=mock_evaluator)
+def obj_evaluator(mock_evaluator):
+    return ObjEvaluator(evaluator=mock_evaluator)
 
 
-def test_process_meta_instance_segmentation(yolo_evaluator, mock_evaluator):
+def test_process_meta_instance_segmentation(obj_evaluator, mock_evaluator):
     meta = Mock(spec=InstanceSegmentationMeta)
     meta.to_evaluation.return_value = Mock(data='eval_data')
     meta.access_ground_truth.return_value = Mock(data='gt_data')
 
-    yolo_evaluator.process_meta(meta)
+    obj_evaluator.process_meta(meta)
 
     mock_evaluator.process.assert_called_once_with('eval_data', 'gt_data')
 
 
-def test_process_meta_keypoint_detection(yolo_evaluator, mock_evaluator):
+def test_process_meta_keypoint_detection(obj_evaluator, mock_evaluator):
     meta = Mock(spec=KeypointDetectionMeta)
     meta.to_evaluation.return_value = Mock(data='eval_data')
     meta.access_ground_truth.return_value = Mock(data='gt_data')
 
-    yolo_evaluator.process_meta(meta)
+    obj_evaluator.process_meta(meta)
 
     mock_evaluator.process.assert_called_once_with('eval_data', 'gt_data')
 
 
-def test_process_meta_object_detection(yolo_evaluator, mock_evaluator):
+def test_process_meta_object_detection(obj_evaluator, mock_evaluator):
     meta = Mock(spec=ObjectDetectionMeta)
     meta.to_evaluation.return_value = Mock(data='eval_data')
     meta.access_ground_truth.return_value = Mock(data='gt_data')
 
-    yolo_evaluator.process_meta(meta)
+    obj_evaluator.process_meta(meta)
 
     mock_evaluator.process.assert_called_once_with('eval_data', 'gt_data')
 
 
-def test_collect_metrics(yolo_evaluator, mock_evaluator):
+def test_collect_metrics(obj_evaluator, mock_evaluator):
     mock_evaluator.summary.return_value = EvalResult(
         metric_names=["mAP", "mAP50", "precision", "recall"],
         aggregators=["box", "box", "box", "box"],
     )
 
-    result = yolo_evaluator.collect_metrics()
+    result = obj_evaluator.collect_metrics()
 
     mock_evaluator.summary.assert_called_once()
     assert isinstance(result, EvalResult)

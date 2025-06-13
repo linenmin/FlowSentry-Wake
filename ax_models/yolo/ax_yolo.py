@@ -7,7 +7,7 @@ import typing
 
 from axelera import types
 from axelera.app import logging_utils, utils
-from axelera.app.torch_utils import torch
+from axelera.app.torch_utils import safe_torch_load, torch
 from models import common, yolo
 
 LOG = logging_utils.getLogger(__name__)
@@ -129,14 +129,14 @@ class AxYolo(yolo.Model, types.Model):
         cfg = yolo_cfg_path or 'cfg/fake_cfg.yaml'
         super().__init__(cfg, ch=input_channel)
 
-    def init_model_deploy(self, model_info: types.ModelInfo):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         weights = Path(model_info.weight_path)
         if not (weights.exists() and utils.md5_validates(weights, model_info.weight_md5)):
             utils.download(model_info.weight_url, weights, model_info.weight_md5)
 
         self.device = "cpu"
         LOG.debug(f'Load weights {weights}')
-        ckpt = torch.load(weights, map_location=self.device)
+        ckpt = safe_torch_load(weights, map_location=self.device)
 
         # we currently don't support ensembled model
         model = ckpt['ema' if ckpt.get('ema') else 'model']

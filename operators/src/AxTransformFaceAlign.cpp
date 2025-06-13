@@ -203,12 +203,8 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
         "facealign: master meta key does not have the correct number of subframes");
   }
   auto box = master_meta->get_box_xyxy(subframe_index);
-  AxMetaKptsDetection *kpts_meta
-      = dynamic_cast<AxMetaKptsDetection *>(master_meta->submeta_map->get(
-          prop->keypoints_submeta_key, subframe_index, number_of_subframes));
-  if (kpts_meta == nullptr) {
-    throw std::runtime_error("facealign: keypoints submeta key not of type AxMetaKptsDetection");
-  }
+  auto *kpts_meta = master_meta->get_submeta<AxMetaKptsDetection>(
+      prop->keypoints_submeta_key, subframe_index, number_of_subframes);
   int kpts_per_box = kpts_meta->get_kpts_shape()[0];
   if (kpts_per_box != kpts_meta->num_elements()) {
     throw std::runtime_error(

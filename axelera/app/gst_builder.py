@@ -15,14 +15,11 @@ def element(f):
     return wrapper
 
 
-class Builder(list):
-    def __init__(self, hw_config=None, default_queue_max_size_buffers=16):
+class _OldBuilder(list):
+    def __init__(self, hw_config=None, tile=0, default_queue_max_size_buffers=16):
         self.hw_config = hw_config
         self.default_queue_max_size_buffers = default_queue_max_size_buffers
-
-    @property
-    def new_inference(self) -> bool:
-        return False
+        self.tile = tile
 
     def getconfig(self):
         return self.hw_config
@@ -244,23 +241,8 @@ class Builder(list):
         ...
 
 
-_NOT_IN_AXINFERENCENET = {
-    'addstreamid',
-    'barrelcorrect',
-    'colorconvert',
-    'contrastnormalize',
-    'filterdetections',
-    'perspective',
-}
-
-
-def _belongs_in_axinferencenet(lib):
-    m = re.match(r'lib(?:transform|inplace|decoder)_(.+)\.(?:so|dylib|dll)', lib)
-    return m.group(1).removesuffix('_cl') not in _NOT_IN_AXINFERENCENET
-
-
-class BuilderNewInference(Builder):
-    def __init__(self, hw_config=None, default_queue_max_size_buffers=4):
+class Builder(_OldBuilder):
+    def __init__(self, hw_config=None, tile=0, default_queue_max_size_buffers=4):
         super().__init__(
             hw_config=hw_config, default_queue_max_size_buffers=default_queue_max_size_buffers
         )
@@ -268,12 +250,15 @@ class BuilderNewInference(Builder):
         self.axinf_props = {}
         self.axinf_postops = []
         self.where = None
+        self.tile = tile
+        self.building_axinference = False
 
-    @property
-    def new_inference(self) -> bool:
-        return True
+    def start_axinference(self, props={}) -> None:
+        self.building_axinference = True
 
-    def build_axinference(self, props) -> None:
+    def finish_axinference(self, props={}) -> None:
+        if not self.building_axinference:
+            return
         inf = dict(instance='axinferencenet', **self.axinf_props)
 
         def ops(phase, ops):
@@ -292,12 +277,10 @@ class BuilderNewInference(Builder):
         self.axinf_preops = []
         self.axinf_props = {}
         self.axinf_postops = []
+        self.building_axinference = False
 
     def axtransform(self, props={}, **kwargs) -> None:
-        if not props and not kwargs:
-            props = {**props, **kwargs}
-            self.build_axinference(props)
-        elif not _belongs_in_axinferencenet(kwargs.get('lib', '')):
+        if not self.building_axinference:
             super().axtransform(props, **kwargs)
         else:
             ops = self.axinf_postops if self.axinf_props else self.axinf_preops
@@ -313,7 +296,7 @@ class BuilderNewInference(Builder):
 
     def axinplace(self, props={}, **kwargs) -> None:
         lib = kwargs.get('lib', '')
-        if lib == '' or not _belongs_in_axinferencenet(lib):
+        if not self.building_axinference:
             super().axinplace(props, **kwargs)
         else:
             ops = self.axinf_postops if self.axinf_props else self.axinf_preops
@@ -328,12 +311,16 @@ class BuilderNewInference(Builder):
             )
 
     def decode_muxer(self, props={}, **kwargs) -> None:
+        if not self.building_axinference:
+            raise ValueError('decode_muxer not allowed outside of axinferencenet building')
         props = {**props, **kwargs}
         self.axinf_postops.append(
             (props['lib'], props['options'], props.get('mode', ''), props.get('batch', ''))
         )
 
     def axinference(self, **kwargs) -> None:
+        if not self.building_axinference:
+            raise ValueError('axinference not allowed outside of axinferencenet building')
         props = kwargs
         if self.where:
             props |= self.where
@@ -341,19 +328,19 @@ class BuilderNewInference(Builder):
         self.where = None
 
     def appsink(self, props={}, **kwargs) -> None:
-        self.build_axinference({})
+        self.finish_axinference()
         return super().appsink(props, **kwargs)
 
     def distributor(self, props={}, **kwargs) -> None:
+        if not self.building_axinference:
+            raise ValueError('distributor not allowed outside of axinferencenet building')
         props = {**props, **kwargs}
-        self.build_axinference(props)
         self.where = props
 
     def tee(self, props={}, **kwargs) -> None:
-        pass
+        if not self.building_axinference:
+            super().tee(props, **kwargs)
 
 
 def builder(*args, **kwargs):
-    new_inference = config.env.axinferencenet
-    cls = BuilderNewInference if new_inference else Builder
-    return cls(*args, **kwargs)
+    return Builder(*args, **kwargs)

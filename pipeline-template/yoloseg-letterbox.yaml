@@ -2,8 +2,8 @@ input:
   type: image
 preprocess:
  - letterbox:
-     width: {{input_width}}
-     height: {{input_height}}
+     width: ${{input_width}}
+     height: ${{input_height}}
      scaleup: True
      half_pixel_centers: True
  - torch-totensor:
@@ -11,7 +11,7 @@ postprocess:
   - decodeyoloseg:
       box_format: xywh # box format of the model output
       normalized_coord: False
-      label_filter: {{label_filter}}
+      label_filter: ${{label_filter}}
       max_nms_boxes: 30000
       conf_threshold: 0.25
       nms_iou_threshold: 0.45

@@ -307,6 +307,79 @@ class BBoxState:
 
         return self._boxes, self._scores, self._class_ids, self._masks
 
+    def organize_bboxes_kpts_and_instance_seg(
+        self,
+        boxes: np.ndarray,
+        kpts: np.ndarray,
+        scores: np.ndarray,
+        class_ids: np.ndarray,
+        mask_coef: np.ndarray,  # The coefficients or embeddings used to generate the final masks from the prototype masks.
+        protos: np.ndarray,  # The prototype masks.
+        # scale_mask_to_input: bool,
+        unpad: bool,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple]:
+        assert (
+            len(boxes) == len(scores) == len(class_ids)
+        ), f"Shapes do not match: boxes {len(boxes)}, scores {len(scores)}, class_ids {len(class_ids)}"
+
+        boxes = _to_numpy(boxes, dtype=np.float32)
+        scores = _to_numpy(scores)
+        class_ids = _to_numpy(class_ids)
+        mask_coef = _to_numpy(mask_coef, dtype=np.float32)
+        kpts = _to_numpy(kpts, dtype=np.float64)
+        num_samples = len(boxes)
+
+        assert kpts.ndim == 2, "The input keypoints must be a 2-dimensional tensor"
+        # should check %3 or %2 before reshape
+        if kpts.shape[1] % 3 == 0:
+            kpts = kpts.reshape(num_samples, -1, 3)
+        elif kpts.shape[1] % 2 == 0:
+            kpts = kpts.reshape(num_samples, -1, 2)
+        else:
+            raise ValueError("Please confirm the number of keypoints")
+        # filter out invalid labels
+        if self.label_filter_ids:
+            valid = np.isin(class_ids, self.label_filter_ids)
+            boxes = boxes[valid]
+            kpts = boxes[valid]
+            scores = scores[valid]
+            class_ids = class_ids[valid]
+            mask_coef = mask_coef[valid]
+        if len(boxes) > 0:
+            if boxes.shape[1] != 4:
+                raise ValueError(
+                    "The input box must be a 4-dimensional representative of coordinates"
+                )
+
+            # descending sort by score and remove excess boxes
+            max_boxes = self.nms_max_boxes if self.nms_iou_threshold > 0 else self.output_top_k
+            descending_idx = (-scores).argsort()[:max_boxes]
+            self._boxes = boxes[descending_idx]
+            self._scores = scores[descending_idx]
+            self._class_ids = class_ids[descending_idx]
+            self._kpts = kpts[descending_idx]
+            mask_coef = mask_coef[descending_idx]
+
+            if self.box_format != types.BoxFormat.XYXY:
+                self._boxes = self.xyxy()
+                self.box_format = types.BoxFormat.XYXY
+            if self.normalized_coord:
+                self._boxes[:, [0, 2]] *= self.src_image_width
+                self._boxes[:, [1, 3]] *= self.src_image_height
+
+                self.normalized_coord = False
+            self._kpts[:, :, 0] *= self.src_image_width / self.model_width
+            self._kpts[:, :, 1] *= self.src_image_height / self.model_height
+            if self.nms_iou_threshold > 0:
+                self.nms(is_kpts=True, mask_coef=mask_coef)
+
+            self._masks = process_mask(
+                protos, mask_coef, self._boxes, (self.model_height, self.model_width)
+            )
+            self.rescale_boxes(unpad)
+
+        return self._boxes, self._kpts, self._scores, self._class_ids, self._masks
+
     def empty(self):
         return len(self._class_ids) == 0
 
@@ -424,7 +497,6 @@ class BBoxState:
             Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]: The rescaled bounding boxes and keypointscaled masks (if any).
         '''
         rescaled_kpts = None
-        rescaled_masks = None
 
         if resize_mode == types.ResizeMode.STRETCH:
             rescaled_boxes = np.copy(boxes)
@@ -436,7 +508,7 @@ class BBoxState:
                 rescaled_kpts = np.copy(kpts)
                 rescaled_kpts[:, :, 1] /= ratio_y
                 rescaled_kpts[:, :, 0] /= ratio_x
-            return rescaled_boxes, rescaled_kpts, rescaled_masks
+            return rescaled_boxes, rescaled_kpts, masks
 
         if ratio_pad is None:
             # same logic of letterbox
@@ -474,16 +546,7 @@ class BBoxState:
         if kpts is not None:
             rescaled_kpts[:, :, 0] = rescaled_kpts[:, :, 0].clip(0, target_shape[1])
             rescaled_kpts[:, :, 1] = rescaled_kpts[:, :, 1].clip(0, target_shape[0])
-        if masks is not None:
-            rescaled_masks = masks
-            if False:  # For debugging
-                import cv2
-
-                combined_mask = segment_utils.combine_masks(rescaled_masks)
-                normalized = cv2.normalize(combined_mask, None, 0, 255, cv2.NORM_MINMAX)
-                cv2.imwrite('rescaled_masks_combined.png', normalized)
-
-        return rescaled_boxes, rescaled_kpts, rescaled_masks
+        return rescaled_boxes, rescaled_kpts, masks
 
     def nms(self, is_kpts: bool = False, mask_coef: Optional[np.ndarray] = None):
         """
@@ -530,13 +593,12 @@ class BBoxState:
             final_indices = final_indices.numpy()  # Convert back to NumPy array
             self._boxes = self._boxes[final_indices]
             self._scores = self._scores[final_indices]
-            if is_kpts:
+            if is_kpts and len(self._kpts) > 0:
                 self._kpts = self._kpts[final_indices]
-            elif mask_coef is not None:
+            if mask_coef is not None:
                 new_mask_coef = mask_coef[final_indices]
                 new_size = len(final_indices)
                 mask_coef.resize((new_size, mask_coef.shape[1]), refcheck=False)
                 mask_coef[:] = new_mask_coef
-                self._class_ids = self._class_ids[final_indices]
-            else:
+            if hasattr(self, '_class_ids') and len(self._class_ids) > 0:
                 self._class_ids = self._class_ids[final_indices]

@@ -1,4 +1,20 @@
+![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 # Changelog
+
+- [Changelog](#changelog)
+  - [[Unreleased]](#unreleased)
+    - [Breaking Changes](#breaking-changes)
+    - [Added](#added)
+    - [Changed](#changed)
+    - [Deprecated](#deprecated)
+    - [Removed](#removed)
+    - [Fixed](#fixed)
+    - [Security](#security)
+  - [[1.0.0] - 2024-11-01](#100---2024-11-01)
+    - [Added](#added)
+  - [Usage](#usage)
+    - [Pull Request Process](#pull-request-process)
+    - [Release Process](#release-process)
 
 All notable changes to this SDK will be documented in this file to assist users in migrating their YAML configurations and pipelines in line with SDK upgrades, ensuring seamless model and pipeline deployment.
 
@@ -15,6 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   being ${{MODEL_INFO_VARIABLE}}
   - Any templates using the old {{MODEL_INFO_VARIABLE}} syntax must prepend
     the `$` to continue working
+- `compilation_config` in model YAML is now a flat mapping of fields. The subsections such
+   as `backend_config` have been removed.
+   - TODO: some field names have changed/been removed, we need to document these and provide a
+           migration guide
 
 ### Added
 - Introduced strictYAML and built a schema for built-in AxOperators to provide clear messages
@@ -23,7 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   inference.py will set the title if there is more than one stream.
 
 ### Changed
-- 
+- Customer models in the `customers` directory don't require the `c-` prefix anymore before `model_name` when calling `deploy` or `inference` functions
+
 
 ### Deprecated
 - Features that will be removed in upcoming releases

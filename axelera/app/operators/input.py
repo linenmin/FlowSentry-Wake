@@ -9,13 +9,14 @@ import numpy as np
 
 from axelera import types
 
+from . import utils
 from .. import gst_builder, logging_utils, meta
 from .base import AxOperator, PreprocessOperator, builtin
-from .utils import insert_color_convert
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ..pipe import graph
     from .context import PipelineContext
 
 LOG = logging_utils.getLogger(__name__)
@@ -69,22 +70,18 @@ class Input(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         context.color_format = self.color_format
         context.imreader_backend = self.imreader_backend
         context.pipeline_input_color_format = self.color_format
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        if gst.new_inference:
-            return
-        vaapi = gst.getconfig() is not None and gst.getconfig().vaapi
-        opencl = gst.getconfig() is not None and gst.getconfig().opencl
-        insert_color_convert(gst, vaapi, opencl, f'{self.color_format.name.lower()}a')
+        pass
 
     def exec_torch(self, image, result, meta, stream_id=0):
         if result is None and meta is None:
@@ -120,10 +117,11 @@ class InputFromROI(AxOperator):
 
     type: str = 'image'
     where: str
-    expand_margin: float = 0.0
-    top_k: int = 1
+    min_width: int = 0
+    min_height: int = 0
+    top_k: int = 0
     which: str = 'NONE'
-    classes: list = []
+    label_filter: list[str] = []
     image_processing_on_roi: list[PreprocessOperator] = []
     color_format: types.ColorFormat = types.ColorFormat.RGB
 
@@ -133,10 +131,19 @@ class InputFromROI(AxOperator):
         SUPPORTED_WHICH = ['AREA', 'SCORE', 'CENTER', 'NONE']
         if self.which.upper() not in SUPPORTED_WHICH:
             raise ValueError(f"which is not in support list: {SUPPORTED_WHICH}")
-        self.classes = self._parse_classes(self.classes)
+        self.label_filter = utils.parse_labels_filter(self.label_filter)
         self.where = str(
             self.where
         )  # TODO SAM this is a hack to ensure it's a string not a yamlString
+
+        if self.min_width > 0 and self.min_height == 0:
+            raise ValueError("min_height must be set if min_width is set")
+        if self.min_width == 0 and self.min_height > 0:
+            raise ValueError("min_width must be set if min_height is set")
+
+        self._need_filter = (
+            self.which != 'NONE' or self.label_filter or self.min_width > 0 or self.min_height > 0
+        )
 
     def configure_model_and_context_info(
         self,
@@ -144,56 +151,70 @@ class InputFromROI(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         # for cascade models, we know the input color format passed from the upstream model
         self._need_color_convert = context.color_format != self.color_format
         context.color_format = self.color_format
-        assert self.where == where, f"where is not consistent: {self.where} vs {where}"
+        if self.where != self._where:
+            raise ValueError(f"where is not equal to _where: {self.where} vs {self._where}")
+        self._association = self._where
+        self._input_meta_key = self._where
+        master_is_tracker = (
+            task_graph.get_task(self._where).model_info.task_category
+            == types.TaskCategory.ObjectTracking
+        )
+        if master_is_tracker:
+            self._input_meta_key = "boxes_created_by_tracker_task_" + self._where
+            if self.task_name in context.submodels_with_boxes_from_tracker:
+                self._input_meta_key = self._where + "_adapted_as_input_for_" + self.task_name
+            self._association = self._input_meta_key
+            context.association = self._association
+        if self._need_filter:
+            self._association = self._where + "_adapted_as_input_for_" + self.task_name
+            context.association = self._association
+        self._label_filter_ids = None
+        if self.label_filter:
+            master_task_with_labels = task_graph.get_task(self._where)
+            if master_is_tracker:
+                master_of_master = task_graph.get_master(self._where)
+                if master_of_master:
+                    master_task_with_labels = task_graph.get_task(master_of_master)
+            master_labels = master_task_with_labels.model_info.labels
+            self._label_filter_ids = utils.build_class_sieve(self.label_filter, master_labels)
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        if self.which != 'NONE':
+        if self._need_filter:
+            classes_to_keep_str = (
+                str()
+                if self._label_filter_ids is None
+                else f';classes_to_keep:{",".join(self._label_filter_ids)}'
+            )
             gst.axinplace(
                 lib='libinplace_filterdetections.so',
-                options=f'meta_key:{self.where};which:{self.which};top_k:{self.top_k}',
+                options=f'input_meta_key:{self._input_meta_key};'
+                f'output_meta_key:{self._association};'
+                f'hide_output_meta:1;'
+                f'which:{self.which};'
+                f'top_k:{self.top_k};'
+                f'min_width:{self.min_width};'
+                f'min_height:{self.min_height}'
+                f'{classes_to_keep_str}',
             )
 
-        gst.distributor(meta=str(self.where))
+        gst.start_axinference()
+        gst.distributor(meta=str(self._association))
         gst.axtransform(
             lib='libtransform_roicrop.so',
-            options=f'meta_key:{self.where}',
+            options=f'meta_key:{self._association}',
         )
 
         for op in self.image_processing_on_roi:
             op.build_gst(gst, stream_idx)
-
-    def _parse_classes(self, class_value):
-        """Parse the class value and return a list of class IDs.
-        If the class value is a wildcard character, return an empty list."""
-        if class_value == '*':
-            return []
-
-        if isinstance(class_value, str) and class_value.isdigit():
-            return [int(class_value)]
-        if isinstance(class_value, str):
-            return [class_value]
-
-        # Check if class value is a string with multiple elements separated by commas
-        if isinstance(class_value, str) and ',' in class_value:
-            classes = class_value.split(',')
-            return [int(c) for c in classes]
-
-        # Check if class value is a list of integers or strings
-        if isinstance(class_value, list):
-            if all(isinstance(c, int) for c in class_value):
-                return class_value
-            else:
-                return [str(c) for c in class_value]
-        raise ValueError('Unsupported format for class value')
 
     def exec_torch(self, image, result, axmeta, stream_id=0):
         if result is None and axmeta is None:
@@ -219,6 +240,7 @@ class InputFromROI(AxOperator):
                 meta.ObjectDetectionMeta,
                 meta.BottomUpKeypointDetectionMeta,
                 meta.InstanceSegmentationMeta,
+                meta.PoseInsSegMeta,
             ),
         ):
             boxes = src_meta.boxes.copy()
@@ -226,16 +248,10 @@ class InputFromROI(AxOperator):
             if len(boxes) == 0:
                 return image, result, axmeta
 
-            if hasattr(src_meta, 'class_ids') and self.classes:
-                class_ids = src_meta.class_ids
-                if isinstance(self.classes[0], str):
-                    if src_meta.labels:
-                        label_ids = [src_meta.labels.index(label) for label in self.classes]
-                    else:
-                        raise ValueError(f"Cannot find labels in {src_meta}")
-                else:
-                    label_ids = self.classes
-                boxes, indices = _filter_boxes_by_label_id(boxes, class_ids, label_ids)
+            if hasattr(src_meta, 'class_ids') and self._label_filter_ids:
+                filtered = np.isin(src_meta.class_ids, [int(i) for i in self._label_filter_ids])
+                boxes = boxes[filtered]
+                indices = indices[filtered]
 
             if self.which == "CENTER":
                 boxes, indices = _sort_boxes_by_distance(
@@ -247,29 +263,19 @@ class InputFromROI(AxOperator):
                 if not hasattr(src_meta, 'scores'):
                     raise ValueError(f"Cannot find scores in {src_meta}")
                 boxes, indices = _sort_boxes_by_score(boxes, indices, src_meta.scores)
-            top_det = boxes[: self.top_k]
-            indices = indices[: self.top_k]
+
+            if self.top_k > 0:
+                boxes = boxes[: self.top_k]
+                indices = indices[: self.top_k]
         else:
             raise RuntimeError(f"{src_meta.__class__.__name__ } is not an ObjectDetectionMeta")
 
-        if self.expand_margin > 0:
-            # Calculate the width and height of the bounding boxes
-            box_width = top_det[:, 2] - top_det[:, 0]
-            box_height = top_det[:, 3] - top_det[:, 1]
-            # Expand the bounding box by expand_margin
-            box_width *= 1 + self.expand_margin
-            box_height *= 1 + self.expand_margin
-            # Update the coordinates
-            top_det[:, 0] -= box_width / 2
-            top_det[:, 2] += box_width / 2
-            top_det[:, 1] -= box_height / 2
-            top_det[:, 3] += box_height / 2
-        top_det = top_det.astype(int)
-        top_det[:, [0, 2]] = np.clip(top_det[:, [0, 2]], 0, frame_width)
-        top_det[:, [1, 3]] = np.clip(top_det[:, [1, 3]], 0, frame_height)
+        boxes = boxes.astype(int)
+        boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, frame_width)
+        boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, frame_height)
 
         result = []
-        for box, idx in zip(top_det, indices):
+        for box, idx in zip(boxes, indices):
             x1, y1, x2, y2 = box
             # TODO: consider to filter out these boxes
             if x2 == x1 or y2 == y1:
@@ -278,12 +284,6 @@ class InputFromROI(AxOperator):
             result.append(types.Image.fromarray(cropped_image, image.color_format))
             axmeta[self.where].add_secondary_frame_index(self.task_name, idx)
         return image, result, axmeta
-
-
-def _filter_boxes_by_label_id(boxes, class_ids, label_ids):
-    filtered_indices = np.isin(class_ids, label_ids)
-    filtered_boxes = boxes[filtered_indices]
-    return filtered_boxes, filtered_indices
 
 
 def _sort_boxes_by_distance(boxes, indices, img_shape):
@@ -342,11 +342,11 @@ class InputWithImageProcessing(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):

@@ -2,17 +2,16 @@
 import ctypes
 
 import PIL.Image
-import gi
 import numpy as np
+import pytest
 
+from axelera import app  # ensure gst is initialized
 from axelera import types
 
-gi.require_version('Gst', '1.0')
-gi.require_version('GstVideo', '1.0')
-gi.require_version('GstApp', '1.0')  # for try_pull_sample
-
+# isort: off
 from gi.repository import Gst, GstVideo
-import pytest
+
+# isort: on
 
 
 def create_image_from_array(width, height, format, data=None):

@@ -2,7 +2,7 @@
 # Dataset Adapters - YAML Configurations
  
 - [Dataset Adapters - YAML Configurations](#dataset-adapters---yaml-configurations)
-  - [ObjDataAdaptor](#objdataadaptor)
+  - [ObjDataAdapter](#objdataadapter)
     - [KptDataAdapter](#kptdataadapter)
     - [SegDataAdapter](#segdataadapter)
   - [TorchvisionDataAdapter](#torchvisiondataadapter)
@@ -15,7 +15,7 @@
     - [LFWPeople](#lfwpeople)
     - [Caltech101](#caltech101)
 
-## ObjDataAdaptor
+## ObjDataAdapter
 
 For use with COCO 2014 and 2017 datasets.
 
@@ -64,7 +64,7 @@ Definition: [`/ax_datasets/objdataadapter.py`](/ax_datasets/objdataadapter.py)
 
 For use with classifier models based on torchvision
 
-Reference Documentation: [PyTorch](https://pytorch.org/vision/stable/index.html)
+Reference Documentation: [PyTorch](https://docs.pytorch.org/vision/stable/index.html)
 
 Definition: [`/ax_datasets/torchvision.py`](/ax_datasets/torchvision.py)
 
@@ -78,7 +78,7 @@ Supported configurations are listed for each dataset below.
 
 ### ImageFolder
 
-Reference documentation: [ImageFolder](https://pytorch.org/vision/stable/generated/torchvision.datasets.ImageFolder.html#torchvision.datasets.ImageFolder)
+Reference documentation: [ImageFolder](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.ImageFolder.html)
 
 | Field | Type | Default
 |---|---|---|
@@ -91,7 +91,7 @@ Reference documentation: [ImageFolder](https://pytorch.org/vision/stable/generat
 
 ### ImageNet
 
-Reference documentation: [ImageNet](https://pytorch.org/vision/stable/generated/torchvision.datasets.ImageNet.html#torchvision.datasets.ImageNet)
+Reference documentation: [ImageNet](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.ImageNet.html)
 
 | Field | Type | Default
 |---|---|---|
@@ -99,7 +99,7 @@ Reference documentation: [ImageNet](https://pytorch.org/vision/stable/generated/
 
 ### MNIST
 
-Reference documentation: [MNIST](https://pytorch.org/vision/stable/generated/torchvision.datasets.MNIST.html#torchvision.datasets.MNIST)
+Reference documentation: [MNIST](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.MNIST.html)
 
 | Field | Type | Default
 |---|---|---|
@@ -108,7 +108,7 @@ Reference documentation: [MNIST](https://pytorch.org/vision/stable/generated/tor
 
 ### CIFAR10
 
-Reference documentation: [CIFAR10](https://pytorch.org/vision/stable/generated/torchvision.datasets.CIFAR10.html#torchvision.datasets.CIFAR10)
+Reference documentation: [CIFAR10](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.CIFAR10.html)
 
 | Field | Type | Default
 |---|---|---|
@@ -117,7 +117,7 @@ Reference documentation: [CIFAR10](https://pytorch.org/vision/stable/generated/t
 
 ### VOCDetection
 
-Reference documentation: [VOCDetection](https://pytorch.org/vision/stable/generated/torchvision.datasets.VOCDetection.html#torchvision.datasets.VOCDetection)
+Reference documentation: [VOCDetection](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.VOCDetection.html)
 
 | Field | Type | Default
 |---|---|---|
@@ -127,7 +127,7 @@ Reference documentation: [VOCDetection](https://pytorch.org/vision/stable/genera
 
 ### LFWPairs
 
-Reference documentation: [LFWPairs](https://pytorch.org/vision/stable/generated/torchvision.datasets.LFWPairs.html#torchvision.datasets.LFWPairs)
+Reference documentation: [LFWPairs](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.LFWPairs.html)
 
 | Field | Type | Default
 |---|---|---|
@@ -137,7 +137,7 @@ Reference documentation: [LFWPairs](https://pytorch.org/vision/stable/generated/
 
 ### LFWPeople
 
-Reference documentation: [LFWPeople](https://pytorch.org/vision/stable/generated/torchvision.datasets.LFWPeople.html#torchvision.datasets.LFWPeople)
+Reference documentation: [LFWPeople](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.LFWPeople.html)
 
 | Field | Type | Default
 |---|---|---|
@@ -147,7 +147,7 @@ Reference documentation: [LFWPeople](https://pytorch.org/vision/stable/generated
 
 ### Caltech101
 
-Reference documentation: [Caltech101](https://pytorch.org/vision/stable/generated/torchvision.datasets.Caltech101.html#torchvision.datasets.Caltech101)
+Reference documentation: [Caltech101](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.Caltech101.html)
 
 | Field | Type | Default
 |---|---|---|

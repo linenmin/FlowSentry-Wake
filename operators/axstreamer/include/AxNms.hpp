@@ -3,7 +3,9 @@
 
 #include "AxMetaKptsDetection.hpp"
 #include "AxMetaObjectDetection.hpp"
+#include "AxMetaPoseSegmentsDetection.hpp"
 #include "AxMetaSegmentsDetection.hpp"
+
 #include "AxOpenCl.hpp"
 
 class CLNms
@@ -44,8 +46,8 @@ class CLNms
 ///
 /// Boxes assumed to be in the format [x1, y1, x2, y2]
 ///
-AxMetaObjDetection non_max_suppression(const AxMetaObjDetection &meta,
-    float threshold, bool class_agnostic, int max_boxes);
+AxMetaObjDetection non_max_suppression(AxMetaObjDetection &meta,
+    float threshold, bool class_agnostic, int max_boxes, bool merge);
 
 
 ///
@@ -58,8 +60,8 @@ AxMetaObjDetection non_max_suppression(const AxMetaObjDetection &meta,
 ///
 /// Keypoints  assumed to be in the format [x, y, visibility]
 ///
-AxMetaKptsDetection non_max_suppression(const AxMetaKptsDetection &meta,
-    float threshold, bool class_agnostic, int max_boxes);
+AxMetaKptsDetection non_max_suppression(AxMetaKptsDetection &meta,
+    float threshold, bool class_agnostic, int max_boxes, bool merge);
 
 /// TODO: fix doxygen
 /// @brief Remove keypoints from boxes  that overlap too much
@@ -71,5 +73,8 @@ AxMetaKptsDetection non_max_suppression(const AxMetaKptsDetection &meta,
 ///
 /// Keypoints  assumed to be in the format [x, y, visibility]
 ///
-AxMetaSegmentsDetection non_max_suppression(const AxMetaSegmentsDetection &meta,
-    float threshold, bool class_agnostic, int max_boxes);
+AxMetaSegmentsDetection non_max_suppression(AxMetaSegmentsDetection &meta,
+    float threshold, bool class_agnostic, int max_boxes, bool merge);
+
+AxMetaPoseSegmentsDetection non_max_suppression(const AxMetaPoseSegmentsDetection &meta,
+    float threshold, bool class_agnostic, int max_boxes, bool merge);

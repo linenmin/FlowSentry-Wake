@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from .. import gst_builder
+    from ..pipe import graph
     from .context import PipelineContext
 
 
@@ -65,8 +66,8 @@ class CenterCrop(PreprocessOperator):
 
 @builtin
 class Normalize(PreprocessOperator):
-    mean: str = '0'
-    std: str = '1'
+    mean: Union[List[float], str] = '0'
+    std: Union[List[float], str] = '1'
     tensor_layout: types.TensorLayout = types.TensorLayout.NCHW
     format: str = 'RGB'
 
@@ -251,8 +252,8 @@ class Resize(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         self.task_name = task_name
         inspect_resize_status(context)
@@ -391,13 +392,13 @@ class CompositePreprocess(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         self.task_name = task_name
         for op in self._operators:
             op.configure_model_and_context_info(
-                model_info, context, task_name, taskn, where, compiled_model_dir
+                model_info, context, task_name, taskn, compiled_model_dir, task_graph
             )
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):

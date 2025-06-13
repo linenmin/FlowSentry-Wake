@@ -10,6 +10,7 @@ import torch
 from ax_models import base_torch
 from axelera import types
 from axelera.app import logging_utils, utils
+from axelera.app.torch_utils import safe_torch_load
 import axelera.app.yaml as YAML
 
 LOG = logging_utils.getLogger(__name__)
@@ -43,7 +44,8 @@ def _convert_first_node_to_1_channel(model):
 class AxTimmModel(base_torch.TorchModel):
     """Model methods for Timm models"""
 
-    def init_model_deploy(self, model_info: types.ModelInfo, timm_model_args=''):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
+        timm_model_args = YAML.attribute(kwargs, 'timm_model_args')
         model_name = YAML.attribute(timm_model_args, 'name')
         if model_info.weight_path:
             if not Path(model_info.weight_path).exists():
@@ -54,7 +56,7 @@ class AxTimmModel(base_torch.TorchModel):
                 else:
                     raise FileNotFoundError(f"weight_path: {model_info.weight_path} not found")
             self.torch_model = timm.create_model(model_name, pretrained=False)
-            weights = torch.load(model_info.weight_path, map_location=torch.device('cpu'))
+            weights = safe_torch_load(model_info.weight_path, map_location=torch.device('cpu'))
             self.torch_model.load_state_dict(weights)
         else:  # use pretrained weights from timm
             self.torch_model = timm.create_model(model_name, pretrained=True)
@@ -86,11 +88,12 @@ class AxTimmModel(base_torch.TorchModel):
         # from pdb import set_trace
         # set_trace()
 
-    # TODO: use this as an example of how to deploy with override preprocess
-    # def override_preprocess(self, img: PIL.Image.Image) -> torch.Tensor:
-    #     from timm.data import resolve_data_config
-    #     from timm.data.transforms_factory import create_transform
 
-    #     config = resolve_data_config({}, model=self.torch_model, use_test_size=True)
-    #     transform = create_transform(**config)
-    #     return transform(img)
+class AxTimmModelWithPreprocess(AxTimmModel):
+    def override_preprocess(self, img: PIL.Image.Image) -> torch.Tensor:
+        from timm.data import resolve_data_config
+        from timm.data.transforms_factory import create_transform
+
+        config = resolve_data_config({}, model=self.torch_model, use_test_size=True)
+        transform = create_transform(**config)
+        return transform(img)

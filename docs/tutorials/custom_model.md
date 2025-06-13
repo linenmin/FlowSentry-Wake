@@ -39,7 +39,7 @@ one another, interfacing using a common representation of metadata for each supp
 | :-- | :---------- | :------ |
 | `types.Model` | A deployable PyTorch or ONNX model. Specified in Voyager YAML files in the `models` section (fields `class` and `class_path`) | [`AxYolo`](/ax_models/yolo/ax_yolo.py) |
 | `types.DataAdapter` | A dataset adapter that outputs images and related ground truth metadata in the format `AxTaskMeta`. Specified in Voyager YAML files in the `datasets` section (fields `class` and `class_path`) | [`ObjDataAdapter`](/ax_datasets/objdataadapter.py) |
-| `types.Evaluator` | A evaluator that measures model accuracy by comparing model inference results with ground truth data (both with the type `AxTaskMeta`). Defined as a property of a data adapter (class method `evaluator`) | [`YoloEvaluator`](/ax_evaluators/yolo_eval.py) |
+| `types.Evaluator` | An evaluator that measures model accuracy by comparing model inference results with ground truth data (both with the type `AxTaskMeta`). Defined as a property of a data adapter (class method `evaluator`) | [`ObjectEvaluator`](/ax_evaluators/obj_eval.py) |
 | `AxOperator` | A pipeline element implemented on the host processor, typically image pre-processing and post-processing operators | [`Resize`](/axelera/app/operators/preprocessing.py) |
 | `AxOperator` model decoder | An `AxOperator` that converts model raw output tensor data to `AxTaskMeta` metadata | [`YoloDecode`](/ax_models/decoders/yolo.py) |
 

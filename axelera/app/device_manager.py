@@ -88,19 +88,12 @@ def _select_devices(available, selector):
     deselected = len(available) - len(devices)
     deselected_s = '' if deselected == 1 else 's'
     deselected = f" (deselected {deselected} other device{deselected_s})" if deselected else ''
-    LOG.info(f"{verb} device{devices_s} {names}{deselected}")
+    log = LOG.info if deselected else LOG.debug
+    log(f"{verb} device{devices_s} {names}{deselected}")
     return devices
 
 
 def _human_readable(key, value):
-    if key == 'ddr_size' and type(value) is int:
-        if value >= 0x40000000:
-            return f"{value/0x40000000}GB"
-        if value >= 0x100000:
-            return f"{value/0x100000}MB"
-        if value >= 0x400:
-            return f"{value/0x400}KB"
-        return f"{value}B"
     if key.startswith('mvm_utilisation_core_') and type(value) in (int, float):
         return f"{value}%"
     if key.startswith('clock_profile_core_') and type(value) is int:
@@ -125,19 +118,20 @@ class _AipuDeviceManager(DeviceManager):
             self.metis = override_metis
         else:
             self.devices = _select_devices(devices, device_selector)
-            m = _board_type_as_metis(self.devices[0].board_type)
+            m = _board_type_as_metis(self.devices[0].board_type, self.devices[0].name)
             self.metis = m if override_metis == config.Metis.none else override_metis
 
     def _configure_boards(self, nn) -> dict[int, int]:
         core_index = 0
         configures = {}
-        ddr_size = config.DEFAULT_DDR_SIZE[self.metis]
         for task in nn.tasks:
+            if not task.is_dl_task:
+                continue
             cores = task.aipu_cores
             last = core_index + cores
             clock = nn.model_infos.clock_profile(task.model_info.name, self.metis)
             mvm = nn.model_infos.mvm_limitation(task.model_info.name, self.metis)
-            configures.update(_get_configures(core_index, last, ddr_size, clock, mvm))
+            configures.update(_get_configures(core_index, last, clock, mvm))
             core_index = last
 
         if configures:
@@ -172,7 +166,7 @@ class _AipuDeviceManager(DeviceManager):
 def create_device_manager(
     pipe_type: str,
     override_metis: config.Metis = config.Metis.none,
-    emulate: str = 'NONE',
+    deploy_mode: config.DeployMode = config.DeployMode.QUANTCOMPILE,
     device_selector: str = '',
 ) -> DeviceManager:
     '''Create a device manager for the given pipe type.
@@ -188,7 +182,10 @@ def create_device_manager(
     available devices will be used.  Alternatively it can be a commma seperated list of device
     indexes or device names as returned by axdevice.
     '''
-    if pipe_type not in ['torch', 'quantized'] and emulate == 'NONE':
+    if pipe_type not in ['torch', 'quantized'] and deploy_mode not in (
+        config.DeployMode.QUANTIZE,
+        config.DeployMode.QUANTIZE_DEBUG,
+    ):
         try:
             return _AipuDeviceManager(override_metis, device_selector)
         except OSError as e:
@@ -213,13 +210,13 @@ def detect_metis_type() -> config.Metis:
         return dm.get_metis_type()
 
 
-def _board_type_as_metis(board_type: runtime.BoardType) -> config.Metis:
+def _board_type_as_metis(board_type: runtime.BoardType, name: str) -> config.Metis:
     if board_type.name == 'm2':
         return config.Metis.m2
     if board_type.name.startswith('alpha'):
-        raise RuntimeError(f"Metis Alpha not supported")
+        raise RuntimeError(f"Failed to detect {name}")
     if board_type.name not in ('pcie', 'sbc'):
-        LOG.warning(f"Unknown board type {board_type.name}, assuming pcie")
+        LOG.warning(f"Unknown board type {board_type.name} from device {name}, assuming pcie")
     return config.Metis.pcie
 
 
@@ -245,7 +242,7 @@ def _get_core_clocks(
 
 
 def _get_configures(
-    first_core: int, last_core: int, ddr_size: int, core_clock: int, mvm_limitation: int
+    first_core: int, last_core: int, core_clock: int, mvm_limitation: int
 ) -> dict[str, Any]:
     '''Configure the AIPU board based on the given configuration and env overrides.'''
     val = config.env.configure_board
@@ -258,9 +255,7 @@ def _get_configures(
         try:
             if clock := parts[0]:
                 core_clock = int(clock)
-            if size := len(parts) > 1 and parts[1]:
-                ddr_size = int(size, 0)
-            if mvm := len(parts) > 2 and parts[2]:
+            if mvm := len(parts) > 1 and parts[1]:
                 mvm_limitation = int(mvm)
         except ValueError as e:
             msg = str(e).capitalize()  # for consistency, 'invalid literal...'
@@ -268,7 +263,6 @@ def _get_configures(
 
     configures = {}
     if first_core == 0:
-        configures['ddr_size'] = ddr_size
         configures['device_firmware'] = '1'
     for core in range(first_core, last_core):
         configures[f'mvm_utilisation_core_{core}'] = mvm_limitation

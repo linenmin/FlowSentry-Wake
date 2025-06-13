@@ -12,6 +12,10 @@
 
 using Segment = ax_utils::segment;
 using SegmentList = std::vector<Segment>;
+struct SegmentShape {
+  size_t width;
+  size_t height;
+};
 
 using segment_func = std::function<Segment(const std::vector<float> &, size_t, size_t)>;
 
@@ -43,7 +47,7 @@ class AxMetaSegments : public virtual AxMetaBase
     return segmentlist[idx].map;
   }
 
-  Segment get_segment(size_t idx)
+  Segment get_segment(size_t idx) const
   {
     if (segmentlist.empty()) {
       auto seg = tasks[idx](prototype_tensor, width, height);
@@ -89,6 +93,7 @@ class AxMetaSegments : public virtual AxMetaBase
   std::vector<extern_meta> get_extern_meta() const override
   {
     segment_vec.clear();
+    bbox_vec.clear();
     for (const auto &seg : segmentlist) {
       std::transform(seg.map.begin(), seg.map.end(), std::back_inserter(segment_vec),
           [](float value) -> uint8_t { return value * 255; });

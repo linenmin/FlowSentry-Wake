@@ -14,18 +14,24 @@ pipeline:
         - decode-ssd-mobilenet:
             conf_threshold: 0.4
             label_filter: bottle
+  - tracking:
+      model_name: tracker
+      input:
+        source: full
+        color_format: RGB
+      cv_process:
         - tracker:
-            algorithm: sort
+            algorithm: oc-sort
+            bbox_task_name: detections
   - classifications:
       model_name: ResNet50-ImageNet1K
       input:
         type: image
         source: roi
-        where: SSD-MobileNetV1-COCO
-        classes: bottle
+        where: tracking
+        label_filter: bottle
         which: CENTER # AREA, SCORE, CENTER
         top_k: 10
-        expand_margin: 0
       preprocess:
         - resize:
             width: 224
@@ -44,7 +50,7 @@ models:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: ssd300_mobilenet_v1_modified_valid.onnx # ssd_mobilenet_v1_coco_2018_01_28.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/weights/ssd/ssd300_mobilenet_v1_modified_valid.onnx
+    weight_url: https://media.axelera.ai/artifacts/weights/ssd/ssd300_mobilenet_v1_modified_valid.onnx
     weight_md5: a8dc11f8f3f3c92b9775ed9a5d8ca16a
     task_category: ObjectDetection
     input_tensor_layout: NCHW
@@ -55,10 +61,6 @@ models:
     extra_kwargs:
       max_compiler_cores: 4
       aipu_cores: 3
-      compilation_config:
-        backend_config:
-          single_op_network_aicore_start_idx: 0
-          single_op_network_use_ddr: True
   ResNet50-ImageNet1K:
     class: AxTorchvisionResNet
     class_path: $AXELERA_FRAMEWORK/ax_models/torchvision/resnet.py
@@ -71,29 +73,28 @@ models:
     extra_kwargs:
       max_compiler_cores: 4
       aipu_cores: 1
-      compilation_config:
-        backend_config:
-          single_op_network_use_ddr: True
-          single_op_network_aicore_start_idx: 3
       torchvision_args:
         block: Bottleneck
         layers: [3, 4, 6, 3]
         torchvision_weights_args:
           object: ResNet50_Weights
           name: IMAGENET1K_V1
+  tracker:
+    model_type: CLASSICAL_CV
+    task_category: ObjectTracking
 
 datasets: # Python dataloader
   CocoDataset-COCO2017:
-    class: ObjDataAdaptor
+    class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco90.names
     # If using a custom dataset, comment out download year and add either
     # repr_imgs or cal_data for calibration and add val_data for validation.
     # You can use your existing training dataset as cal_data
-    download_year: 2017
+    label_type: COCO2017
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa
     # cal_data: relative/path/to/your/cal_custom.json or dir with darknet label txt files
     # val_data: relative/path/to/your/val_custom.json or dir with darknet label txt files
@@ -104,5 +105,5 @@ datasets: # Python dataloader
     data_dir_name: ImageNet
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/imagenet1000_clsidx_to_labels.txt
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa

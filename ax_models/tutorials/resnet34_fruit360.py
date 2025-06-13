@@ -25,6 +25,40 @@ from tqdm import tqdm
 # Set the default tensor type to float32
 torch.set_default_dtype(torch.float32)
 
+# Set up device
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda:0")
+elif platform.system() == 'Darwin':
+    DEVICE = torch.device("mps")
+else:
+    DEVICE = torch.device("cpu")
+
+# Set default device and data type handling
+def to_device(tensor, device=None, dtype=None):
+    """Move tensor to the specified device and ensure correct dtype.
+
+    Args:
+        tensor: The tensor to move
+        device: Target device (defaults to global DEVICE)
+        dtype: Target data type (defaults to float32 for floating point tensors)
+
+    Returns:
+        The tensor on the target device with the correct data type
+    """
+    if device is None:
+        device = DEVICE
+
+    # Handle data type conversion for floating point tensors
+    if dtype is None and tensor.is_floating_point():
+        dtype = torch.float32
+
+    # Move tensor to device and convert type if needed
+    return tensor.to(device=device, dtype=dtype)
+
+
+# Default commit hash for the dataset that matches the pre-trained weights (141 classes)
+DEFAULT_COMMIT_HASH = "2f981c83e352a9d4c15fb8c886034c817052c80b"
+
 TRANSFORM = {
     'train': transforms.Compose(
         [
@@ -46,19 +80,13 @@ BATCH_SIZE = 128
 CACHE_DIR = os.path.join(str(Path.home()), '.cache', 'axelera')
 WEIGHTS_DIR = os.path.join(CACHE_DIR, 'weights', 'tutorials')
 WEIGHTS = os.path.join(WEIGHTS_DIR, 'resnet34_fruits360.pth')
-ONNX_PATH = os.path.join(WEIGHTS_DIR, 'resnet34_fruits360_classifier.onnx')
+ONNX_PATH = os.path.join(WEIGHTS_DIR, 'resnet34_fruits360.onnx')
 DATA_ROOT = os.path.join(
     os.getenv('AXELERA_FRAMEWORK', str(Path.home())), 'data', 'fruits-360-100x100'
 )
 
 VAL_SPLIT = 0.15  # 15% for validation
 PATIENCE = 2  # For early stopping
-if torch.cuda.is_available():
-    DEVICE = torch.device("cuda:0")
-elif platform.system() == 'Darwin':
-    DEVICE = torch.device("mps")
-else:
-    DEVICE = torch.device("cpu")
 
 
 def save_indices(indices, filename):
@@ -89,7 +117,7 @@ class TransformSubset(torch.utils.data.Dataset):
 
 
 # Clone the repository using subprocess
-def clone_repo(repo_url, destination_dir):
+def clone_repo(repo_url, destination_dir, commit_hash=None):
     # Check if the destination directory already exists
     if os.path.exists(destination_dir):
         print(f"The directory '{destination_dir}' already exists. Skipping cloning.")
@@ -99,8 +127,15 @@ def clone_repo(repo_url, destination_dir):
         # Run the git clone command
         subprocess.run(["git", "clone", repo_url, destination_dir], check=True)
         print(f"Repository cloned successfully into '{destination_dir}'")
+
+        # Checkout specific commit if provided
+        if commit_hash:
+            if commit_hash == DEFAULT_COMMIT_HASH:
+                print(f"Using default commit hash: {commit_hash} (141 classes)")
+            subprocess.run(["git", "-C", destination_dir, "checkout", commit_hash], check=True)
+            print(f"Successfully checked out commit: {commit_hash}")
     except subprocess.CalledProcessError as e:
-        print(f"Failed to clone repository: {e}")
+        print(f"Failed to clone repository or checkout commit: {e}")
 
 
 def ensure_cache_dirs():
@@ -119,9 +154,10 @@ def train_val_test_loaders(
     repo_url='https://github.com/fruits-360/fruits-360-100x100.git',
     destination_dir=DATA_ROOT,
     is_test_mode=False,
+    commit_hash=DEFAULT_COMMIT_HASH,
 ):
     print(f"{destination_dir = }")
-    clone_repo(repo_url, destination_dir)
+    clone_repo(repo_url, destination_dir, commit_hash)
 
     test_dataset = build_dataset(destination_dir + '/Test', transform=None)
 
@@ -151,6 +187,7 @@ def train_val_test_loaders(
     # Save to file if it doesn't exist
     class_file = Path(WEIGHTS_DIR) / "fruits360.names"
     if not class_file.exists():
+        class_file.parent.mkdir(parents=True, exist_ok=True)
         class_file.write_text('\n'.join(class_names) + '\n')
 
     # Ensure class indices match between datasets
@@ -203,11 +240,12 @@ def train_val_test_loaders(
 
 def train_model(train_loader, val_loader, model, criterion, optimizer, scheduler, num_epochs=2):
     print(f"Device: {DEVICE}")
-    model = model.to(DEVICE)
+    # Ensure model is float32 and on the correct device
+    model = model.to(device=DEVICE, dtype=torch.float32)
     since = time.time()
     ensure_cache_dirs()
     best_model_params_path = WEIGHTS
-    # torch.save(model.state_dict(), best_model_params_path)
+
     best_acc = 0.0
     epochs_no_improve = 0
     dataloaders = {'train': train_loader, 'val': val_loader}
@@ -230,12 +268,10 @@ def train_model(train_loader, val_loader, model, criterion, optimizer, scheduler
             for inputs, labels in tqdm(
                 dataloaders[phase], desc=f"{phase} epoch {epoch}", leave=False
             ):
-                # to make it work with 'mps' device
-                # inputs = inputs.to(torch.float32).to(DEVICE)
-                # labels = labels.to(torch.float32).to(DEVICE)
-
-                inputs = inputs.to(DEVICE)
-                labels = labels.to(DEVICE)
+                # Move inputs and labels to the target device
+                # Move inputs and labels to device with consistent data types
+                inputs = to_device(inputs)  # Will convert to float32 if floating point
+                labels = to_device(labels, dtype=torch.long)  # Keep labels as integers
 
                 # zero the parameter gradients
                 optimizer.zero_grad()
@@ -303,16 +339,35 @@ class ResNet34Model(nn.Module):
         super(ResNet34Model, self).__init__()
         # Load the ResNet34 model with pre-trained weights
         self.model = models.resnet34(weights='IMAGENET1K_V1')
-        self.model = self.model.to(DEVICE)
 
-        # Modify the final fully connected layer
+        # Freeze parameters first if fixed_feature_extractor is True and no weights are loaded
+        if fixed_feature_extractor and not (exists_weights and Path(exists_weights).exists()):
+            print("Freezing feature extractor parameters.")
+            for param in self.model.parameters():
+                param.requires_grad = False
+
+        # Modify the final fully connected layer - its parameters will require gradients by default
         num_ftrs = self.model.fc.in_features
-        self.model.fc = nn.Linear(num_ftrs, num_classes).to(DEVICE)
+        self.model.fc = nn.Linear(
+            num_ftrs, num_classes
+        )  # .to(DEVICE) can be removed if model is moved later
+
+        # Move the entire model to the specified device at the end and ensure float32
+        # We can't use to_device here because it's for tensors, not models
+        self.model = self.model.to(device=DEVICE, dtype=torch.float32)
 
         # Load existing weights if provided and file exists
         if exists_weights and Path(exists_weights).exists():
             print(f"Loading weights from {exists_weights}")
+            # Load weights and ensure they're float32
             state_dict = torch.load(exists_weights, map_location=DEVICE, weights_only=True)
+            # Ensure all tensors are float32
+            for k in state_dict:
+                if (
+                    isinstance(state_dict[k], torch.Tensor)
+                    and state_dict[k].dtype == torch.float64
+                ):
+                    state_dict[k] = state_dict[k].to(torch.float32)
 
             # Handle both direct state dict and model-wrapped state dict
             if any(k.startswith('model.') for k in state_dict.keys()):
@@ -323,28 +378,29 @@ class ResNet34Model(nn.Module):
             else:
                 new_state_dict = state_dict
 
-            self.model.load_state_dict(new_state_dict)
-        elif fixed_feature_extractor:
-            # Freeze parameters only if no existing weights and fixed_feature_extractor is True
-            for param in self.model.parameters():
-                param.requires_grad = False
+            # Load the state dict with strict=False to allow partial loading
+            self.model.load_state_dict(new_state_dict, strict=False)
 
-        self.model = self.model.to(DEVICE)
+        # Ensure the final layer is always trainable when using fixed feature extraction
+        if fixed_feature_extractor:
+            for param in self.model.fc.parameters():
+                param.requires_grad = True
 
     def forward(self, x):
-        x = x.to(DEVICE)
         return self.model(x)
 
 
 def transfer_learning(
     train_loader, val_loader, class_names, fixed_feature_extractor=True, num_epochs=6
 ):
-    # If fixed_feature_extractor = True, reeze the weights for all of the network except that
+    # If fixed_feature_extractor = True, freeze the weights for all of the network except that
     # of the final fully connected layer. This last fully connected layer is replaced with a
     # new one with random weights and only this layer is trained. If not, we still initialize
     # the model with pretrained weights to finetune the ConvNet.
     # model_conv = build_model(len(class_names), fixed_feature_extractor)
-    model_conv = ResNet34Model(num_classes=len(class_names))
+    model_conv = ResNet34Model(
+        num_classes=len(class_names), fixed_feature_extractor=fixed_feature_extractor
+    )
 
     criterion = nn.CrossEntropyLoss()
     # Observe that only parameters of final layer are being optimized as
@@ -367,14 +423,16 @@ def transfer_learning(
 
 
 def test(net, testloader, class_names):
-    net = net.to(DEVICE)
+    # Ensure model is float32 and on the correct device
+    net = net.to(device=DEVICE, dtype=torch.float32)
     correct = 0
     total = 0
 
     with torch.no_grad():
         for data in tqdm(testloader, desc="Measure accuracy on the test dataset"):
-            images = data[0].to(DEVICE)
-            labels = data[1].to(DEVICE)
+            # Move inputs and labels to device with consistent data types
+            images = to_device(data[0])  # Will convert to float32 if floating point
+            labels = to_device(data[1], dtype=torch.long)  # Keep labels as integers
             outputs = net(images)
             # the class with the highest energy is what we choose as prediction
             _, predicted = torch.max(outputs.data, 1)
@@ -388,8 +446,9 @@ def test(net, testloader, class_names):
 
     with torch.no_grad():
         for data in tqdm(testloader, desc="Measure accuracy for each class"):
-            images = data[0].to(DEVICE)
-            labels = data[1].to(DEVICE)
+            # Move inputs and labels to device with consistent data types
+            images = to_device(data[0])  # Will convert to float32 if floating point
+            labels = to_device(data[1], dtype=torch.long)  # Keep labels as integers
             outputs = net(images)
             _, predictions = torch.max(outputs, 1)
             # collect the correct predictions for each class
@@ -420,7 +479,8 @@ def imshow(inp, title=None):
 
 
 def visualize_model(model, test_loader, class_names, num_images=20):
-    model = model.to(DEVICE)
+    # Ensure model is float32 and on the correct device
+    model = model.to(device=DEVICE, dtype=torch.float32)
     was_training = model.training
     model.eval()
     images_so_far = 0
@@ -439,8 +499,9 @@ def visualize_model(model, test_loader, class_names, num_images=20):
 
     with torch.no_grad():
         for inputs, labels in shuffled_loader:  # Use shuffled loader
-            inputs = inputs.to(DEVICE)
-            labels = labels.to(DEVICE)
+            # Move inputs and labels to device with consistent data types
+            inputs = to_device(inputs)  # Will convert to float32 if floating point
+            labels = to_device(labels, dtype=torch.long)  # Keep labels as integers
             all_samples.extend(list(zip(inputs, labels)))
             if len(all_samples) >= num_images:  # Stop once we have enough samples
                 break
@@ -452,10 +513,14 @@ def visualize_model(model, test_loader, class_names, num_images=20):
 
         for inputs, labels in selected_samples:
             images_so_far += 1
-            outputs = model(inputs.unsqueeze(0))
+            # Ensure inputs are on the same device as the model
+            inputs = to_device(inputs)
+            # Unsqueeze to add batch dimension
+            batch_inputs = inputs.unsqueeze(0)
+            outputs = model(batch_inputs)
             _, preds = torch.max(outputs, 1)
 
-            ax = plt.subplot(num_images // 4, 4, images_so_far)
+            ax = fig.add_subplot(num_images // 4, 4, images_so_far)
             ax.axis('off')
             pred_idx = preds[0].item()
             label_idx = labels.item()
@@ -483,9 +548,12 @@ def export_to_onnx(model, input_tensor=None, onnx_file_path=None, opset_version=
     ensure_cache_dirs()
     model.eval()
 
-    input_tensor = (
-        torch.randn(1, 3, 100, 100, device='cpu') if input_tensor is None else input_tensor
-    )
+    # Create input tensor on the same device as the model
+    if input_tensor is None:
+        input_tensor = torch.randn(1, 3, 100, 100, device=DEVICE)
+    else:
+        # Ensure input tensor is on the correct device
+        input_tensor = to_device(input_tensor)
     onnx_file_path = ONNX_PATH if onnx_file_path is None else onnx_file_path
 
     # Export the model
@@ -506,13 +574,26 @@ def export_to_onnx(model, input_tensor=None, onnx_file_path=None, opset_version=
     print(f"Model exported to: {onnx_file_path}")
 
 
-def main(download_only=False, is_test_mode=False):
+def main(download_only=False, is_test_mode=False, commit_hash=DEFAULT_COMMIT_HASH):
     try:
-        train_loader, val_loader, test_loader, class_names = train_val_test_loaders()
+        train_loader, val_loader, test_loader, class_names = train_val_test_loaders(
+            commit_hash=commit_hash
+        )
         if download_only:
             return
         if is_test_mode:
-            net = ResNet34Model(len(class_names), fixed_feature_extractor=False).eval()
+            # Check if weights exist before proceeding with test mode
+            if not Path(WEIGHTS).exists():
+                print(f"\nERROR: Pre-trained weights not found at {WEIGHTS}")
+                print("Please run in training mode first to generate weights:")
+                print("  python ax_models/tutorials/resnet34_fruit360.py --train\n")
+                sys.exit(1)
+
+            print("Running in test mode with pre-trained weights")
+            # Create model with the same number of classes as the dataset and load pre-trained weights
+            net = ResNet34Model(
+                num_classes=len(class_names), fixed_feature_extractor=True, exists_weights=WEIGHTS
+            ).eval()
         else:
             net = transfer_learning(train_loader, val_loader, class_names, True, num_epochs=1)
         test(net, test_loader, class_names)
@@ -530,13 +611,42 @@ def main(download_only=False, is_test_mode=False):
 
 if __name__ == "__main__":
     script_name = Path(sys.argv[0]).name
+
+    # Parse commit hash if provided after --download
+    commit_hash = DEFAULT_COMMIT_HASH
+    if len(sys.argv) > 2 and sys.argv[1] == "--download":
+        commit_hash = sys.argv[2]
+
+    # Check if weights file exists to determine default mode
+    weights_exist = Path(WEIGHTS).exists()
+    default_mode = "test" if weights_exist else "train"
+
     if "--help" in sys.argv:
-        print(f"Usage: {script_name} [--test] [--download]")
+        print(f"Usage: {script_name} [--test] [--train] [--download [commit_hash]]")
         print("       --test: Use this flag to run in test mode (using pre-trained weights)")
+        print("                This requires pre-trained weights to exist")
+        print("       --train: Use this flag to train a new model")
+        print(
+            f"       Default mode: {'test' if weights_exist else 'train'} (based on whether weights exist)"
+        )
+        if not weights_exist:
+            print(f"       Note: Pre-trained weights not found at {WEIGHTS}")
+            print("             Run in training mode first to generate weights")
         print("       --download: Use this flag to only download the dataset and exit")
+        print("                 Optional: Provide a commit hash to checkout a specific version")
+        print(f"                 Default commit hash: {DEFAULT_COMMIT_HASH} (141 classes)")
+        print("                 Example: --download <your-commit-hash>")
     elif "--download" in sys.argv:
-        main(download_only=True)
+        main(download_only=True, commit_hash=commit_hash)
+    elif "--train" in sys.argv:
+        main(is_test_mode=False, commit_hash=commit_hash)
     elif "--test" in sys.argv:
-        main(is_test_mode=True)
+        main(is_test_mode=True, commit_hash=commit_hash)
     else:
-        main()
+        # Auto-detect mode based on whether weights exist
+        if weights_exist:
+            print(f"Auto-detected mode: test (pre-trained weights found at {WEIGHTS})")
+        else:
+            print(f"Auto-detected mode: train (pre-trained weights not found at {WEIGHTS})")
+            print("Training a new model...")
+        main(is_test_mode=weights_exist, commit_hash=commit_hash)

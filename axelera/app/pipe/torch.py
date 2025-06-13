@@ -18,8 +18,8 @@ LOG = logging_utils.getLogger(__name__)
 
 
 class TorchPipe(base.Pipe):
-    def gen_end2end_pipe(self, input, output):
-        self.input_generator = input.create_generator()
+    def gen_end2end_pipe(self, input, output, tile=None):
+        self.frame_generator = input.frame_generator()
         self.pipeout = output
         self.pipeout.initialize_writer(input)
         self.batched_data_reformatter = input.batched_data_reformatter
@@ -30,7 +30,7 @@ class TorchPipe(base.Pipe):
     def _loop(self):
         self.device = torch.device(torch_utils.device_name('auto'))
         try:
-            for data in self.input_generator:
+            for data in self.frame_generator:
                 ts = time.time()
                 if self._stop_event.is_set() or not data:
                     break

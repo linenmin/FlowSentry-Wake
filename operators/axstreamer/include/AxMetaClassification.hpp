@@ -16,27 +16,11 @@ class AxMetaClassification : public AxMetaBase
   AxMetaClassification(scores_vec scores, classes_vec classes,
       labels_vec labels, std::string box_meta = "")
       : scores_(std::move(scores)), classes_(std::move(classes)),
-        labels_(std::move(labels)), box_meta_(std::move(box_meta))
+        labels_(std::move(labels))
   {
     if (scores_.size() != classes_.size()) {
       throw std::logic_error("AxMetaClassification: scores and classes must have the same size");
     }
-  }
-
-  void append(std::vector<float> scores, std::vector<int> classes,
-      std::vector<std::string> labels)
-  {
-    scores_.push_back(std::move(scores));
-    classes_.push_back(std::move(classes));
-    labels_.push_back(std::move(labels));
-  }
-
-  void replace(int idx, std::vector<float> scores, std::vector<int> classes,
-      std::vector<std::string> labels)
-  {
-    scores_[idx] = std::move(scores);
-    classes_[idx] = std::move(classes);
-    labels_[idx] = std::move(labels);
   }
 
   void draw(const AxVideoInterface &video,
@@ -47,24 +31,9 @@ class AxMetaClassification : public AxMetaBase
     }
     cv::Mat mat(cv::Size(video.info.width, video.info.height),
         Ax::opencv_type_u8(video.info.format), video.data, video.info.stride);
-    if (box_meta_.empty()) {
-      cv::putText(mat, labels_[0][0],
-          cv::Point(video.info.width / 2, video.info.height / 2),
-          cv::FONT_HERSHEY_SIMPLEX, 2.0, red);
-    } else {
-      const auto &ref = meta_map.at(box_meta_);
-      AxMetaBbox *bboxes = dynamic_cast<AxMetaBbox *>(ref.get());
-      if (bboxes == nullptr) {
-        throw std::runtime_error("AxMetaLabels not provided with AxMetaBbox");
-      }
-      if (bboxes->num_elements() != labels_.size()) {
-        throw std::runtime_error("AxMetaLabels number of labels does not match number of boxes");
-      }
-      for (int i = 0; i < labels_.size(); ++i) {
-        const auto [x, y, x1, y1] = bboxes->get_box_xyxy(i);
-        cv::putText(mat, labels_[i][0], cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 1.0, red);
-      }
-    }
+    cv::putText(mat, labels_[0][0],
+        cv::Point(video.info.width / 2, video.info.height / 2),
+        cv::FONT_HERSHEY_SIMPLEX, 2.0, red);
   }
 
   std::vector<extern_meta> get_extern_meta() const override
@@ -106,7 +75,6 @@ class AxMetaClassification : public AxMetaBase
   scores_vec scores_;
   classes_vec classes_;
   labels_vec labels_;
-  std::string box_meta_;
 };
 
 
@@ -120,9 +88,8 @@ class AxMetaEmbeddings : public AxMetaBase
 {
   public:
   using embeddings_vec = std::vector<std::vector<float>>;
-
-  AxMetaEmbeddings(embeddings_vec embeddings, std::string box_meta = "")
-      : embeddings_(std::move(embeddings))
+  AxMetaEmbeddings(embeddings_vec embeddings, std::string name = "embeddings")
+      : embeddings_(std::move(embeddings)), decoder_name(name)
   {
   }
 
@@ -146,26 +113,28 @@ class AxMetaEmbeddings : public AxMetaBase
   {
     std::vector<extern_meta> result;
     int num_embeddings = embeddings_.size();
-    size_t total_size = sizeof(int); // For num_embeddings
 
-    for (const auto &embedding : embeddings_) {
-      total_size += embedding.size() * sizeof(float);
+    if (embeddings_.empty()) {
+      total_size = 0;
+    } else {
+      total_size = embeddings_.size() * embeddings_[0].size() * 4;
     }
 
-    std::vector<std::byte> buffer(total_size);
+    buffer.resize(total_size);
     auto ptr = buffer.data();
-
-    std::memcpy(ptr, &num_embeddings, sizeof(int));
-    ptr += sizeof(int);
 
     for (const auto &embedding : embeddings_) {
       size_t embedding_size = embedding.size() * sizeof(float);
       std::memcpy(ptr, embedding.data(), embedding_size);
       ptr += embedding_size;
     }
+    const char *embeddings_meta
+        = decoder_name.size() == 0 ? "embeddings" : decoder_name.c_str();
 
-    result.push_back({ "embeddings", "data", static_cast<int>(total_size),
+    result.push_back({ embeddings_meta, "data", static_cast<int>(total_size),
         reinterpret_cast<const char *>(buffer.data()) });
+    result.push_back({ embeddings_meta, "size", static_cast<int>(sizeof(size_t)),
+        reinterpret_cast<const char *>(&total_size) });
     return result;
   }
 
@@ -180,5 +149,8 @@ class AxMetaEmbeddings : public AxMetaBase
   }
 
   private:
+  mutable size_t total_size;
+  mutable std::vector<std::byte> buffer;
   embeddings_vec embeddings_;
+  std::string decoder_name;
 };

@@ -36,7 +36,7 @@ _LTGREY = "\x1b[37;2m"
 
 class ConsoleDraw(display_cv.CVDraw):
     def __init__(self, img, pane_pos, metrics, labels, options: ConsoleOptions, **kwargs):
-        super().__init__(img)
+        super().__init__(img, [])
         self.metrics = metrics
         self.labels = labels
         self.pane_pos = pane_pos

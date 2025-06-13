@@ -168,7 +168,8 @@ gst_axdecoder_aggregate(GstAggregator *aggregator, gboolean timeout)
   GST_DEBUG_OBJECT(muxer, "aggregate");
 
   init_options(G_OBJECT(aggregator), muxer->data->options, muxer->data->fns,
-      muxer->data->logger, muxer->data->subplugin_data, muxer->data->options_initialised);
+      muxer->data->logger, muxer->data->subplugin_data,
+      muxer->data->options_initialised, nullptr);
 
   bool main_sinkpad_has_buffer
       = gst_aggregator_pad_has_buffer(GST_AGGREGATOR_PAD_CAST(muxer->main_sinkpad));

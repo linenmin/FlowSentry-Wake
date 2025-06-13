@@ -88,7 +88,7 @@ struct TrackedObject {
   }
 
   // Gets the bounding box in absolute coordinates (xyxy format).
-  std::tuple<int, int, int, int> GetXyxy(int &img_width, int &img_height) const
+  std::tuple<int, int, int, int> GetXyxy(int img_width, int img_height) const
   {
     int x1 = static_cast<int>(bbox.x1 * img_width);
     int y1 = static_cast<int>(bbox.y1 * img_height);
@@ -98,7 +98,7 @@ struct TrackedObject {
   }
 
   // Gets the bounding box in absolute coordinates (ltxywh format).
-  std::tuple<int, int, int, int> Getltxywh(int &img_width, int &img_height) const
+  std::tuple<int, int, int, int> Getltxywh(int img_width, int img_height) const
   {
     int x1 = static_cast<int>(bbox.x1 * img_width);
     int y1 = static_cast<int>(bbox.y1 * img_height);

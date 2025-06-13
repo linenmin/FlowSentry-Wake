@@ -18,6 +18,7 @@
     max-size-time: 0
     max-size-bytes: 0
   - instance: axinplace
+    name: decodebin-link0
     lib: libinplace_addstreamid.so
     mode: meta
     options: stream_id:0
@@ -29,7 +30,7 @@
     name: inference-funnel
   - instance: axtransform
     lib: libtransform_colorconvert.so
-    options: format:rgba
+    options: format:rgb
   - instance: axtransform
   - instance: tee
     name: input_tee0
@@ -66,7 +67,7 @@
     num_children: 0
   - instance: axtransform
     lib: libtransform_dequantize.so
-    options: dequant_scale:0.9;dequant_zeropoint:0
+    options: dequant_scale:0.9;dequant_zeropoint:0;transpose:0
     connections:
       src: decoder_task0.sink_1
   - instance: queue

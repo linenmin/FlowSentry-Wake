@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import contextlib
 import importlib.metadata
 import os
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import download_prebuilt
 import pytest
@@ -122,3 +123,24 @@ def test_toplevel_list_models(capsys):
         with patch.object(download_prebuilt, 'get_models', return_value=['alice.zip', 'bob.zip']):
             download_prebuilt.download(Namespace(version='', show_version=False, list=True))
     assert capsys.readouterr().out == 'alice\nbob\n'
+
+
+def test_toplevel_list_models_bad_version(capsys):
+    mock_request = MagicMock()
+    mock_request.__enter__.return_value = mock_request
+    mock_request.status_code = 403
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(Path, 'cwd', lambda: config.env.framework))
+        stack.enter_context(
+            patch.object(download_prebuilt.requests, 'get', return_value=mock_request)
+        )
+        stack.enter_context(patch.object(download_prebuilt, 'get_version', return_value='4.5.6'))
+        stack.enter_context(
+            pytest.raises(
+                RuntimeError,
+                match=r'Prebuilt models are not available for this version \(4\.5\.6\)\. You can try\n'
+                r'another version using --version but they may not be compatible.',
+            )
+        )
+        download_prebuilt.download(Namespace(version='', show_version=False, list=True))
+    assert capsys.readouterr().out == ''

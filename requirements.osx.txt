@@ -13,7 +13,7 @@ protobuf
 psutil
 pycocotools
 pyglet==2.1.3
-pygobject
+pygobject==3.50.0
 pyopencl
 pyserial
 pytest

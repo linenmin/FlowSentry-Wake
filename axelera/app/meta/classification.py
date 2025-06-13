@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
 
 import numpy as np
 
-from .. import plot_utils
+from .. import exceptions, plot_utils
 from .base import AggregationNotRequiredForEvaluation, AxTaskMeta, MetaObject
 
 if TYPE_CHECKING:
@@ -27,6 +27,34 @@ class ClassifiedObject(MetaObject):
     @property
     def class_id(self):
         return self._meta.get_result(self._index)[0]
+
+
+@dataclass(frozen=True)
+class EmbeddingsMeta(AxTaskMeta):
+    """Metadata for embeddings tasks"""
+
+    embedding: list[list[float]] = field(default_factory=list, init=False)
+
+    def add_results(self, data: Union[list[float], np.ndarray]):
+        if isinstance(data, np.ndarray):
+            self.embedding.append(data.tolist())
+        else:
+            self.embedding.append(data)
+
+    def draw(self, draw: display.Draw):
+        raise exceptions.NotSupportedForTask("EmbeddingsMeta", "draw")
+
+    @classmethod
+    def decode(cls, data: Dict[str, Union[bytes, bytearray]]) -> EmbeddingsMeta:
+        buffer = data.get("data", b"")
+        size = data.get("size", b"")
+        size = np.frombuffer(size, dtype=np.uint64)[0]
+        num_embeddings = int(size / 4)  # the size is in bytes not elements
+        embeddings = np.frombuffer(buffer, dtype=np.float32)
+        # Reshape to (num_embeddings, M) where M is the vector length of each embedding
+        meta = cls()
+        meta.add_results(embeddings.reshape(num_embeddings, -1).tolist())
+        return meta
 
 
 @dataclass(frozen=True)

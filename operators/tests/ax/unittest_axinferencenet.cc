@@ -1,3 +1,4 @@
+#include <fstream>
 #include <gmock/gmock.h>
 #include "AxInference.hpp"
 #include "AxInferenceNet.hpp"
@@ -61,13 +62,22 @@ TEST(ax_streamer_utils, split)
 
 TEST(ax_streamer_utils, extract_options)
 {
-  using Ax::Internal::extract_options;
   Ax::Logger logger{ Ax::Severity::trace, nullptr, nullptr };
   using opts = std::unordered_map<std::string, std::string>;
-  EXPECT_EQ((opts{}), extract_options(logger, ""));
-  EXPECT_EQ((opts{ { "bob", "1" } }), extract_options(logger, "bob:1"));
+  EXPECT_EQ((opts{}), Ax::extract_options(logger, ""));
+  EXPECT_EQ((opts{ { "bob", "1" } }), Ax::extract_options(logger, "bob:1"));
   EXPECT_EQ((opts{ { "bob", "1" }, { "jane", "2" } }),
-      extract_options(logger, "bob:1;jane:2"));
+      Ax::extract_options(logger, "bob:1;jane:2"));
+}
+
+TEST(ax_streamer_utils, extract_secondary_options)
+{
+  Ax::Logger logger{ Ax::Severity::trace, nullptr, nullptr };
+  using opts = std::unordered_map<std::string, std::string>;
+  EXPECT_EQ((opts{}), Ax::extract_secondary_options(logger, ""));
+  EXPECT_EQ((opts{ { "bob", "1" } }), Ax::extract_secondary_options(logger, "bob=1"));
+  EXPECT_EQ((opts{ { "bob", "1" }, { "jane", "2" } }),
+      Ax::extract_secondary_options(logger, "bob=1&jane=2"));
 }
 
 TEST(ax_streamer_utils, parse_skip_rate)
@@ -218,7 +228,7 @@ TEST(axinferencenet, dmabuf_allocator_video)
 
   auto allocator = Ax::create_dma_buf_allocator();
   auto managed = allocator->allocate(
-      AxVideoInterface{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr });
+      AxVideoInterface{ { 640, 480, 640 * 3, 0, AxVideoFormat::RGB }, nullptr });
 
   EXPECT_EQ("video/RGB/640x480", Ax::to_string(managed.data()));
   check_dmabuf_unmapped_consistency(managed);
@@ -543,11 +553,45 @@ TEST(axstreamer_utils, ensure_input_tensors_compatible_wrong_second_shape2)
   }
 }
 
+TEST(slice_overlay, perfect_fit_no_overlap)
+{
+  auto [num_slices, overlap] = Ax::determine_overlap(100, 100, 0);
+  EXPECT_EQ(1, num_slices);
+  EXPECT_EQ(0, overlap);
+}
 
-TEST(axinferencenet, properties_from_string)
+TEST(slice_overlay, perfect_fit_with_overlap)
+{
+  auto [num_slices, overlap] = Ax::determine_overlap(100, 100, 10);
+  EXPECT_EQ(1, num_slices);
+  EXPECT_EQ(0, overlap);
+}
+
+TEST(slice_overlay, no_fit_with_overlap)
+{
+  auto [num_slices, overlap] = Ax::determine_overlap(110, 100, 10);
+  EXPECT_EQ(2, num_slices);
+  EXPECT_EQ(90, overlap);
+}
+
+TEST(slice_overlay, hd_with_overlap)
+{
+  auto [num_slices, overlap] = Ax::determine_overlap(1920, 640, 10);
+  EXPECT_EQ(4, num_slices);
+  EXPECT_EQ(213, overlap);
+}
+
+TEST(slice_overlay, hd_with_large_overlap)
+{
+  auto [num_slices, overlap] = Ax::determine_overlap(1080, 640, 25);
+  EXPECT_EQ(3, num_slices);
+  EXPECT_EQ(420, overlap);
+}
+
+TEST(axinferencenet, read_inferencenet_properties)
 {
   Ax::Logger logger{ Ax::Severity::trace, nullptr, nullptr };
-  auto props = Ax::properties_from_string(
+  std::istringstream f(
       "model=build/ces2025-ls/yolov8sseg-coco-onnx/1/model.json\n"
       "devices=metis-0:3:0\n"
       "double_buffer=True\n"
@@ -565,9 +609,8 @@ TEST(axinferencenet, properties_from_string)
       "postprocess0_options=meta_key:segmentations;\n"
       "postprocess0_mode=read\n"
       "postprocess1_lib=libinplace_nms.so\n"
-      "postprocess1_options=nms_threshold:0.45;class_agnostic:0;location:CPU;\n",
-      logger);
-
+      "postprocess1_options=nms_threshold:0.45;class_agnostic:0;location:CPU;\n");
+  auto props = Ax::read_inferencenet_properties(f, logger);
   EXPECT_EQ(props.model, "build/ces2025-ls/yolov8sseg-coco-onnx/1/model.json");
   EXPECT_EQ(props.devices, "metis-0:3:0");
   EXPECT_EQ(props.double_buffer, true);
@@ -589,4 +632,11 @@ TEST(axinferencenet, properties_from_string)
   EXPECT_EQ(props.postproc[0].mode, "read");
   EXPECT_EQ(props.postproc[1].lib, "libinplace_nms.so");
   EXPECT_EQ(props.postproc[1].options, "nms_threshold:0.45;class_agnostic:0;location:CPU;");
+}
+
+TEST(axinferencenet, read_inferencenet_properties_does_not_exist)
+{
+  Ax::Logger logger{ Ax::Severity::trace };
+  ASSERT_THROW(Ax::read_inferencenet_properties("does_not_exist.axnet", logger),
+      std::runtime_error);
 }

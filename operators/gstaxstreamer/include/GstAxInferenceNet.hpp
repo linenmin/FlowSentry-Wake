@@ -36,6 +36,8 @@ struct event_queue {
   std::queue<delayed_event> queue;
 };
 
+class GstAxStreamSelect;
+
 struct _GstAxInferenceNet {
   GstElement parent;
   GstTracerRecord *element_latency;
@@ -45,7 +47,7 @@ struct _GstAxInferenceNet {
   Ax::GstHandle<GstAllocator> allocator;
   Ax::GstHandle<GstBufferPool> pool;
   bool at_eos = false;
-  std::unique_ptr<std::set<int>> stream_select;
+  std::unique_ptr<GstAxStreamSelect> stream_select;
   std::unique_ptr<Ax::Logger> logger;
 };
 

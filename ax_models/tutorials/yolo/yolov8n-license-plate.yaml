@@ -49,19 +49,19 @@ models:
     input_tensor_shape: [1, 3, 640, 640]
     input_color_format: RGB
     weight_path: weights/yolov8n_license_plate_detector.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/weights/yolo/yolov8n_license_plate_detector.onnx
+    weight_url: https://media.axelera.ai/artifacts/weights/yolo/yolov8n_license_plate_detector.onnx
     weight_md5: 80df1cedb4bbaded6cba64d4a48d1ecc
     num_classes: 1
     dataset: CocoDataset-LicensePlate
 
 datasets:
   CocoDataset-LicensePlate:
-    class: ObjDataAdaptor
+    class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: licenseplate_v4_resized640_aug3x-ACCURATE
-    # comment out the url if you are using your local dataset
-    dataset_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/licenseplate_v4_resized640_aug3x-ACCURATE.zip
-    # dataset_md5: 85a19e378bf699c0e263e79e4c1a4622 # optional to check md5sum
+    # comment out the url/md5 if you are using your local dataset
+    dataset_url: https://media.axelera.ai/artifacts/data/licenseplate_v4_resized640_aug3x-ACCURATE.zip
+    dataset_md5: 85a19e378bf699c0e263e79e4c1a4622 # optional to check md5sum
     dataset_drop_dirs: 0
     # tools/list_relative_image_paths.py can be used to generate the following 2 files
     label_type: YOLOv8

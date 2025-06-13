@@ -5,10 +5,12 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
+#include "AxStreamerUtils.hpp"
 
 
 namespace Ax
@@ -27,6 +29,7 @@ struct InferenceProperties {
   std::string options;
   std::string meta;
   std::string devices;
+  int max_buffers{ 0 };
 };
 
 struct OperatorProperties {
@@ -50,6 +53,7 @@ struct CompletedFrame {
   uint64_t frame_id;
   std::shared_ptr<void> buffer_handle{};
   AxVideoInterface video = {};
+  MetaMap *meta_map = nullptr;
 };
 
 using LatencyCallback = std::function<void(const std::string &, uint64_t, uint64_t)>;
@@ -63,6 +67,11 @@ class InferenceNet
       const AxVideoInterface &video, MetaMap &axmetamap, int stream_id = 0)
       = 0;
 
+  // Take the result from a previous InferenceNet and pass it to the next in a
+  // cascade.  This is called from the done_callback of the previous InferenceNet.
+  // If the completed frame has end_of_input set, this InferenceNet will be flushed.
+  virtual void cascade_frame(CompletedFrame &frame) = 0;
+
   // Signal that the end of input has been reached, remaining frames will be
   // flushed.  After end_of_input no new frames should be pushed.
   virtual void end_of_input() = 0;
@@ -73,8 +82,39 @@ class InferenceNet
   virtual ~InferenceNet() = default;
 };
 
-/// Parse a string of InferenceNetProperties. Properties are newline separated.
-InferenceNetProperties properties_from_string(const std::string &s, Ax::Logger &logger);
+// Create an InferenceDoneCallback that will cascade the completed frame to the next InferenceNet
+inline InferenceDoneCallback
+forward_to(InferenceNet &next)
+{
+  return [&next](auto &done) { next.cascade_frame(done); };
+}
+
+// Create an InferenceDoneCallback callback that will push the completed frame to a BlockingQueue
+template <typename Frame>
+InferenceDoneCallback
+forward_to(BlockingQueue<std::shared_ptr<Frame>> &queue)
+{
+  return [&queue](auto &done) {
+    // This function is called whenever an inference result is ready.
+    // We first check to see if inference is complete and in which case stop
+    // the ready queue to indicate to the main loop to exit.
+    if (done.end_of_input) {
+      queue.stop();
+    }
+    // If we have a valid inference result, we cast the buffer handle to our own
+    // Frame type and push it to the ready queue
+    auto frame = std::exchange(done.buffer_handle, {});
+    queue.push(std::static_pointer_cast<Frame>(frame));
+  };
+}
+
+/// Parse a stream for InferenceNetProperties. Properties are newline separated.
+/// Other errors and warnings are reported to the logger.
+InferenceNetProperties read_inferencenet_properties(std::istream &s, Ax::Logger &logger);
+
+/// Read InferenceNetProperties from a file. If the file does not exist
+/// Other errors and warnings are reported to the logger.
+InferenceNetProperties read_inferencenet_properties(const std::string &p, Ax::Logger &logger);
 
 std::unique_ptr<InferenceNet> create_inference_net(
     const InferenceNetProperties &properties, Ax::Logger &logger,

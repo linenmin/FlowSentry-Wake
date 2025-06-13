@@ -2,15 +2,25 @@
 #include "AxInference.hpp"
 #include "AxStreamerUtils.hpp"
 
+#include <algorithm>
 #include <fstream>
-#include <regex>
 
 #if defined(AXELERA_ENABLE_AXRUNTIME)
 #include <axruntime/axruntime.hpp>
 
 using namespace std::string_literals;
-using axr::ptr;
 using axr::to_ptr;
+
+namespace
+{
+
+template <size_t N>
+void
+fill_char_array(char (&arr)[N], const std::string &str)
+{
+  std::fill(std::begin(arr), std::end(arr), 0);
+  std::copy(str.begin(), str.begin() + std::min(N - 1, str.size()), arr);
+}
 
 AxTensorInterface
 to_axtensorinfo(const axrTensorInfo &info)
@@ -38,93 +48,24 @@ axr::ptr<axrProperties>
 create_conn_properties(axrContext *context)
 {
   std::string s;
-  s += "device_name=triton-0:1:0";
+  s += "device_firmware_check=0"; // AF checks this further up
   return to_ptr(axr_create_properties(context, s.c_str()));
 }
 
-void
-log(void *arg, axrLogLevel level, const char *msg)
-{
-  auto &logger = *static_cast<Ax::Logger *>(arg);
-  const auto ax_level = static_cast<Ax::Severity>(level);
-  const auto tag = Ax::SeverityTag{ ax_level, {}, 0, {} };
-  logger(tag) << msg << std::endl;
-}
-
-// Conversion from gst debug level to axr log level
-static const axrLogLevel gst_levels[] = {
-  AXR_LOG_ERROR, // (pad with error just to make array line up with gst values)
-  AXR_LOG_ERROR, // 1=ERROR
-  AXR_LOG_WARNING, // 2=WARNING
-  AXR_LOG_FIXME, // 3=FIXME
-  AXR_LOG_INFO, // 4=INFO
-  AXR_LOG_DEBUG, // 5=DEBUG
-  AXR_LOG_LOG, // 6=LOG
-  AXR_LOG_TRACE, // 7=TRACE
-};
-
-axrLogLevel
-read_gst_debug_level(const std::string &gst_debug)
-{
-  auto level = AXR_LOG_WARNING;
-  for (auto &debug : Ax::Internal::split(gst_debug, ',')) {
-    const auto colon = debug.find(':');
-    if (colon == std::string::npos) {
-      continue;
-    }
-    // convert wildcard to regex
-    const auto expr = std::regex_replace(
-        std::string(debug.substr(0, colon)), std::regex("\\*"), ".*");
-    if (std::regex_match("axinference", std::regex(expr))) {
-      const auto nlevel = std::stoi(std::string(debug.substr(colon + 1)));
-      if (nlevel >= 0 && nlevel < std::size(gst_levels)) {
-        level = gst_levels[nlevel];
-      }
-    }
-  }
-  return level;
-}
-
-axr::ptr<axrContext>
-create_context(Ax::Logger &logger)
-{
-  auto ctx = to_ptr(axr_create_context());
-  auto level = read_gst_debug_level(getenv("GST_DEBUG") ? getenv("GST_DEBUG") : "");
-  axr_set_logger(ctx.get(), level, log, &logger);
-  return ctx;
-}
-
-
-static axrDeviceInfo
-find_device(axrContext &context, const std::string &name)
-{
-  axrDeviceInfo *devices = nullptr;
-  if (name.empty()) {
-    return {};
-  }
-  const auto device_count = axr_list_devices(&context, &devices);
-  if (device_count == 0) {
-    throw std::runtime_error("axr_list_devices failed : "s
-                             + axr_last_error_string(AXR_OBJECT(&context)));
-  }
-  std::vector<std::string> found_devices;
-  for (size_t devicen = 0; devicen != device_count; ++devicen) {
-    if (name == devices[devicen].name) {
-      return devices[devicen];
-    }
-    found_devices.push_back(devices[devicen].name);
-  }
-  const auto found = Ax::Internal::join(found_devices, ",");
-  throw std::runtime_error("Could not find device " + name + ", but did find " + found);
-}
+static std::mutex second_slice_workaround_mutex;
 
 class AxRuntimeInference : public Ax::Inference
 {
   public:
-  AxRuntimeInference(Ax::Logger &logger, const Ax::InferenceProperties &props)
-      : logger(logger), context(create_context(logger)), ctx(context.get()),
-        model(axr_load_model(ctx, props.model.c_str()))
+  AxRuntimeInference(Ax::Logger &logger, axrContext *ctx, axrModel *model,
+      const Ax::InferenceProperties &props)
+      : logger(logger)
   {
+    // level-zero/triton/kmd has issues if we try to load the model from
+    // multiple threads. So lock here to load a model at a time. This is a
+    // workaround for the issue, and it needs fixing lower down.
+    // Proper fix tracked here https://axeleraai.atlassian.net/browse/SDK-6708
+    std::lock_guard lock(second_slice_workaround_mutex);
     auto inputs = axr_num_model_inputs(model);
     for (int n = 0; n != inputs; ++n) {
       input_shapes_.push_back(to_axtensorinfo(axr_get_model_input(model, n)));
@@ -138,19 +79,22 @@ class AxRuntimeInference : public Ax::Inference
     logger(AX_INFO) << "Loaded model " << props.model << " with " << inputs
                     << " inputs and " << outputs << " outputs" << std::endl;
 
-    auto device = find_device(*context, props.devices);
-    auto *pdevice = props.devices.empty() ? nullptr : &device;
+    auto device = axrDeviceInfo{};
+    fill_char_array(device.name, props.devices);
+    const auto *pdevice = props.devices.empty() ? nullptr : &device;
     // (batch_size is virtual so don't use it)
     const auto num_sub_devices = input_shapes_.front().sizes.front();
     const auto conn_props = create_conn_properties(ctx);
-    connection = axr_device_connect(ctx, pdevice, num_sub_devices, conn_props.get());
+    connection = to_ptr(
+        axr_device_connect(ctx, pdevice, num_sub_devices, conn_props.get()));
     if (!connection) {
       throw std::runtime_error(
           "axr_device_connect failed : "s + axr_last_error_string(AXR_OBJECT(ctx)));
     }
     const auto load_props = create_properties(ctx, props.dmabuf_inputs,
         props.dmabuf_outputs, props.double_buffer, num_sub_devices);
-    instance = axr_load_model_instance(connection, model, load_props.get());
+    instance
+        = to_ptr(axr_load_model_instance(connection.get(), model, load_props.get()));
     if (!instance) {
       throw std::runtime_error("axr_load_model_instance failed : "s
                                + axr_last_error_string(AXR_OBJECT(ctx)));
@@ -210,11 +154,11 @@ class AxRuntimeInference : public Ax::Inference
         output_args[i].offset = 0;
       }
     }
-    auto res = axr_run_model_instance(instance, input_args.data(),
+    auto res = axr_run_model_instance(instance.get(), input_args.data(),
         input_args.size(), output_args.data(), output_args.size());
     if (res != AXR_SUCCESS) {
-      throw std::runtime_error(
-          "axr_run_model failed with "s + axr_last_error_string(AXR_OBJECT(model)));
+      throw std::runtime_error("axr_run_model failed with "s
+                               + axr_last_error_string(AXR_OBJECT(instance.get())));
     }
   }
 
@@ -224,25 +168,25 @@ class AxRuntimeInference : public Ax::Inference
 
   private:
   Ax::Logger &logger;
-  axr::ptr<axrContext> context;
-  axrContext *ctx;
-  axrModel *model;
-  axrConnection *connection;
-  axrModelInstance *instance;
+  axr::ptr<axrConnection> connection;
+  axr::ptr<axrModelInstance> instance;
   std::vector<axrArgument> input_args;
   std::vector<axrArgument> output_args;
   AxTensorsInterface input_shapes_;
   AxTensorsInterface output_shapes_;
 };
+} // namespace
 
 std::unique_ptr<Ax::Inference>
-Ax::create_axruntime_inference(Ax::Logger &logger, const InferenceProperties &props)
+Ax::create_axruntime_inference(Ax::Logger &logger, axrContext *ctx,
+    axrModel *model, const InferenceProperties &props)
 {
-  return std::make_unique<AxRuntimeInference>(logger, props);
+  return std::make_unique<AxRuntimeInference>(logger, ctx, model, props);
 }
 #else
 std::unique_ptr<Ax::Inference>
-Ax::create_axruntime_inference(Ax::Logger &logger, const InferenceProperties &props)
+Ax::create_axruntime_inference(Ax::Logger &logger, axrContext *ctx,
+    axrModel *model, const InferenceProperties &props)
 {
   throw std::runtime_error("Axelera AI runtime not installed at compile time");
 }

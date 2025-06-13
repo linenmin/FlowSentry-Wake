@@ -90,7 +90,6 @@ Valid properties are :
 
 | Property                 | Default    | Description                            |
 |--------------------------|------------|----------------------------------------|
-| ddr_size                 | 0x40000000 | Size of DDR memory in bytes            |
 | clock_profile            | 800        | Device clock profile in MHz            |
 | clock_profile_core_0-3   | 800        | Per-core clock profile in MHz          |
 | mvm_utilisation_core_0-3 | 100        | Per-core MVM utilisation as percentage |

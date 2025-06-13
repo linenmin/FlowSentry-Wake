@@ -6,7 +6,11 @@ from axelera.app import yaml_parser
 
 # fmt: off
 model_name_to_card_name_dict = {
-'ax-yolov5s-axelera'                      : 'NO CARD NAME',
+'ax-yolov8n-coco-onnx'                    : 'Axelera-YOLOv8n',
+'ax-yolov8s-coco-onnx'                    : 'Axelera-YOLOv8s',
+'ax-yolov8m-coco-onnx'                    : 'Axelera-YOLOv8m',
+'ax-yolov8m-lite-coco-onnx'               : 'Axelera-YOLOv8m-Lite',
+'ax-yolov8l-coco-onnx'                    : 'Axelera-YOLOv8l',
 'convnext_base-imagenet'                  : 'ConvNeXT base',
 'convnext_base-imagenet-onnx'             : 'ConvNeXT base',
 'convnext_large-imagenet'                 : 'ConvNeXT large',
@@ -33,8 +37,10 @@ model_name_to_card_name_dict = {
 'efficientnet_b4-imagenet-onnx'           : 'EfficientNet-B4',
 'facenet-lfw'                             : 'FaceNet - InceptionResnetV1',
 'fake_cfg'                                : 'NO CARD NAME',
+'fastdepth-nyudepthv2-onnx'               : 'FastDepth',
 'inception_v3-imagenet'                   : 'Inception V3',
 'inception_v3-imagenet-onnx'              : 'Inception V3',
+'lprnet'                                  : 'LPRNet',
 'lprnet-onnx'                             : 'LPRNet',
 'mnasnet0_5-imagenet'                     : 'MnasNet0_5',
 'mnasnet0_5-imagenet-onnx'                : 'MnasNet0_5',
@@ -58,6 +64,7 @@ model_name_to_card_name_dict = {
 'mobilenetv4_large-imagenet-onnx'         : 'MobileNetV4-large',
 'mobilenetv4_aa_large-imagenet'           : 'MobileNetV4-aa_large',
 'mobilenetv4_aa_large-imagenet-onnx'      : 'MobileNetV4-aa_large',
+'osnet-x1-0-onnx'                         : 'OSNet x1_0',
 'parallel-yolov8spose-retinaface'         : 'NO CARD NAME',
 'real-esrgan-x4plus-onnx'                 : 'Real-ESRGAN-x4plus',
 'regnet_x_1_6gf-imagenet'                 : 'RegNetX-1_6GF',
@@ -142,6 +149,8 @@ model_name_to_card_name_dict = {
 'yolov7-tiny-coco-onnx'                   : 'YOLOv7-tiny',
 'yolov7-w6-coco'                          : 'YOLOv7-W6',
 'yolov7-w6-coco-onnx'                     : 'YOLOv7-W6',
+'yolov8xpose-p6-coco-onnx'                : 'YOLOv8xpose-p6',
+'yolov8xpose-p6-coco'                     : 'YOLOv8xpose-p6',
 'yolov8l-coco-onnx'                       : 'YOLOv8l',
 'yolov8l-coco'                            : 'YOLOv8l',
 'yolov8lpose-coco-onnx'                   : 'YOLOv8l-pose',
@@ -197,6 +206,13 @@ model_name_to_card_name_dict = {
 'yolox-s-coco-onnx'                       : 'YOLOX-s',
 'ces2025-ls'                              : 'NO CARD NAME',
 'ces2025-ln'                              : 'NO CARD NAME',
+'llama-3-2-1b-1024-4core-static'          : 'Llama-3.2-1B (1024)',
+'llama-3-2-3b-1024-4core-static'          : 'Llama-3.2-3B (1024)',
+'llama-3-1-8b-1024-static'                : 'Llama-3.1-8B (1024)',
+'phi3-mini-2048-static'                   : 'Phi3-mini (2048)',
+'phi3-mini-1024-4core-static'             : 'Phi3-mini (1024)',
+'phi3-min-512-static'                     : 'Phi3-mini (512)',
+'velvet-2b-1024-static'                   : 'Velvet-2B (1024)',
 }
 # fmt: on
 

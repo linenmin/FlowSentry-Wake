@@ -14,6 +14,7 @@ class CLBarrelCorrect;
 struct barrelcorrect_properties {
   std::vector<cl_float> camera_props;
   std::vector<cl_float> distort_coefs;
+  bool normalised{ true };
   int bgra_out{ 1 };
   std::unique_ptr<CLBarrelCorrect> barrelcorrect;
 };
@@ -22,7 +23,7 @@ const char *kernel_cl = R"##(
 
 float2 barrel_distortion_correction(
     int x, int y, const float fx, const float fy, const float cx, const float cy,
-    const float k1, const float k2, const float k3, const float p1, const float p2)
+    const float k1, const float k2, const float p1, const float p2, const float k3)
 {
     x += 0.5F;
     y += 0.5F;
@@ -50,7 +51,7 @@ float2 barrel_distortion_correction(
 
 __kernel void rgba_barrel_correct_bl(__global const uchar4 *in, __global uchar4 *out, int in_width, int in_height, int out_width, int out_height,
                         int strideIn, int strideOut, const float fx, const float fy, const float cx, const float cy,
-                            const float k1, const float k2, const float k3, const float p1, const float p2, uchar is_bgr) {
+                            const float k1, const float k2, const float p1, const float p2, const float k3, uchar is_bgr) {
 
     const int col = get_global_id(0);
     const int row = get_global_id(1);
@@ -68,14 +69,13 @@ __kernel void rgba_barrel_correct_bl(__global const uchar4 *in, __global uchar4 
 
     int strideI = strideIn / sizeof(uchar4);
     rgb_image img = {in_width, in_height, strideI, 0, 0};
-    uchar4 pixel = rgb_sampler_bl(in, corrected.x, corrected.y, &img);
+    uchar4 pixel = rgba_sampler_bl(in, corrected.x, corrected.y, &img);
     out[row * strideO + col] = is_bgr ? pixel.zyxw : pixel;
 }
 
-__kernel void nv12_barrel_correct_bl(__global const uchar *in_y, __global uchar4 *out, int uv_offset, int in_width, int in_height,
-                            int out_width, int out_height, int strideInY, int strideInUV, int strideOut,
-                            const float fx, const float fy, const float cx, const float cy,
-                            const float k1, const float k2, const float k3, const float p1, const float p2, uchar is_bgr) {
+__kernel void rgb_barrel_correct_bl(__global const uchar *in, __global uchar *out, int in_width, int in_height, int out_width, int out_height,
+                        int strideIn, int strideOut, const float fx, const float fy, const float cx, const float cy,
+                            const float k1, const float k2, const float p1, const float p2, const float k3, uchar is_bgr) {
 
     const int col = get_global_id(0);
     const int row = get_global_id(1);
@@ -86,34 +86,61 @@ __kernel void nv12_barrel_correct_bl(__global const uchar *in_y, __global uchar4
     }
 
     float2 corrected = barrel_distortion_correction(col, row, fx, fy, cx, cy, k1, k2, k3, p1, p2);
+    __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
     if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
-      out[row * strideO + col] = (uchar4)(0, 0, 0, 255);
+      vstore3((uchar3)(0, 0, 0), col, prgb);
+      return;
+    }
+
+    __global uchar *p_in = advance_uchar_ptr(in, row * strideIn);
+
+    rgb_image img = {in_width, in_height, strideIn, 0, 0};
+    uchar4 pixel = rgb_sampler_bl(in, corrected.x, corrected.y, &img);
+    vstore3(is_bgr ? pixel.zyx : pixel.xyz, col, prgb);
+}
+
+
+__kernel void nv12_barrel_correct_bl(__global const uchar *in_y, __global uchar *out, int uv_offset, int in_width, int in_height,
+                            int out_width, int out_height, int strideInY, int strideInUV, int strideOut,
+                            const float fx, const float fy, const float cx, const float cy,
+                            const float k1, const float k2, const float p1, const float p2, const float k3, uchar is_bgr) {
+
+    const int col = get_global_id(0);
+    const int row = get_global_id(1);
+
+    if (row >= out_height || col >= out_width) {
+      return;
+    }
+
+    float2 corrected = barrel_distortion_correction(col, row, fx, fy, cx, cy, k1, k2, k3, p1, p2);
+    __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
+    if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
+      vstore3((uchar3)(0, 0, 0), col, prgb);
       return;
     }
     __global uchar2 *in_uv = (__global uchar2 *)(in_y + uv_offset);
     int uvStrideI = strideInUV / sizeof(uchar2);
     nv12_image img = {in_width, in_height, strideInY, uvStrideI, 0, 0};
     uchar4 pixel = nv12_sampler(in_y, in_uv,  corrected.x, corrected.y, &img);
-
-    out[row * strideO + col] = is_bgr ? pixel.zyxw : pixel;
+    vstore3(is_bgr ? pixel.zyx : pixel.xyz, col, prgb);
 }
 
-__kernel void i420_barrel_correct_bl(__global const uchar *in_y, __global uchar4 *out, int u_offset, int v_offset, int in_width, int in_height,
+__kernel void i420_barrel_correct_bl(__global const uchar *in_y, __global uchar *out, int u_offset, int v_offset, int in_width, int in_height,
                             int out_width, int out_height, int strideInY, int strideInU, int strideInV, int strideOut,
                             const float fx, const float fy, const float cx, const float cy,
-                            const float k1, const float k2, const float k3, const float p1, const float p2, uchar is_bgr) {
+                            const float k1, const float k2, const float p1, const float p2, const float k3, uchar is_bgr) {
 
     const int col = get_global_id(0);
     const int row = get_global_id(1);
 
-    int strideO = strideOut / sizeof(uchar4);
     if (row >= out_height || col >= out_width) {
       return;
     }
 
     float2 corrected = barrel_distortion_correction(col, row, fx, fy, cx, cy, k1, k2, k3, p1, p2);
+    __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
     if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
-      out[row * strideO + col] = (uchar4)(0, 0, 0, 255);
+      vstore3((uchar3)(0, 0, 0), col, prgb);
       return;
     }
 
@@ -122,33 +149,33 @@ __kernel void i420_barrel_correct_bl(__global const uchar *in_y, __global uchar4
 
     i420_image img = {in_width, in_height, strideInY, strideInU, strideInV, 0, 0};
     uchar4 pixel = i420_sampler(in_y, in_u, in_v, corrected.x, corrected.y, &img);
-    out[row * strideO + col] = is_bgr ? pixel.zyxw : pixel;
-}
+    vstore3(is_bgr ? pixel.zyx : pixel.xyz, col, prgb);
+  }
 
-__kernel void yuyv_barrel_correct_bl(__global const uchar4 *in_y, __global uchar4 *out, int in_width, int in_height,
+__kernel void yuyv_barrel_correct_bl(__global const uchar4 *in_y, __global uchar *out, int in_width, int in_height,
                             int out_width, int out_height, int strideInY, int strideOut,
                             const float fx, const float fy, const float cx, const float cy,
-                            const float k1, const float k2, const float k3, const float p1, const float p2, uchar is_bgr) {
+                            const float k1, const float k2, const float p1, const float p2, const float k3, uchar is_bgr) {
 
     const int col = get_global_id(0);
     const int row = get_global_id(1);
 
-    int strideO = strideOut / sizeof(uchar4);
     int strideI = strideInY / sizeof(uchar4);
     if (row >= out_height || col >= out_width) {
       return;
     }
 
     float2 corrected = barrel_distortion_correction(col, row, fx, fy, cx, cy, k1, k2, k3, p1, p2);
+    __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
     if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
-      out[row * strideO + col] = (uchar4)(0, 0, 0, 255);
+      vstore3((uchar3)(0, 0, 0), col, prgb);
       return;
     }
 
     yuyv_image img = {in_width, in_height, strideI, 0, 0};
     uchar4 pixel = yuyv_sampler(in_y, corrected.x, corrected.y, &img);
-    out[row * strideO + col] = is_bgr ? pixel.zyxw : pixel;
-}
+    vstore3(is_bgr ? pixel.zyx : pixel.xyz, col, prgb);
+  }
 
 )##";
 
@@ -163,6 +190,7 @@ class CLBarrelCorrect
   CLBarrelCorrect(std::string source, Ax::Logger &logger)
       : program(ax_utils::get_kernel_utils() + source, logger),
         rgba_barrel_correct{ program.get_kernel("rgba_barrel_correct_bl") },
+        rgb_barrel_correct{ program.get_kernel("rgb_barrel_correct_bl") },
         nv12_barrel_correct{ program.get_kernel("nv12_barrel_correct_bl") },
         i420_barrel_correct{ program.get_kernel("i420_barrel_correct_bl") }, yuyv_barrel_correct{
           program.get_kernel("yuyv_barrel_correct_bl")
@@ -203,24 +231,26 @@ class CLBarrelCorrect
   {
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
 
+    auto width = prop.normalised ? in.width : 1;
+    auto height = prop.normalised ? in.height : 1;
     auto camera_props = std::array<cl_float, 4>{
-      prop.camera_props[0] * in.width,
-      prop.camera_props[1] * in.height,
-      prop.camera_props[2] * in.width,
-      prop.camera_props[3] * in.height,
+      prop.camera_props[0] * width,
+      prop.camera_props[1] * height,
+      prop.camera_props[2] * width,
+      prop.camera_props[3] * height,
     };
 
-    if (in.format == AxVideoFormat::RGBA || in.format == AxVideoFormat::BGRA) {
+    if (in.format == AxVideoFormat::RGB || in.format == AxVideoFormat::BGR) {
       auto inbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
 
       cl_uchar is_bgr = in.format != out.format;
-      program.set_kernel_args(rgba_barrel_correct, 0, *inbuf, *outbuf, in.width,
+      program.set_kernel_args(rgb_barrel_correct, 0, *inbuf, *outbuf, in.width,
           in.height, out.width, out.height, in.stride, out.stride,
           camera_props[0], camera_props[1], camera_props[2], camera_props[3],
           prop.distort_coefs[0], prop.distort_coefs[1], prop.distort_coefs[2],
           prop.distort_coefs[3], prop.distort_coefs[4], is_bgr);
 
-      return run_kernel(rgba_barrel_correct, out, inbuf, outbuf);
+      return run_kernel(rgb_barrel_correct, out, inbuf, outbuf);
 
     } else if (in.format == AxVideoFormat::NV12) {
       auto inbuf_y = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
@@ -242,7 +272,7 @@ class CLBarrelCorrect
       cl_int u_stride = in.strides[1];
       cl_int v_offset = in.offsets[2];
       cl_int v_stride = in.strides[2];
-      cl_uchar is_bgr = out.format == AxVideoFormat::BGRA;
+      cl_uchar is_bgr = out.format == AxVideoFormat::BGR;
       program.set_kernel_args(i420_barrel_correct, 0, *inbuf_y, *outbuf, u_offset,
           v_offset, in.width, in.height, out.width, out.height, in.stride, u_stride,
           v_stride, out.stride, camera_props[0], camera_props[1], camera_props[2],
@@ -273,6 +303,7 @@ class CLBarrelCorrect
   CLProgram program;
   int error{};
   kernel rgba_barrel_correct;
+  kernel rgb_barrel_correct;
   kernel nv12_barrel_correct;
   kernel i420_barrel_correct;
   kernel yuyv_barrel_correct;
@@ -286,6 +317,7 @@ allowed_properties()
     "camera_props",
     "distort_coefs",
     "bgra_out",
+    "normalized_properties",
   };
   return allowed_properties;
 }
@@ -302,6 +334,8 @@ init_and_set_static_properties(
       "barrelcorrect_static_properties", prop->distort_coefs);
   prop->bgra_out = Ax::get_property(
       input, "bgra_out", "barrelcorrect_dynamic_properties", prop->bgra_out);
+  prop->normalised = Ax::get_property(input, "normalized_properties",
+      "barrelcorrect_static_properties", prop->normalised);
 
   constexpr auto camera_props_size = 4;
   if (prop->camera_props.size() != camera_props_size) {
@@ -330,7 +364,7 @@ set_output_interface(const AxDataInterface &interface,
   if (std::holds_alternative<AxVideoInterface>(interface)) {
     auto in_info = std::get<AxVideoInterface>(interface);
     auto out_info = in_info;
-    out_info.info.format = prop->bgra_out ? AxVideoFormat::BGRA : AxVideoFormat::RGBA;
+    out_info.info.format = prop->bgra_out ? AxVideoFormat::BGR : AxVideoFormat::RGB;
     output = out_info;
   }
   return output;
@@ -357,6 +391,8 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
     throw std::runtime_error("resize works on single video output only");
   }
   auto valid_formats = std::array{
+    AxVideoFormat::RGB,
+    AxVideoFormat::BGR,
     AxVideoFormat::RGBA,
     AxVideoFormat::BGRA,
     AxVideoFormat::NV12,
@@ -369,8 +405,8 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
     throw std::runtime_error("Barrel Correction does not work with the input format: "
                              + AxVideoFormatToString(input_details[0].format));
   }
-  if (output_details[0].format != AxVideoFormat::RGBA
-      && output_details[0].format != AxVideoFormat::BGRA) {
+  if (output_details[0].format != AxVideoFormat::RGB
+      && output_details[0].format != AxVideoFormat::BGR) {
     throw std::runtime_error("Barrel Correction does not work with the output format: "
                              + AxVideoFormatToString(output_details[0].format));
   }

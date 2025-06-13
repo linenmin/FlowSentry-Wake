@@ -25,21 +25,21 @@ namespace ax_utils
 {
 std::mutex CLProgram::cl_mutex;
 
-CLProgram::CLProgram(const std::string &source, Ax::Logger &log) : logger(log)
+CLProgram::CLProgram(const std::string &source, void *display, Ax::Logger &log)
+    : logger(log)
 {
   std::lock_guard<std::mutex> lock(cl_mutex);
 
   cl_platform_id platformId;
   cl_uint numPlatforms;
-
   auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
   if (error != CL_SUCCESS) {
     throw std::runtime_error("Failed to get platform ID! Error = " + std::to_string(error));
   }
-  extensions = init_extensions(platformId);
-
+  extensions = init_extensions(platformId, display);
   cl_uint num_devices = 1;
-  error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
+
+  error = get_device_id(platformId, &device_id, &num_devices, extensions);
 
   if (error != CL_SUCCESS) {
     throw std::runtime_error("Unable to find appropriate OpenCL device.");
@@ -89,20 +89,31 @@ CLProgram::get_kernel(const std::string &kernel_name) const
   return ax_kernel{ kernel };
 }
 
-CLProgram::ax_buffer
-CLProgram::create_buffer(int elem_size, int num_elems, int flags,
-    const std::variant<void *, int> &ptr) const
+std::vector<CLProgram::ax_buffer>
+CLProgram::create_buffers(int elem_size, int num_elems, int flags,
+    const std::variant<void *, int, VASurfaceID_proxy *> &ptr, int num_planes) const
 {
   cl_int error = CL_SUCCESS;
-  return ax_buffer{ create_optimal_buffer(
-      context, extensions, elem_size, num_elems, flags, ptr, error) };
+  auto buffers = create_optimal_buffer(
+      context, extensions, elem_size, num_elems, flags, ptr, num_planes, error);
+  auto wrapped_buffers = std::vector<ax_buffer>{};
+  std::transform(buffers.begin(), buffers.end(), std::back_inserter(wrapped_buffers),
+      [this](cl_mem buffer) { return ax_buffer{ buffer }; });
+  return wrapped_buffers;
+}
+
+CLProgram::ax_buffer
+CLProgram::create_buffer(int elem_size, int num_elems, int flags,
+    const std::variant<void *, int, VASurfaceID_proxy *> &ptr, int num_planes) const
+{
+  return create_buffers(elem_size, num_elems, flags, ptr, num_planes)[0];
 }
 
 CLProgram::ax_buffer
 CLProgram::create_buffer(const buffer_details &details, int flags)
 {
-  return create_buffer(
-      1, ax_utils::determine_buffer_size(details), flags, details.data);
+  return create_buffer(1, ax_utils::determine_buffer_size(details), flags,
+      details.data, details.offsets.size());
 }
 
 int
@@ -166,6 +177,18 @@ CLProgram::flush_output_buffer(const ax_buffer &out, int size)
 }
 
 int
+CLProgram::acquireva(std::span<cl_mem> input_buffers)
+{
+  return acquire_va(commands, extensions, input_buffers);
+}
+
+int
+CLProgram::releaseva(std::span<cl_mem> input_buffers)
+{
+  return release_va(commands, extensions, input_buffers);
+}
+
+int
 CLProgram::execute_kernel(const ax_kernel &kernel, int num_dims, size_t global_work_size[3])
 {
   //  TODO: determine local work size
@@ -188,11 +211,30 @@ CLProgram::~CLProgram()
     clReleaseContext(context);
 }
 
-const char *
-get_kernel_utils()
+std::string
+get_kernel_utils(int rotate_type)
 {
 
-  return R"##(
+  std::string utils = R"##(
+
+#define advance_uchar_ptr(ptr, offset) ((__global uchar *)ptr + offset)
+#define advance_uchar2_ptr(ptr, offset) ((__global uchar2 *)((__global uchar *)ptr + offset))
+#define advance_uchar3_ptr(ptr, offset) ((__global uchar3 *)((__global uchar *)ptr + offset))
+#define advance_uchar4_ptr(ptr, offset) ((__global uchar4 *)((__global uchar *)ptr + offset))
+
+
+uchar3 YUV_to_RGB(uchar Y, uchar U, uchar V) {
+    int C = (Y - 16) * 19071; // 1.164f * 16384
+    int D = U - 128;
+    int E = V - 128;
+
+    // Integer approximation of YUV to RGB conversion
+    int3 rgb;
+    rgb.x = (C + (26149 * E)) >> 14;            // 1.596 * 16384
+    rgb.y = (C - (6406 * D + 13320 * E)) >> 14; // 0.391F * 16384, 0.813 * 16384
+    rgb.z = (C + (33063 * D)) >> 14;            // 2.018 * 16384
+    return convert_uchar3_sat_rte(rgb);
+}
 
 //  Convert YUV values to RGBA
 uchar4 convert_YUV2RGBA(float3 yuv) {
@@ -371,7 +413,7 @@ typedef struct rgb_image {
     int crop_y;
 } rgb_image;
 
-uchar4 rgb_sampler_bl(__global const uchar4 *image, float fx, float fy, const rgb_image *img ) {
+uchar4 rgba_sampler_bl(__global const uchar4 *image, float fx, float fy, const rgb_image *img ) {
     //  Here we add in the offsets to the pixel from the crop meta
     float xpixel_left = fx - 0.5f;
     float ypixel_top = fy - 0.5f;
@@ -404,7 +446,118 @@ uchar4 rgb_sampler_bl(__global const uchar4 *image, float fx, float fy, const rg
     uchar4 result = convert_uchar4_sat_rte(mad((i2 - i1), yfrac, i1));
     return result;
 }
+
+uchar4 rgb_sampler_bl(__global const uchar *image, float fx, float fy, const rgb_image *img ) {
+    //  Here we add in the offsets to the pixel from the crop meta
+    float xpixel_left = fx - 0.5f;
+    float ypixel_top = fy - 0.5f;
+
+    int x1 = xpixel_left;
+    int y1 = ypixel_top;
+    float xfrac = xpixel_left - x1;
+    float yfrac = ypixel_top - y1;
+
+    x1 = max(x1, 0);
+    y1 = max(y1, 0);
+    int x2 = min(x1 + 1,img->width - 1);
+    int y2 = min(y1 + 1,img->height - 1);
+
+    x1 += img->crop_x;
+    y1 += img->crop_y;
+    x2 += img->crop_x;
+    y2 += img->crop_y;
+    __global const uchar * p_in = advance_uchar_ptr(image, y1 * img->stride);
+    float3 p00 = convert_float3(vload3(x1, p_in));
+    float3 p01 = convert_float3(vload3(x2, p_in));
+    p_in = advance_uchar_ptr(image, y2 * img->stride);
+    float3 p10 = convert_float3(vload3(x1, p_in));
+    float3 p11 = convert_float3(vload3(x2, p_in));
+
+    //  Performs bilinear interpolation
+    //  frac is the fraction of the pixel that is color2
+    //  color = color1 + (color2 - color1) * frac
+
+    float3 i1 = mad((p01 - p00), xfrac, p00);
+    float3 i2 = mad((p11 - p10), xfrac, p10);
+    uchar4 result = (uchar4)(convert_uchar3_sat_rte(mad((i2 - i1), yfrac, i1)), 255);
+    return result;
+}
+
+//  upper-right-diagonal
+inline int2 get_input_coords_urd(int row, int col, int width, int height) {
+  int new_x = (height - row) - 1;
+  int new_y = (width - col) - 1;
+  return (int2)(new_x, new_y);
+}
+
+//  upper-left-diagonal
+inline int2 get_input_coords_uld(int row, int col, int width, int height) {
+  int new_x = row;
+  int new_y = col;
+  return (int2)(new_x, new_y);
+}
+
+
+//  Rotate 90 clockwise
+inline int2 get_input_coords_clockwise(int row, int col, int width, int height) {
+  int new_x = row;
+  int new_y = (width - col) - 1;
+  return (int2)(new_x, new_y);
+}
+
+//  Rotate 90 counter clockwise
+inline int2 get_input_coords_counter_clockwise(int row, int col, int width, int height) {
+  int new_x = (height - row) - 1;
+  int new_y = col;
+  return (int2)(new_x, new_y);
+}
+
+//  Rotate 180
+inline int2 get_input_coords_rotate180(int row, int col, int width, int height) {
+  int new_x = (width - col) - 1;
+  int new_y = (height - row) - 1;
+  return (int2)(new_x, new_y);
+}
+
+//  Vertical flip
+inline int2 get_input_coords_vertical(int row, int col, int width, int height) {
+  int new_x = col;
+  int new_y = (height - row) - 1;
+  return (int2)(new_x, new_y);
+}
+
+//  Horizontal flip
+inline int2 get_input_coords_horizontal(int row, int col, int width, int height) {
+  int new_x = (width - col) - 1;
+  int new_y = row;
+  return (int2)(new_x, new_y);
+}
+
+//  Do nothing
+inline int2 get_input_coords_none(int row, int col, int width, int height) {
+  return (int2)(col, row);
+}
+
+
 )##";
+
+  std::array xlate_names = {
+    "get_input_coords_none"s,
+    "get_input_coords_clockwise"s,
+    "get_input_coords_rotate180"s,
+    "get_input_coords_counter_clockwise"s,
+    "get_input_coords_horizontal"s,
+    "get_input_coords_vertical"s,
+    "get_input_coords_uld"s,
+    "get_input_coords_urd"s,
+  };
+
+  if (0 <= rotate_type && rotate_type < xlate_names.size()) {
+    utils += "#define get_input_coords " + xlate_names[rotate_type];
+  } else {
+    utils += "#define get_input_coords " + xlate_names[0];
+  }
+  return utils;
 }
 
 } // namespace ax_utils

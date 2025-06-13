@@ -17,3 +17,7 @@ struct GstMetaGeneral {
 
 GstMetaGeneral *gst_buffer_get_general_meta(GstBuffer *buffer);
 gboolean gst_buffer_has_general_meta(GstBuffer *buffer);
+
+GType gst_vaapi_video_meta_api_get_type(void);
+
+#define GST_MAP_VAAPI (GST_MAP_FLAG_LAST << 1)

@@ -87,11 +87,12 @@ class Plugin
   {
 
     std::shared_ptr<void> (*p_init_and_set_static_properties)(
-        const std::unordered_map<std::string, std::string> &input, Ax::Logger &logger)
+        const std::unordered_map<std::string, std::string> &input,
+        Ax::Logger &logger, void *display)
         = nullptr;
     plugin.initialise_function("init_and_set_static_properties", p_init_and_set_static_properties);
 
-    properties = p_init_and_set_static_properties(input, logger);
+    properties = p_init_and_set_static_properties(input, logger, nullptr);
 
     void (*p_set_dynamic_properties)(const std::unordered_map<std::string, std::string> &input,
         void *data, Ax::Logger &logger)

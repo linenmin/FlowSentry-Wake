@@ -4,8 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
-from typing import Optional, Union
+from typing import List, Optional
 
 import numpy as np
 
@@ -34,7 +33,7 @@ class DecodeSsdMobilenet(AxOperator):
 
     box_format: str
     normalized_coord: bool
-    label_filter: Union[list, str] = []
+    label_filter: Optional[List[str] | str] = []
     conf_threshold: float = 0.25
     max_nms_boxes: int = 30000
     nms_iou_threshold: float = 0.45
@@ -47,13 +46,9 @@ class DecodeSsdMobilenet(AxOperator):
             raise ValueError(f"Unknown box format {self.box_format}")
         if isinstance(self.overwrite_labels, int):
             self.overwrite_labels = bool(self.overwrite_labels)
-        if isinstance(self.label_filter, str) and not self.label_filter.startswith('$$'):
-            stripped = (self.label_filter or '').strip()
-            self.label_filter = [x for x in re.split(r'\s*[,;]\s*', stripped) if x]
-        else:
-            self.label_filter = []
+        self.label_filter = utils.parse_labels_filter(self.label_filter)
         self._tmp_labels: Optional[Path] = None
-        self.gst_decoder_does_dequantization_and_depadding = True
+        self.cpp_decoder_does_all = True
         super()._post_init()
 
     def __del__(self):
@@ -66,11 +61,11 @@ class DecodeSsdMobilenet(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         if model_info.manifest and model_info.manifest.is_compiled():
             self._deq_scales, self._deq_zeropoints = zip(*model_info.manifest.dequantize_params)
@@ -85,17 +80,13 @@ class DecodeSsdMobilenet(AxOperator):
         if self._tmp_labels is None:
             self._tmp_labels = utils.create_tmp_labels(self.labels)
 
-        if not gst.new_inference:
-            conns = {'src': f'decoder_task{self._taskn}{stream_idx}.sink_0'}
-            gst.queue(name=f'queue_decoder_task{self._taskn}{stream_idx}', connections=conns)
-
         scales = ','.join(str(s) for s in self._deq_scales)
         zeros = ','.join(str(s) for s in self._deq_zeropoints)
         if self._n_padded_ch_outputs:
             paddings = '|'.join(
                 ','.join(str(num) for num in sublist) for sublist in self._n_padded_ch_outputs
             )
-        sieve = utils.build_class_sieve(self.label_filter, self._tmp_labels)
+        sieve = utils.build_class_sieve(self.label_filter, self.labels)
 
         gst.decode_muxer(
             name=f'decoder_task{self._taskn}{stream_idx}',

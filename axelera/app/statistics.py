@@ -62,7 +62,7 @@ def _tabulate(element_times, end_to_end_fps, colouring):
     gap = 3
     line_char = '='
 
-    titles = ["Element", "Latency(us)", "Effective FPS"]
+    titles = ["Element", "Time(𝜇s)", "Effective FPS"]
     elements = [
         [
             el,
@@ -83,22 +83,16 @@ def _tabulate(element_times, end_to_end_fps, colouring):
     return '\n'.join(lines)
 
 
-def _skip_element(element, new_inference):
+def _skip_element(element):
     for contains in _contains:
         if contains in element:
             return True
     for start in _starts:
         if element.startswith(start):
             return True
-    if new_inference and element.startswith('inference-task') and ':' not in element:
+    if element.startswith('inference-task') and ':' not in element:
         return True
     return False
-
-
-def _element_batch_size(element):
-    # really to answer this properly we need to know if it is batch or not.
-    m = re.match(r'inference-task\d+-batch(\d+)', element)
-    return int(m.group(1)) if m else 1
 
 
 def _find_aipu_element(elements, prefix="inference-"):
@@ -138,13 +132,6 @@ def determine_element_fps(element, latency_us):
     return inf_tracers.fps_from_latency(latency_us)
 
 
-def is_using_new_inference(elements):
-    for element, _ in elements:
-        if element.endswith(':inference'):
-            return True
-    return False
-
-
 def format_table(
     log_file_path: pathlib.Path,
     tracers: List[inf_tracers.Tracer],
@@ -159,9 +146,8 @@ def format_table(
     text = log_file_path.read_text()
     matches = re.findall(_ELEMENT, text)
     element_times = collections.defaultdict(list)
-    new_inference = is_using_new_inference(matches)
     for element, time in matches:
-        if not _skip_element(element, new_inference):
+        if not _skip_element(element):
             element_times[element].append(int(time))
     order = [element for element in element_times.keys()]
     element_times = {element: times[2:] for element, times in element_times.items()}
@@ -174,8 +160,6 @@ def format_table(
         tracer_insert_pos_ix = _find_aipu_element(order) + 1
     except ValueError:
         tracer_insert_pos_ix = len(order)
-    for k in element_times:
-        element_times[k] /= _element_batch_size(k)
     formattings = {}
     tracers_by_title = {t.title: t for t in tracers}
     for tracer_title in ('Host', 'Metis'):
@@ -186,7 +170,6 @@ def format_table(
                 continue
             filter_breakdown = f' {_ANGLE} {tracer_title}'
             element_times[filter_breakdown] = 1e6 / metrics[0].value
-            formattings[filter_breakdown] = colouring.BOLD + colouring.INVERSE
             order.insert(tracer_insert_pos_ix, filter_breakdown)
 
     element_times = {

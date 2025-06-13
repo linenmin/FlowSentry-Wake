@@ -8,10 +8,11 @@
 class AxMetaObjDetection : public AxMetaBbox
 {
   public:
+  AxMetaObjDetection() = default;
   AxMetaObjDetection(std::vector<box_xyxy> boxes, std::vector<float> scores,
-      std::vector<int> classes)
-      : AxMetaBbox(std::move(boxes)), scores_(std::move(scores)),
-        classes_(std::move(classes))
+      std::vector<int> classes, std::vector<int> ids = {})
+      : AxMetaBbox(std::move(boxes), std::move(ids)),
+        scores_(std::move(scores)), classes_(std::move(classes))
   {
     if (num_elements() != scores_.size()
         || (num_elements() != classes_.size() && !classes_.empty())) {
@@ -19,6 +20,22 @@ class AxMetaObjDetection : public AxMetaBbox
           "AxMetaObjDetection: scores and classes must have the same size as boxes");
     }
   }
+
+  void extend(const std::vector<box_xyxy> &boxes,
+      const std::vector<float> &scores, std::vector<int> &classes)
+  {
+    AxMetaBbox::extend(boxes);
+    scores_.insert(scores_.end(), scores.begin(), scores.end());
+    classes_.insert(classes_.end(), classes.begin(), classes.end());
+  }
+
+  void extend(const AxMetaObjDetection &other)
+  {
+    AxMetaBbox::extend(other);
+    scores_.insert(scores_.end(), other.scores_.begin(), other.scores_.end());
+    classes_.insert(classes_.end(), other.classes_.begin(), other.classes_.end());
+  }
+
   ///
   /// @brief Update class_id and score of bbox
   /// @param idx - Index of the requested element
@@ -51,6 +68,11 @@ class AxMetaObjDetection : public AxMetaBbox
   float score(size_t idx) const
   {
     return scores_[idx];
+  }
+
+  void set_score(size_t idx, float score)
+  {
+    scores_[idx] = score;
   }
 
   ///

@@ -13,7 +13,7 @@ from axelera.app.meta import ClassificationMeta, ClassifiedObject
 LABEL_FORE_COLOR = (244, 190, 24, 255)
 LABEL_BACK_COLOR = (0, 0, 0, 255)
 
-CLS0_COLOR = (255, 0, 0, 255)
+CLS0_COLOR = (255, 255, 000, 255)
 CLS1_COLOR = (255, 178, 125, 255)
 CLS2_COLOR = (255, 255, 255, 255)
 
@@ -62,7 +62,7 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
         monkeypatch,
     )
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
-        display_draw = display_cv.CVDraw(image)
+        display_draw = display_cv.CVDraw(image, [])
         meta.draw(display_draw)
         display_draw.draw()
 
@@ -73,7 +73,9 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
             call(ANY, ANY, None, ANY),
         ]
 
-        assert draw.text.call_args_list == [call(ANY, f'{text} 0.34', ANY, ANY) for text in texts]
+        assert draw.text.call_args_list == [
+            call(ANY, f'{text} 0.34', ANY, ANY, ANY) for text in texts
+        ]
 
 
 @pytest.mark.parametrize(
@@ -88,7 +90,7 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
                 call(((10, 10), (20, 20)), None, CLS0_COLOR, 2),
                 call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((10, 11), "0 0.30", LABEL_FORE_COLOR, ANY)],
+            [call((10, 11), "0 0.30", LABEL_FORE_COLOR, ANY, ANY)],
             "test box - not outside - class string",
         ),
         pytest.param(
@@ -100,7 +102,7 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
                 call(((10, 10), (20, 20)), None, CLS0_COLOR, 2),
                 call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((10, 11), "car 0.30", LABEL_FORE_COLOR, ANY)],
+            [call((10, 11), "car 0.30", LABEL_FORE_COLOR, ANY, ANY)],
             "test box - not outside - label string",
         ),
         pytest.param(
@@ -112,7 +114,7 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
                 call(((10, 20), (20, 20)), None, CLS0_COLOR, 2),
                 call(((10, 10), (50, 18)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((10, 10), "0 0.30", LABEL_FORE_COLOR, ANY)],
+            [call((10, 10), "0 0.30", LABEL_FORE_COLOR, ANY, ANY)],
             "test box - outside - class string",
         ),
         pytest.param(
@@ -124,7 +126,7 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
                 call(((10, 20), (20, 20)), None, CLS0_COLOR, 2),
                 call(((10, 10), (50, 18)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((10, 10), "car 0.30", LABEL_FORE_COLOR, ANY)],
+            [call((10, 10), "car 0.30", LABEL_FORE_COLOR, ANY, ANY)],
             "test box - outside - label string",
         ),
         pytest.param(
@@ -139,8 +141,8 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
                 call(((10, 10), (50, 18)), LABEL_BACK_COLOR, None, 1),
             ],
             [
-                call((10, 11), "0 0.30", LABEL_FORE_COLOR, ANY),
-                call((10, 10), "1 0.40", LABEL_FORE_COLOR, ANY),
+                call((10, 11), "0 0.30", LABEL_FORE_COLOR, ANY, ANY),
+                call((10, 10), "1 0.40", LABEL_FORE_COLOR, ANY, ANY),
             ],
             "test boxes - inside and outside - class string",
         ),
@@ -156,8 +158,8 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
                 call(((10, 10), (50, 18)), LABEL_BACK_COLOR, None, 1),
             ],
             [
-                call((10, 11), "car 0.30", LABEL_FORE_COLOR, ANY),
-                call((10, 10), "person 0.40", LABEL_FORE_COLOR, ANY),
+                call((10, 11), "car 0.30", LABEL_FORE_COLOR, ANY, ANY),
+                call((10, 10), "person 0.40", LABEL_FORE_COLOR, ANY, ANY),
             ],
             "test boxes - inside and outside - label string",
         ),
@@ -185,7 +187,7 @@ def test_classification_box_cls_known(
         monkeypatch,
     )
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
-        display_draw = display_cv.CVDraw(image)
+        display_draw = display_cv.CVDraw(image, [])
         meta.draw(display_draw)
         display_draw.draw()
 

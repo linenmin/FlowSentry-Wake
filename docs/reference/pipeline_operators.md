@@ -17,8 +17,10 @@
       - [Example: inplace\_draw](#example-inplace_draw)
     - [AxTransform](#axtransform)
       - [Example: Resize](#example-resize)
+      - [Example: AxTransformPostamble](#example-axtransformpostamble)
     - [AxDecodeMuxer](#axdecodemuxer)
     - [AxInferenceNet](#axinferencenet)
+      - [Cascaded Inference](#cascaded-inference)
 
 ## Introduction
 The Voyager SDK enables users to easily write performant video processing elements for pre- and
@@ -106,7 +108,7 @@ Here, the pipeline consists of
   * resize with letterbox, this fuses also the quantization.
   * padding (the Metis requires that buffers have certain alignments and strides).
   * inference on the Metis.
-  * a highly optimised yolo postprocessor that includes dequantisation
+  * a highly optimised yolo postprocessor that includes dequantization
   * a configurable NMS
 * a sequence of elements to ready the video stream suitable to be written to
 * `filesink` element
@@ -422,7 +424,9 @@ set_dynamic_properties(const std::unordered_map<std::string, std::string> &input
 ```
 
 The signature of this function receives the same map of up-to-date key value strings, and a pointer
-to the properties object constructed before.
+to the properties object returned from `init_and_set_static_properties`. If
+`init_and_set_static_properties` is not implemented or it returned a default constructed shared_ptr
+then `prop` will be null.
 
 All property functions are only loaded optionally. If there is no need for properties, they do not
 need to be implemented.
@@ -617,6 +621,33 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
   cv::resize(input_mat, output_mat, output_mat.size());
 }
 ```
+
+#### Example: AxTransformPostamble
+
+AxTransformPostamble is a specialized transform operator that helps the pipeline builder handle model inference and apply necessary transforms to align output tensors with the original ONNX model's output nodes. This ensures that when users receive tensors from their decoders, they match exactly what they would get from the original ONNX model, making it seamless to integrate with existing post-processing code. However, this convenience comes with a performance cost - the additional transform operations may reduce throughput, especially noticeable with smaller models where the transform overhead becomes a larger proportion of the total processing time.
+
+This plugin accepts tensor inputs, applies an ONNX model to process them, and outputs the results along with any unused input tensors. It can be configured with the following properties:
+
+```yaml
+# GST yaml
+  - instance: axtransform
+    lib: libtransform_postamble.so
+    options: onnx_path:/path/to/model.onnx;tensor_selection_plan:0,2,3
+```
+
+Key features of AxTransformPostamble:
+- Takes tensor inputs and runs them through a specified ONNX model
+- Allows selective use of input tensors via the tensor_selection_plan parameter
+- Automatically passes through any unused input tensors
+- Uses ONNX Runtime for efficient inference with I/O binding
+- Handles tensor shape validation and conversion
+
+Configuration options:
+- `onnx_path`: Path to the ONNX model file to use for post-processing
+- `tensor_selection_plan`: Optional comma-separated list of input tensor indices to use for ONNX inputs (defaults to using the first N tensors where N is the number of ONNX model inputs)
+
+The implementation handles both the case where an ONNX model is provided and the passthrough case where tensors are simply copied from input to output without modification.
+
 
 ### AxDecodeMuxer
 

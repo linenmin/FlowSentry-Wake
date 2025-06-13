@@ -8,6 +8,7 @@ import typing
 import torch
 
 from axelera import types
+from axelera.app.torch_utils import safe_torch_load
 
 
 class TorchModel(types.Model, torch.nn.Module):
@@ -27,7 +28,7 @@ class TorchModel(types.Model, torch.nn.Module):
        class AxMyTorchModel(Model, MyTorchModel):
            def init_model_deploy(self, model_info, dataset_config, **kwargs):
                 # load model weights
-                self.load_state_dict(torch.load(model_info.weight_path))
+                self.load_state_dict(safe_torch_load(model_info.weight_path))
 
     2. Using TorchModel to simplify implementation:
        This approach can be useful when direct inheritance is not possible or when you want to
@@ -37,7 +38,7 @@ class TorchModel(types.Model, torch.nn.Module):
        class AxMyTorchModel(TorchModel):
            def init_model_deploy(self, model_info, dataset_config, **kwargs):
                self.torch_model = MyTorchModel()
-               self.torch_model.load_state_dict(torch.load(model_info.weight_path))
+               self.torch_model.load_state_dict(safe_torch_load(model_info.weight_path))
 
     For custom models or significant modifications to existing models, you can use either approach:
 
@@ -51,7 +52,7 @@ class TorchModel(types.Model, torch.nn.Module):
 
         def init_model_deploy(self, model_info, dataset_config, **kwargs):
             # Implementation specific to this model, e.g., loading weights
-            self.resnet.load_state_dict(torch.load(model_info.weight_path))
+            self.resnet.load_state_dict(safe_torch_load(model_info.weight_path))
 
     We recommend the first approach (direct inheritance) as it's simpler and exposes all model
     APIs directly. The TorchModel class is most useful when you need to wrap an existing PyTorch

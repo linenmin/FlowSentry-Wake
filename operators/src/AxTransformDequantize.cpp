@@ -100,32 +100,29 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     const int in2 = input_tensor.sizes.size() > 2 ? input_tensor.sizes[2] : 1;
     const int in3 = input_tensor.sizes.size() > 3 ? input_tensor.sizes[3] : 1;
 
-    std::function<int(int, int, int, int)> compute_index;
-    if (prop->do_transpose && N == in0 && H == in1 && W == in2 && C == in3) {
-      compute_index = [=](int iN, int iC, int iH, int iW) {
-        return iN * H * W * C + iH * W * C + iW * C + iC;
-      };
-    } else if (!prop->do_transpose && N == in0 && C == in1 && H == in2 && W == in3) {
-      compute_index = [=](int iN, int iC, int iH, int iW) {
-        return iN * C * H * W + iC * H * W + iH * W + iW;
-      };
-    } else {
-      throw std::runtime_error("dequantize input and output sizes do not correspond");
-    }
-
     float s = prop->dequant_scale[i];
     int z = static_cast<int>(prop->dequant_zeropoint[i]);
-
     float *outptr = static_cast<float *>(output_tensor.data);
     int8_t *inptr = static_cast<int8_t *>(input_tensor.data);
-    for (int iN = 0; iN < N; ++iN) {
-      for (int iC = 0; iC < C; ++iC) {
-        for (int iH = 0; iH < H; ++iH) {
-          for (int iW = 0; iW < W; ++iW) {
-            *outptr++ = s * (inptr[compute_index(iN, iC, iH, iW)] - z);
+
+    if (prop->do_transpose && N == in0 && H == in1 && W == in2 && C == in3) {
+      for (int iN = 0; iN < N; ++iN) {
+        for (int iC = 0; iC < C; ++iC) {
+          for (int iH = 0; iH < H; ++iH) {
+            for (int iW = 0; iW < W; ++iW) {
+              int input_index = iN * H * W * C + iH * W * C + iW * C + iC;
+              *outptr++ = s * (inptr[input_index] - z);
+            }
           }
         }
       }
+    } else if (!prop->do_transpose && N == in0 && C == in1 && H == in2 && W == in3) {
+      const auto data_size = std::accumulate(input_tensor.sizes.begin(),
+          input_tensor.sizes.end(), 1, std::multiplies<int>());
+      std::transform(inptr, inptr + data_size, outptr,
+          [s, z](const int8_t data) { return s * (data - z); });
+    } else {
+      throw std::runtime_error("dequantize input and output sizes do not correspond");
     }
   }
 }

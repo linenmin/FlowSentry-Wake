@@ -1,9 +1,9 @@
 // Copyright Axelera AI, 2025
 #pragma once
 
-#include <opencv2/opencv.hpp>
 #include <time.h>
 
+#include <chrono>
 #include <vector>
 
 #include "AxDataInterface.h"
@@ -14,26 +14,13 @@ class AxMetaStreamId : public AxMetaBase
 {
   public:
   int stream_id = 0;
-  timespec timestamp{};
-  AxMetaStreamId(int stream_id) : stream_id{ stream_id }
-  {
-    (void) ::clock_gettime(CLOCK_REALTIME, &timestamp);
-    // printf("time is %d\n", timestamp.tv_sec, timestamp.tv_nsec);
-  }
+  std::uint64_t timestamp{};
 
-  void draw(const AxVideoInterface &video,
-      const std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map) override
+  explicit AxMetaStreamId(int stream_id) : stream_id{ stream_id }
   {
-    if (video.info.format != AxVideoFormat::RGB && video.info.format != AxVideoFormat::RGBA) {
-      throw std::runtime_error("Stream ID can only be drawn on RGB or RGBA");
-    }
-    cv::Mat mat(cv::Size(video.info.width, video.info.height),
-        Ax::opencv_type_u8(video.info.format), video.data, video.info.stride);
-
-    const auto red = cv::Scalar(255, 0, 0);
-    cv::putText(mat, std::to_string(stream_id).c_str(),
-        cv::Point(video.info.width / 10, video.info.height / 10),
-        cv::FONT_HERSHEY_SIMPLEX, 10.0, red);
+    auto now = std::chrono::high_resolution_clock::now();
+    timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch())
+                    .count();
   }
 
   std::vector<extern_meta> get_extern_meta() const override

@@ -10,31 +10,39 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(axruntime REQUIRED axruntime)
 pkg_check_modules(opencv4 REQUIRED opencv4)
 pkg_check_modules(axstreamer REQUIRED axstreamer)
-add_executable(${PROJECT_NAME} ${PROJECT_NAME}.cpp)
 
-target_compile_options(${PROJECT_NAME} PRIVATE
-    -Wall
-    -Werror
-    -Wno-sign-compare
-    -Wno-unused-variable
-    $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-enum-enum-conversion>
-    $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-declarations>
-)
+# Main example
+add_executable(axinferencenet_example axinferencenet_example.cpp)
 
-target_include_directories(${PROJECT_NAME} PRIVATE
-    ${axruntime_INCLUDE_DIRS}/include
-    ${opencv4_INCLUDE_DIRS}
-    ${axstreamer_INCLUDE_DIRS}
-)
-target_link_libraries(${PROJECT_NAME} PUBLIC
-    ${axruntime_LIBRARIES}
-    ${opencv4_LIBRARIES}
-    ${axstreamer_LIBRARIES}
-)
-target_link_directories(${PROJECT_NAME} PUBLIC
-    ${axruntime_LIBRARY_DIRS}
-    ${opencv4_LIBRARY_DIRS}
-    ${axstreamer_LIBRARY_DIRS}
-)
+# Tensor output example
+add_executable(axinferencenet_tensor axinferencenet_tensor.cpp)
 
-install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
+# Cascaded example
+add_executable(axinferencenet_cascaded axinferencenet_cascaded.cpp)
+
+foreach(target axinferencenet_example axinferencenet_tensor axinferencenet_cascaded)
+    target_compile_options(${target} PRIVATE
+        -Wall
+        -Werror
+        -Wno-sign-compare
+        -Wno-unused-variable
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-enum-enum-conversion>
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-declarations>
+    )
+    target_include_directories(${target} PRIVATE
+        ${axruntime_INCLUDE_DIRS}/include
+        ${opencv4_INCLUDE_DIRS}
+        ${axstreamer_INCLUDE_DIRS}
+    )
+    target_link_libraries(${target} PUBLIC
+        ${axruntime_LIBRARIES}
+        ${opencv4_LIBRARIES}
+        ${axstreamer_LIBRARIES}
+    )
+    target_link_directories(${target} PUBLIC
+        ${axruntime_LIBRARY_DIRS}
+        ${opencv4_LIBRARY_DIRS}
+        ${axstreamer_LIBRARY_DIRS}
+    )
+    install(TARGETS ${target} RUNTIME DESTINATION bin)
+endforeach()

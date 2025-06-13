@@ -54,7 +54,13 @@ def test_barrel_and_convert():
     assert got != ops
     assert ops == [
         operators.mega.OpenCLBarrelDistortionCorrection(
-            distort_coefs=[1.0, 1.0, 1.0, 0.0, 0.0], fx=1.0, fy=1.0, cx=0.5, cy=0.5, format='rgb'
+            distort_coefs=[1.0, 1.0, 1.0, 0.0, 0.0],
+            fx=1.0,
+            fy=1.0,
+            cx=0.5,
+            cy=0.5,
+            normalized=True,
+            format='rgb',
         )
     ]
 

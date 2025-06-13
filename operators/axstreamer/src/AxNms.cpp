@@ -100,7 +100,7 @@ nms_results(const AxMetaKptsDetection &meta, std::vector<int>::iterator first,
   boxes_xyxy.reserve(num_boxes);
   scores.reserve(num_boxes);
 
-  kpts_xyv.reserve(num_boxes * meta.kpts_shape[0]);
+  kpts_xyv.reserve(num_boxes * meta.get_kpts_shape()[0]);
 
   class_ids.reserve(meta.is_multi_class() ? num_boxes : 0);
   for (auto it = first; it != last; ++it) {
@@ -158,6 +158,149 @@ nms_results(const AxMetaSegmentsDetection &meta,
     std::move(segment_maps), std::move(scores), std::move(class_ids), sizes,
     std::move(meta.get_base_box()), std::move(meta.get_decoder_name()) };
 }
+
+box_xyxy
+merge_boxes(const box_xyxy &lhs, const box_xyxy &rhs)
+{
+  return { std::min(lhs.x1, rhs.x1), std::min(lhs.y1, rhs.y1),
+    std::max(lhs.x2, rhs.x2), std::max(lhs.y2, rhs.y2) };
+}
+
+float
+IntersectionOverSmallest(const box_xyxy &lhs, const box_xyxy &rhs)
+{
+  const float ix = 1 + std::min(lhs.x2, rhs.x2) - std::max(lhs.x1, rhs.x1);
+  const float iy = 1 + std::min(lhs.y2, rhs.y2) - std::max(lhs.y1, rhs.y1);
+
+  const float intersection = std::max(0.0f, ix) * std::max(0.0f, iy);
+  return intersection / std::min(area(lhs), area(rhs));
+}
+
+template <typename F1>
+std::vector<int>::iterator
+merge_boxes_impl(AxMetaObjDetection &meta, std::vector<int>::iterator first,
+    std::vector<int>::iterator last, F1 &&is_adjacent, float threshold)
+{
+  const float ios_threshold = 0.7F;
+  while (first != last) {
+    const int i = *first++;
+    auto this_box = meta.get_box_xyxy(i);
+    auto this_class = meta.class_id(i);
+    auto this_score = meta.score(i);
+
+    auto dest = first;
+    auto pos = first;
+    for (; pos != last; ++pos) {
+      if (this_class == meta.class_id(*pos)
+          && (is_adjacent(this_box, meta.get_box_xyxy(*pos))
+              || ::IntersectionOverSmallest(this_box, meta.get_box_xyxy(*pos)) >= ios_threshold
+              || ::IntersectionOverUnion(this_box, meta.get_box_xyxy(*pos)) >= threshold)) {
+        this_box = merge_boxes(this_box, meta.get_box_xyxy(*pos));
+        this_score = std::max(this_score, meta.score(*pos));
+      } else {
+        *dest++ = *pos;
+      }
+    }
+    if (dest != last) {
+      //  We merged some boxes, so we need to update the merged box
+      meta.set_box_xyxy(i, this_box);
+      meta.set_score(i, this_score);
+    }
+    last = dest;
+  }
+  return last;
+}
+
+
+AxMetaObjDetection
+merge_boxes(AxMetaObjDetection &meta, std::vector<int>::iterator first,
+    std::vector<int>::iterator last, float threshold)
+{
+  //  This probably needs adjusting dependent on the video size
+  const int MERGE_THRESHOLD = 2;
+
+  auto is_adjacent_horizontal = [](const box_xyxy &lhs, const box_xyxy &rhs) {
+    auto diff = std::abs(lhs.x2 - rhs.x1);
+    if (diff > MERGE_THRESHOLD) {
+      return false;
+    }
+    auto ydiff1 = std::abs(lhs.y1 - rhs.y1);
+    auto ydiff2 = std::abs(lhs.y2 - rhs.y2);
+    return ydiff1 <= MERGE_THRESHOLD && ydiff2 <= MERGE_THRESHOLD;
+  };
+
+  std::sort(first, last, [&meta](int a, int b) {
+    return meta.get_box_xyxy(a).x2 < meta.get_box_xyxy(b).x2;
+  });
+
+  auto last_merged = merge_boxes_impl(meta, first, last, is_adjacent_horizontal, threshold);
+
+  auto is_adjacent_vertical = [](const box_xyxy &lhs, const box_xyxy &rhs) {
+    auto diff = std::abs(lhs.y2 - rhs.y1);
+    if (diff > MERGE_THRESHOLD) {
+      return false;
+    }
+    auto ydiff1 = std::abs(lhs.x1 - rhs.x1);
+    auto ydiff2 = std::abs(lhs.x2 - rhs.x2);
+    return ydiff1 <= MERGE_THRESHOLD && ydiff2 <= MERGE_THRESHOLD;
+  };
+
+  std::sort(first, last_merged, [&meta](int a, int b) {
+    return meta.get_box_xyxy(a).y2 < meta.get_box_xyxy(b).y2;
+  });
+  last_merged = merge_boxes_impl(meta, first, last_merged, is_adjacent_vertical, threshold);
+  return nms_results(meta, first, last_merged);
+}
+
+template <typename T>
+T
+merge_boxes(T &meta, std::vector<int>::iterator first,
+    std::vector<int>::iterator last, float threshold)
+{
+  throw std::runtime_error("Merge not implemented for this type");
+}
+
+AxMetaPoseSegmentsDetection
+nms_results(const AxMetaPoseSegmentsDetection &meta,
+    std::vector<int>::iterator first, std::vector<int>::iterator last)
+{
+  std::vector<box_xyxy> boxes_xyxy{};
+  std::vector<kpt_xyv> kpts_xyv{};
+  std::vector<float> scores{};
+  std::vector<int> class_ids{};
+  std::vector<ax_utils::segment> segment_maps{};
+
+
+  const int num_boxes = std::distance(first, last);
+  kpts_xyv.reserve(num_boxes * meta.get_kpts_shape()[0]);
+  boxes_xyxy.reserve(num_boxes);
+  scores.reserve(num_boxes);
+
+  segment_maps.reserve(num_boxes);
+
+  class_ids.reserve(meta.is_multi_class() ? num_boxes : 0);
+  for (auto it = first; it != last; ++it) {
+    const auto idx = *it;
+    boxes_xyxy.push_back(meta.get_box_xyxy(idx));
+    scores.push_back(meta.score(idx));
+    if (meta.is_multi_class()) {
+      class_ids.push_back(meta.class_id(idx));
+    }
+    auto kpts_shape = meta.get_kpts_shape();
+    auto good_kpts = meta.get_kpts_xyv(kpts_shape[0] * idx, kpts_shape[0]);
+    kpts_xyv.insert(kpts_xyv.end(), good_kpts.begin(), good_kpts.end());
+
+    segment_maps.push_back(
+        const_cast<AxMetaPoseSegmentsDetection &>(meta).get_segment(idx));
+  }
+
+  auto shape = meta.get_segments_shape();
+  auto sizes = SegmentShape{ shape[2], shape[1] };
+  return AxMetaPoseSegmentsDetection{ std::move(boxes_xyxy),
+    std::move(kpts_xyv), std::move(segment_maps), std::move(scores),
+    std::move(class_ids), sizes, meta.get_kpts_shape(),
+    std::move(meta.get_base_box()), std::move(meta.get_decoder_name()) };
+}
 } // namespace
 
 
@@ -173,7 +316,8 @@ nms_results(const AxMetaSegmentsDetection &meta,
 ///
 template <typename T>
 T
-non_max_suppression_impl(const T &meta, float threshold, bool class_agnostic, int max_boxes)
+non_max_suppression_impl(
+    T &meta, float threshold, bool class_agnostic, int max_boxes, bool merge)
 {
 
   //  Preconditions
@@ -181,9 +325,13 @@ non_max_suppression_impl(const T &meta, float threshold, bool class_agnostic, in
   auto first = std::begin(indices);
   auto last = std::end(indices);
   std::iota(first, last, 0);
+
+  if (merge) {
+    return merge_boxes(meta, first, last, threshold);
+  }
+
   std::sort(first, last,
       [&meta](int a, int b) { return meta.score(a) > meta.score(b); });
-
   int count = 0;
   while (first != last && count != max_boxes) {
     ++count;
@@ -203,25 +351,33 @@ non_max_suppression_impl(const T &meta, float threshold, bool class_agnostic, in
 
 
 AxMetaObjDetection
-non_max_suppression(const AxMetaObjDetection &meta, float threshold,
-    bool class_agnostic, int max_boxes)
+non_max_suppression(AxMetaObjDetection &meta, float threshold,
+    bool class_agnostic, int max_boxes, bool merge)
 {
-  return non_max_suppression_impl(meta, threshold, class_agnostic, max_boxes);
+  return non_max_suppression_impl(meta, threshold, class_agnostic, max_boxes, merge);
 }
 
 AxMetaKptsDetection
-non_max_suppression(const AxMetaKptsDetection &meta, float threshold,
-    bool class_agnostic, int max_boxes)
+non_max_suppression(AxMetaKptsDetection &meta, float threshold,
+    bool class_agnostic, int max_boxes, bool merge)
 {
-  return non_max_suppression_impl(meta, threshold, class_agnostic, max_boxes);
+  return non_max_suppression_impl(meta, threshold, class_agnostic, max_boxes, merge);
 }
 
 AxMetaSegmentsDetection
-non_max_suppression(const AxMetaSegmentsDetection &meta, float threshold,
-    bool class_agnostic, int max_boxes)
+non_max_suppression(AxMetaSegmentsDetection &meta, float threshold,
+    bool class_agnostic, int max_boxes, bool merge)
 {
-  return non_max_suppression_impl(meta, threshold, class_agnostic, max_boxes);
+  return non_max_suppression_impl(meta, threshold, class_agnostic, max_boxes, merge);
 }
+
+AxMetaPoseSegmentsDetection
+non_max_suppression(const AxMetaPoseSegmentsDetection &meta, float threshold,
+    bool class_agnostic, int max_boxes, bool merge)
+{
+  return non_max_suppression_impl(meta, threshold, class_agnostic, max_boxes, merge);
+}
+
 
 //  The CL NMS is based on the algorithm described in https://ieeexplore.ieee.org/document/9646917]
 #ifdef OPENCL

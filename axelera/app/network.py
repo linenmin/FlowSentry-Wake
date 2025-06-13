@@ -5,21 +5,29 @@ from __future__ import annotations
 from contextlib import contextmanager
 import copy
 import dataclasses
-import enum
 import functools
 import hashlib
 import inspect
-import itertools
 import os
 from pathlib import Path
 import re
 import sys
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, Iterable, List, Optional, Type
 
 from axelera import types
 
-from . import compile, config, constants, data_utils, logging_utils, operators, pipeline, utils
-from . import yaml as YAML
+from . import (
+    compile,
+    config,
+    constants,
+    data_utils,
+    logging_utils,
+    operators,
+    pipeline,
+    schema,
+    utils,
+    yaml_parser,
+)
 from .torch_utils import torch
 
 LOG = logging_utils.getLogger(__name__)
@@ -186,7 +194,7 @@ def initialize_model(class_obj: Type[types.Model], arguments: Dict[str, Any]) ->
             DataAdapter = utils.import_class_from_file(dataset_class, dataset_class_path)
             if not issubclass(DataAdapter, types.DataAdapter):
                 raise TypeError(f"{dataset_class} is not a subclass of DataAdapter")
-            LOG.info(f"Imported DataAdapter {dataset_class} from {dataset_class_path}")
+            LOG.debug(f"Imported DataAdapter {dataset_class} from {dataset_class_path}")
         except ImportError as e:
             LOG.warning(f"Failed to import DataAdapter: {e}")
             if dataset_class_path != arguments.get('class_path'):
@@ -205,8 +213,8 @@ def _call_init_model_deploy(model: types.Model, arguments):
     return _call_method(model.__class__.init_model_deploy, model.init_model_deploy, arguments)
 
 
-def _load_labels_and_filter(model_info: types.ModelInfo, dataset: dict):
-    model_info.labels = utils.load_labels(dataset.get('labels_path', ''))
+def _load_labels_and_filter(model_info: types.ModelInfo, dataset: dict, trimmed_labels: bool):
+    model_info.labels = utils.load_labels(dataset.get('labels_path', ''), trimmed_labels)
     if label_filter := dataset.get('label_filter', ''):
         stripped = label_filter.strip()
         model_info.label_filter = [x for x in re.split(r'\s*[,;]\s*', stripped) if x]
@@ -214,12 +222,10 @@ def _load_labels_and_filter(model_info: types.ModelInfo, dataset: dict):
         model_info.label_filter = []
     if model_info.label_filter:
         if not model_info.labels:
-            key = YAML.key(dataset, 'label_filter')
-            raise YAML.AxYAMLError("label_filter cannot be used if there are no labels", key)
+            raise ValueError("label_filter cannot be used if there are no labels")
         if invalid := sorted(set(model_info.label_filter) - set(model_info.labels)):
             invalid = ', '.join(invalid)
-            key = YAML.key(dataset, 'label_filter')
-            raise YAML.AxYAMLError(f"label_filter contains invalid labels: {invalid}", key)
+            raise ValueError(f"label_filter contains invalid labels: {invalid}")
 
 
 @dataclasses.dataclass
@@ -277,6 +283,7 @@ class ModelInfos:
         self._manifest_paths: Dict[str, Path] = {}
         self._errors: Dict[str, str] = {}
         self._compiler_overrides: Dict[str, Dict[str, Any]] = {}
+        self._classical_cv_models: List[str] = []
         self._enum_cache = {}
 
     def __eq__(self, rhs):
@@ -296,8 +303,19 @@ class ModelInfos:
     def missing(self) -> Iterable[str]:
         return self._errors.keys()
 
-    def add_compiler_overrides(self, name: str, extra_kwargs: Dict[str, Any]):
-        self._compiler_overrides[name] = _deep_copy_extra_kwargs(extra_kwargs)
+    def add_compiler_overrides(
+        self,
+        name: str,
+        extra_kwargs: Dict[str, Any],
+        model_type: types.ModelType = types.ModelType.DEEP_LEARNING,
+    ):
+        if model_type == types.ModelType.DEEP_LEARNING:
+            self._compiler_overrides[name] = _deep_copy_extra_kwargs(extra_kwargs)
+        else:
+            self._classical_cv_models.append(name)
+
+    def is_classical_cv_model(self, name: str) -> bool:
+        return name in self._classical_cv_models
 
     def add_error(self, idx: int, name: str, error: str, level=LOG.trace):
         level(f"%d. %s:%s", idx, name, error)
@@ -309,20 +327,29 @@ class ModelInfos:
         if manifest_path is not None:
             self._manifest_paths[model_info.name] = manifest_path
 
-    def singular_model(self, error: str) -> types.ModelInfo:
+    def singular_model(
+        self, error: str, exclude_classical_cv_models: bool = True
+    ) -> types.ModelInfo:
         '''Return the only model if there is only one, otherwise raise error.'''
-        if len(self._models) != 1:
+        if exclude_classical_cv_models:
+            models = {k: v for k, v in self._models.items() if not self.is_classical_cv_model(k)}
+        else:
+            models = self._models
+        if len(models) != 1:
             raise logging_utils.UserError(error)
-        return next(iter(self._models.values()))
+        return next(iter(models.values()))
 
     def model(self, model_name: str) -> types.ModelInfo:
         if model_name not in self._models:
-            raise ValueError(f"Model {model_name} not found in models")
+            raise ValueError(f"Model {model_name} not found in models section in YAML file")
         return self._models[model_name]
 
     def model_compiler_overrides(self, model_name: str, metis: config.Metis) -> Dict[str, Any]:
+        if self.is_classical_cv_model(model_name):
+            return {}
         if model_name not in self._compiler_overrides:
             raise ValueError(f"Model {model_name} not found in models")
+
         return _collapse_compiler_overrides(self._compiler_overrides[model_name], metis)
 
     def _hw_option(
@@ -349,6 +376,8 @@ class ModelInfos:
         return self._hw_option(model, metis, 'mvm_limitation', 100, int)
 
     def determine_deploy_cores(self, name: str, execution_cores: int, metis: config.Metis) -> int:
+        if self.is_classical_cv_model(name):
+            return 0
         overrides = _collapse_compiler_overrides(self._compiler_overrides.get(name, {}), metis)
         if len(self._compiler_overrides) > 1:
             if 'aipu_cores' not in overrides:
@@ -360,10 +389,13 @@ class ModelInfos:
         max_compiler = overrides.get('max_compiler_cores', config.env.max_compiler_cores)
         max_exec = overrides.get('max_execution_cores', config.DEFAULT_MAX_EXECUTION_CORES)
         ncores = min(desired, max_compiler)
+        if max_compiler < desired:
+            due_to = f'max_compiler_cores setting (for metis: {metis.name})'
+            LOG.debug(f"Deploying for {max_compiler} cores instead of {desired} due to {due_to}")
         if max_exec < ncores:
             due_to = f'max_execution_cores setting (for metis: {metis.name})'
-            LOG.info(f"Deploying for {max_exec} cores instead of {ncores} due to {due_to}")
-            max_compiler = max_exec
+            LOG.debug(f"Deploying for {max_exec} cores instead of {ncores} due to {due_to}")
+            ncores = max_exec
         return ncores
 
     def determine_deploy_decoration(
@@ -373,6 +405,8 @@ class ModelInfos:
         return '-'.join(str(f) for f in deploy_flags)
 
     def determine_execution_cores(self, name: str, requested_cores: int, metis: config.Metis):
+        if self.is_classical_cv_model(name):
+            return 0
         overrides = _collapse_compiler_overrides(self._compiler_overrides.get(name, {}), metis)
         if len(self._compiler_overrides) > 1:
             if 'aipu_cores' not in overrides:
@@ -402,13 +436,6 @@ class ModelInfos:
     def check_ready(self) -> None:
         if not self.ready:
             raise RuntimeError(f"Model(s): {', '.join(self.missing())} not deployed")
-
-    def any_emulated_model(self):
-        '''Return True if any model is emulated.'''
-        for model in self._models.values():
-            if model.manifest.model_lib_file != constants.K_MODEL_TVM_AIPU_LIB:
-                return True
-        return False
 
     def add_label_enums(self, datasets):
         for mi in self._models.values():
@@ -535,18 +562,18 @@ class AxNetwork:
         LOG.debug(f"Import model of type {model.class_name} from {model.class_path}")
         return utils.import_class_from_file(model.class_name, model.class_path)
 
-    def instantiate_model(self, model_name: str, with_data_adapter: bool = False) -> types.Model:
+    def instantiate_model(self, model_name: str) -> types.Model:
         mi = self.find_model(model_name)
         ModelClass = self.model_class(model_name)
         if not issubclass(ModelClass, types.Model):
             raise TypeError(f"Class {ModelClass} is not a subclass of types.Model")
         LOG.debug(f"Instantiate model: {model_name}")
         dataset = self.model_dataset_from_model(model_name)
-        _load_labels_and_filter(mi, dataset)
         kwargs = pipeline.model_info_as_kwargs(mi)
+        extra_kwargs = kwargs.get('extra_kwargs', '')
+        _load_labels_and_filter(mi, dataset, extra_kwargs.get('trimmed_labels', True))
         kwargs['model_info'] = mi
-        if with_data_adapter:
-            kwargs['dataset_config'] = dataset
+        kwargs['dataset_config'] = dataset
         model = initialize_model(ModelClass, kwargs)
         model.task_category = mi.task_category
         model.input_tensor_layout = mi.input_tensor_layout
@@ -560,7 +587,7 @@ class AxNetwork:
         model_name = task.model_info.name
         model = self._instantiated_models.get(model_name)
         if not model:
-            model = self.instantiate_model(model_name, with_data_adapter=True)
+            model = self.instantiate_model(model_name)
             self._instantiated_models[model_name] = model
         self.attach_model_specific_preprocess(model, task)
         return model
@@ -591,7 +618,7 @@ class AxNetwork:
                 DataAdapterClass = utils.import_class_from_file(dataset_class, dataset_class_path)
                 if not issubclass(DataAdapterClass, types.DataAdapter):
                     raise TypeError(f"{dataset_class} is not a subclass of DataAdapter")
-                LOG.info(f"Imported DataAdapter {dataset_class} from {dataset_class_path}")
+                LOG.debug(f"Imported DataAdapter {dataset_class} from {dataset_class_path}")
             except ImportError as e:
                 LOG.warning(f"Failed to import DataAdapter: {e}")
             if dataset_class_path != dataset_config.get('class_path'):
@@ -628,8 +655,8 @@ def _register_custom_operators(
     '''Add any custom operators referenced in the yaml to custom_operators.'''
     for name, attribs in yaml.get('operators', {}).items():
         name = name.replace('-', '').replace('_', '')
-        cls = YAML.attribute(attribs, 'class')
-        path = YAML.attribute(attribs, 'class_path')
+        cls = attribs["class"]
+        path = attribs["class_path"]
         LOG.debug(f"Register custom operator '{name}' with class {cls} from {path}")
 
         OperatorClass = utils.import_class_from_file(cls, path)
@@ -661,27 +688,47 @@ def _provisional_model_info_from_yaml(name, yaml_props) -> types.ModelInfo:
     '''Read minimal data from the yaml file, for bootstrapping the pipeline load.'''
     # can probably remove this shortly
     props = dict(yaml_props)
-    obj = types.ModelInfo(
-        name,
-        props.pop('task_category'),
-        props.pop('input_tensor_shape'),
-        props.pop('input_color_format'),
-        props.pop('input_tensor_layout'),
-        labels=pipeline.LABELS_SENTINEL,
-        label_filter=pipeline.LABEL_FILTER_SENTINEL,
-        weight_path=props.pop('weight_path', ''),
-        weight_url=props.pop('weight_url', ''),
-        weight_md5=props.pop('weight_md5', ''),
-        prequantized_url=props.pop('prequantized_url', ''),
-        prequantized_md5=props.pop('prequantized_md5', ''),
-        dataset=props.pop('dataset', ''),
-        base_dir=props.pop('base_dir', ''),
-        class_name=props.pop('class', ''),
-        class_path=props.pop('class_path', ''),
-        version=props.pop('version', ''),
-        num_classes=props.pop('num_classes', 1),
-        extra_kwargs=props.pop('extra_kwargs', {}),
-    )
+    task_category = getattr(types.TaskCategory, props.pop('task_category'))
+    model_type = props.pop('model_type', types.ModelType.DEEP_LEARNING.name)
+    if model_type == types.ModelType.DEEP_LEARNING.name:
+        obj = types.ModelInfo(
+            name,
+            task_category.name,
+            None
+            if task_category == types.TaskCategory.LanguageModel
+            else props.pop('input_tensor_shape'),
+            None
+            if task_category == types.TaskCategory.LanguageModel
+            else props.pop('input_color_format'),
+            None
+            if task_category == types.TaskCategory.LanguageModel
+            else props.pop('input_tensor_layout'),
+            labels=schema.SENTINELS['labels'],
+            label_filter=schema.SENTINELS['label_filter'],
+            weight_path=props.pop('weight_path', ''),
+            weight_url=props.pop('weight_url', ''),
+            weight_md5=props.pop('weight_md5', ''),
+            prequantized_url=props.pop('prequantized_url', ''),
+            prequantized_md5=props.pop('prequantized_md5', ''),
+            dataset=props.pop('dataset', ''),
+            base_dir=props.pop('base_dir', ''),
+            class_name=props.pop('class', ''),
+            class_path=props.pop('class_path', ''),
+            version=props.pop('version', ''),
+            num_classes=props.pop('num_classes', 1),
+            extra_kwargs=props.pop('extra_kwargs', {}),
+            precompiled_url=props.pop('precompiled_url', ''),
+            precompiled_path=props.pop('precompiled_path', ''),
+            precompiled_md5=props.pop('precompiled_md5', ''),
+        )
+    elif model_type == types.ModelType.CLASSICAL_CV.name:
+        obj = types.ModelInfo(
+            name,
+            task_category.name,
+            dataset=props.pop('dataset', ''),
+            extra_kwargs=props.pop('extra_kwargs', {}),
+            model_type=types.ModelType.CLASSICAL_CV,
+        )
     if len(props) == 1:
         key, _ = props.popitem()
         raise ValueError(f"{key} is not a valid key for model {name}")
@@ -697,17 +744,16 @@ def parse_and_validate_datasets(datasets: Optional[dict], data_root: Optional[Pa
     """
     This function is used to parse and validate the datasets section in the yaml file.
     It will also set the data_dir_path according to the data_dir_name or repr_imgs_dir_path.
+    It will download custom dataset
     """
     if datasets is not None:
-        pipeline._check_type(datasets, 'datasets', dict)
         for dataset_name, dataset in datasets.items():
-            pipeline._check_type(dataset, f'dataset {dataset_name}', dict)
             if 'data_dir_path' in dataset:
                 raise ValueError(f"data_dir_path is a reserved keyword for YAML dataset section")
             if 'class' in dataset:
                 if dataset['class'] == 'DataAdapter':
                     LOG.debug(f"Using the default DataAdapter")
-                    dataset['data_dir_path'] = data_root
+                    dataset.setdefault('data_dir_path', data_root)
                     if 'repr_imgs_dir_path' in dataset:
                         dataset['repr_imgs_dir_path'] = Path(dataset['repr_imgs_dir_path'])
                         if 'repr_imgs_dataloader_color_format' in dataset:
@@ -797,15 +843,20 @@ def parse_and_validate_datasets(datasets: Optional[dict], data_root: Optional[Pa
                         f" please use a different name for this attribute"
                     )
 
+            if data_root and 'dataset_url' in dataset:
+                try:
+                    data_utils.download_custom_dataset(
+                        data_root / dataset['data_dir_name'], **dataset
+                    )
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to download dataset {dataset_name} to {data_root / dataset['data_dir_name']}: {e}"
+                    ) from e
+
 
 def _parse_network(
     path, yaml, eval_mode: bool, data_root: Optional[Path], from_deploy: bool
 ) -> AxNetwork:
-    # Get pipeline tasks and models, defaulting pipeline to empty list if None
-    if not from_deploy and yaml.get('pipeline') is None:
-        raise ValueError(
-            f"This YAML doesn't support inference as it doesn't define a pipeline: {path}"
-        )
     pipeline_tasks = yaml.get('pipeline', []) or []
     if not pipeline_tasks:
         yaml['pipeline'] = []
@@ -828,7 +879,9 @@ def _parse_network(
     for name, v in models.items():
         manifest_path = None  # Note we do not know this yet
         model_info_from_yaml = _provisional_model_info_from_yaml(name, v)
-        model_infos.add_compiler_overrides(name, model_info_from_yaml.extra_kwargs)
+        model_infos.add_compiler_overrides(
+            name, model_info_from_yaml.extra_kwargs, model_info_from_yaml.model_type
+        )
         model_infos.add_model(model_info_from_yaml, manifest_path)
 
     custom_operators = {}
@@ -843,6 +896,10 @@ def _parse_network(
             for model in pipeline_tasks
         ]
     else:
+        if not from_deploy:
+            raise ValueError(
+                f"This YAML doesn't support inference as it doesn't define a pipeline: {path}"
+            )
         LOG.info(
             'No pipeline section found in the yaml file, assuming simple model deployment only'
         )
@@ -867,7 +924,10 @@ def _parse_network(
         model_infos=model_infos,
     )
 
-    task_model_names = {t.model_info.name for t in tasks}
+    task_model_names = set()
+    for t in tasks:
+        task_model_names.add(t.model_info.name)
+
     model_names = {m.name for m in model_infos.models()}
     if not task_model_names.issubset(model_names):
         undefined = task_model_names - model_names
@@ -884,10 +944,8 @@ def _parse_network(
             unreferenced = ', '.join(unreferenced)
             LOG.warning(f"Model{s} {unreferenced} defined but not referenced in any task")
 
-    if assets := yaml.get('pipeline-assets'):
-        pipeline._check_type(assets, 'pipeline-assets', dict)
+    if assets := yaml.get('pipeline_assets'):
         for url, d in assets.items():
-            pipeline._check_type(d, f'pipeline-assets element for {url}', dict)
             network.assets.append(Asset(url, d.get('md5', ''), d.get('path', '')))
 
     network.datasets = yaml.get('datasets', None)
@@ -907,7 +965,7 @@ def _parse_network(
     network.model_infos.add_label_enums(network.datasets)
 
     # adjust the pipeline_input_color_format for the pure model deployment case
-    if len(pipeline_tasks) == 0:
+    if len(pipeline_tasks) == 0 and len(yaml.get('pipeline')) > 0:
         for task in network.tasks:
             dataset = network.model_dataset_from_model(task.model_info.name)
             if color_format := dataset.get('repr_imgs_dataloader_color_format'):
@@ -930,8 +988,13 @@ def restrict_cores(
     deploy: bool = False,
 ):
     for task in network.tasks:
+        if not task.is_dl_task:
+            continue
         if pipe_type in ('torch-aipu', 'torch'):
             ncores = 1
+            LOG.info(
+                f"Restricting {task.model_info.name} to {ncores} core(s) because running pipe {pipe_type}."
+            )
         elif deploy:
             ncores = network.model_infos.determine_deploy_cores(
                 task.model_info.name, requested_cores, metis
@@ -942,11 +1005,18 @@ def restrict_cores(
             )
         task.aipu_cores = ncores
         task.model_info.extra_kwargs['aipu_cores'] = ncores
-        backend_config = task.model_info.extra_kwargs.get('compilation_config', {}).get(
-            'backend_config', {}
-        )
-        for flag in ['single_op_network_aicore_start_idx', 'subdevices']:
-            backend_config.pop(flag, None)
+
+
+def _has_template(path):
+    """Check if the YAML pipeline has a template assigned."""
+    yaml = utils.load_yamlfile(path)
+    yaml_pipeline = yaml.get('pipeline')
+    if yaml_pipeline is not None:
+        for el in yaml_pipeline:
+            paths = utils.find_values_in_dict('template_path', el)
+            for path in paths:
+                return True
+    return False
 
 
 def parse_network_from_path(
@@ -955,7 +1025,8 @@ def parse_network_from_path(
     """Parse YAML pipeline to Network object, returns the network and the yaml."""
     # First create network and ensure all models are deployed
     LOG.debug(f"Create network from {path}")
-    yaml = utils.load_yamlfile(path)
+    compiled_schema = schema.load(schema.network, path, check_required=(not _has_template(path)))
+    yaml = utils.load_yamlfile(path, compiled_schema)
     base = Path(path).parent.resolve()
     # Make all paths in model config absolute so it can be processed from a different directory
     weight_base = Path(os.path.expandvars("${HOME}/.cache/axelera/weights"))
@@ -986,12 +1057,8 @@ def _collapse_compiler_overrides(
 
         if "compilation_config" in extra_kwargs:
             obj['compilation_config'] = {}
-            for section_name in ['backend_config', 'quantization_config', 'frontend_config']:
-                if section_name in extra_kwargs['compilation_config']:
-                    obj['compilation_config'][section_name] = {}
-                    # TODO validate boolean values
-                    for key, value in extra_kwargs['compilation_config'][section_name].items():
-                        obj['compilation_config'][section_name][key] = value
+            for key, value in extra_kwargs['compilation_config'].items():
+                obj['compilation_config'][key] = value
 
     return obj
 
@@ -1049,12 +1116,14 @@ def read_deployed_model_infos(
     for i, model_info_from_yaml in enumerate(nn.model_infos.models(), 1):
         name = model_info_from_yaml.name
         model_json = nn_dir / f'{name}/{constants.K_MODEL_INFO_FILE_NAME}'
-        model_infos.add_compiler_overrides(name, model_info_from_yaml.extra_kwargs)
+
+        model_infos.add_compiler_overrides(
+            name, model_info_from_yaml.extra_kwargs, model_info_from_yaml.model_type
+        )
         if not model_json.is_file():
+            model_infos.add_model(model_info_from_yaml, {})
             model_infos.add_error(i, name, f"{_rel(model_json)}: File not found")
             continue
-
-        LOG.trace(f"{i}. {_rel(model_json)}: Available")
         try:
             model_info = types.ModelInfo.from_json(model_json.read_text())
             model_info.class_path = os.path.join(config.env.framework, model_info.class_path)
@@ -1079,6 +1148,10 @@ def read_deployed_model_infos(
             else:
                 LOG.trace(f"{i}. {manifest_file}: quantized manifest available")
                 model_infos.add_model(model_info, manifest_file)
+            continue
+        if model_info.model_type == types.ModelType.CLASSICAL_CV:
+            model_infos.add_model(model_info, model_json)
+            LOG.trace(f"{i}. {_rel(model_json)}: Available (classical cv, no manifest)")
             continue
 
         # elif pipe_type in ['torch-aipu', 'gst']:

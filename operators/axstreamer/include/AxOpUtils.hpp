@@ -9,6 +9,7 @@
 #include "AxLog.hpp"
 #include "AxMetaBBox.hpp"
 #include "AxMetaKpts.hpp"
+#include "AxMetaTracker.hpp"
 
 #define CL_TARGET_OPENCL_VERSION 210
 #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
@@ -28,12 +29,25 @@ struct buffer_details {
   cl_int crop_y;
   cl_int channels{};
   cl_int stride{};
-  std::variant<void *, int> data{};
+  std::variant<void *, int, VASurfaceID_proxy *> data{};
   std::vector<size_t> offsets;
   std::vector<size_t> strides;
   AxVideoFormat format{};
+  cl_int actual_height{};
 };
+
+struct transfer_info {
+  bool is_crop = false;
+  std::vector<int> in_sizes{};
+  std::vector<int> out_sizes{};
+  std::vector<cv::Range> ranges{};
+};
+transfer_info get_transfer_info(
+    const std::vector<int> &sizes, const std::vector<int> &padding);
+
+std::string sizes_to_string(const std::vector<int> &sizes);
 std::vector<buffer_details> extract_buffer_details(const AxDataInterface &input);
+bool validate_shape(const std::vector<int> &new_shape, const std::vector<int> &original);
 
 int determine_size(const buffer_details &info, int which_channel);
 
@@ -350,8 +364,8 @@ std::vector<KptXyv> scale_kpts(const std::vector<fkpt> &norm_kpts, int video_wid
 std::vector<KptXyv> scale_shift_kpts(const std::vector<ax_utils::fkpt> &norm_kpts,
     BboxXyxy master_box, int tensor_width, int tensor_height, bool scale_up, bool letterbox);
 
-std::vector<std::string> read_class_labels(
-    const std::string &filename, const std::string &src, Ax::Logger &logger);
+std::vector<std::string> read_class_labels(const std::string &filename,
+    const std::string &src, Ax::Logger &logger, bool trimmed = true);
 
 void validate_classes(const std::vector<std::string> &class_labels,
     int num_classes, const std::string &src, Ax::Logger &logger);
@@ -393,7 +407,7 @@ template <typename T>
 T *
 get_meta(const std::string &meta_name,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map,
-    const std::string &src)
+    const std::string &src = "")
 {
   if (meta_name.empty()) {
     if (!src.empty()) {
@@ -409,7 +423,15 @@ get_meta(const std::string &meta_name,
     }
     throw std::runtime_error(error_msg);
   }
-  T *meta = dynamic_cast<T *>(meta_itr->second.get());
+  AxMetaBase *base = meta_itr->second.get();
+  if (!base) {
+    std::string error_msg = meta_name + " is nullptr";
+    if (!src.empty()) {
+      throw std::runtime_error(src + " : " + error_msg);
+    }
+    throw std::runtime_error(error_msg);
+  }
+  T *meta = dynamic_cast<T *>(base);
   if (!meta) {
     auto desired_type = typeid(T).name();
     auto &rmeta = *meta_itr->second;
@@ -433,10 +455,70 @@ insert_meta(std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
   if (master_key.empty()) {
     map[key] = std::make_unique<T>(std::forward<Args>(args)...);
   } else {
-    auto master_meta = get_meta<AxMetaBase>(master_key, map, "insert_meta");
-    master_meta->submeta_map->insert(key, subframe_index, number_of_subframes,
+    auto *master_meta = get_meta<AxMetaBase>(master_key, map, "insert_meta");
+    if (number_of_subframes != master_meta->get_number_of_subframes()) {
+      throw std::runtime_error("insert_meta : number_of_subframes mismatch");
+    }
+    master_meta->insert_submeta(key, subframe_index, number_of_subframes,
         std::make_shared<T>(std::forward<Args>(args)...));
   }
+}
+
+template <typename T, typename... Args>
+void
+insert_and_associate_meta(std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
+    const std::string &key, const std::string &master_key, int subframe_index,
+    int number_of_subframes, const std::string &associate_key, Args &&...args)
+{
+  if (associate_key.empty() || associate_key == master_key) {
+    insert_meta<T>(map, key, master_key, subframe_index, number_of_subframes,
+        std::forward<Args>(args)...);
+    return;
+  }
+  auto *associate_meta
+      = get_meta<AxMetaBbox>(associate_key, map, "insert_and_associate_meta");
+  if (number_of_subframes != associate_meta->get_number_of_subframes()) {
+    throw std::runtime_error("insert_and_associate_meta : number_of_subframes mismatch");
+  }
+  int unfiltered_subframe_index = associate_meta->get_id(subframe_index);
+  if (unfiltered_subframe_index == -1) {
+    throw std::runtime_error("insert_and_associate_meta : id not found");
+  }
+  auto *master_meta = get_meta<AxMetaBase>(master_key, map, "insert_and_associate_meta");
+  if (auto *tracker_meta = dynamic_cast<AxMetaTracker *>(master_meta)) {
+    auto &tracking_descriptor
+        = tracker_meta->track_id_to_tracking_descriptor.at(unfiltered_subframe_index);
+    tracking_descriptor.collection->set_frame_data_map(tracking_descriptor.frame_id,
+        key, std::make_shared<T>(std::forward<Args>(args)...));
+    return;
+  }
+  int unfiltered_number_of_subframes = master_meta->get_number_of_subframes();
+  if (unfiltered_subframe_index >= unfiltered_number_of_subframes) {
+    throw std::runtime_error("insert_and_associate_meta : subframe_index out of bounds");
+  }
+  master_meta->insert_submeta(key, unfiltered_subframe_index, unfiltered_number_of_subframes,
+      std::make_shared<T>(std::forward<Args>(args)...));
+}
+
+template <typename T>
+void
+insert_flattened_meta(std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
+    const std::string &key, const std::string &master_key, int subframe_index,
+    int number_of_subframes, std::vector<BboxXyxy> boxes,
+    std::vector<float> scores, std::vector<int> class_ids)
+{
+  auto master_meta = ax_utils::get_meta<T>(master_key, map, "insert_flattened_meta");
+
+  if (subframe_index > master_meta->num_elements()) {
+    throw std::runtime_error("Subframe index must be less than number of subframes");
+  }
+  auto &meta = map[key];
+  if (!meta) {
+    meta = std::make_unique<T>(std::move(boxes), std::move(scores), std::move(class_ids));
+    return;
+  }
+  auto *pobjs = dynamic_cast<T *>(meta.get());
+  pobjs->extend(boxes, scores, class_ids);
 }
 
 } // namespace ax_utils

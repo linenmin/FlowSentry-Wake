@@ -46,8 +46,8 @@ class TrackerMeta(AxTaskMeta):
     # key is the track id, value is the bbox history
     tracking_history: Dict[int, np.ndarray] = field(default_factory=dict)
     class_ids: List[int] = field(default_factory=list)
-    object_meta: Dict[str, List[AxTaskMeta]] = field(default_factory=dict)
-    frame_object_meta: Dict[str, List[AxTaskMeta]] = field(default_factory=dict)
+    object_meta: Dict[str, Dict[int, AxTaskMeta]] = field(default_factory=dict)
+    frame_object_meta: Dict[str, Dict[int, AxTaskMeta]] = field(default_factory=dict)
     labels: Optional[list] = field(default_factory=lambda: None, repr=False)
     labels_dict: Dict[str, list] = field(default_factory=dict)
     extra_info: Dict[str, Any] = field(default_factory=dict)
@@ -64,16 +64,18 @@ class TrackerMeta(AxTaskMeta):
             if (class_id := self.class_ids[idx]) != -1:
                 label = f'{class_as_label(self.labels, class_id)}-'
             tag = f'{label}{track_id}' if self.labels else f'{label}id {track_id}'
-            for key, value_list in self.object_meta.items():
-                value = value_list[idx]
+            for submeta_key, values in self.object_meta.items():
+                value = values.get(track_id)
+                if value is None:
+                    continue
                 if isinstance(value, ClassificationMeta):
                     class_id = value._class_ids[0][0]
                     sublabel = (
-                        class_as_label(self.labels_dict[key], class_id)
-                        if self.labels_dict[key]
+                        class_as_label(self.labels_dict[submeta_key], class_id)
+                        if self.labels_dict[submeta_key]
                         else str(class_id)
                     )
-                    tag += f'\n{key}: {sublabel}'
+                    tag += f'\n{submeta_key}: {sublabel}'
 
             # draw the latest bbox
             bbox = bboxes[-1]
@@ -82,8 +84,10 @@ class TrackerMeta(AxTaskMeta):
             # draw the trajectory
             draw.trajectory(bboxes, color)
 
-        for key, value_list in self.frame_object_meta.items():
-            for idx, value in enumerate(value_list):
+        for submeta_key, values in self.frame_object_meta.items():
+            for track_id, value in values.items():
+                if value is None:
+                    continue
                 if isinstance(value, CocoBodyKeypointsMeta):
                     value.draw(draw)
 

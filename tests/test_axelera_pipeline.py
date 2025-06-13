@@ -4,19 +4,19 @@ import textwrap
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 torch = pytest.importorskip("torch")
 
-import numpy as np
-import yaml
-
 from axelera import types
-from axelera.app import gst_builder, network, operators, pipeline, utils
+from axelera.app import gst_builder, network, operators, pipeline, schema, utils
 from axelera.app.operators import EvalMode
-from axelera.app.operators.custom_preprocessing import ConvertColorInput
 
 FACE_DETECTION_MODEL_INFO = types.ModelInfo('FaceDetection', 'ObjectDetection', [3, 640, 480])
 FACE_RECOGNITION_MODEL_INFO = types.ModelInfo('FaceRecognition', 'Classification', [3, 160, 160])
+TRACKER_MODEL_INFO = types.ModelInfo(
+    'Tracker', 'ObjectTracking', model_type=types.ModelType.CLASSICAL_CV
+)
 
 
 def make_model_infos(the_model_info):
@@ -28,9 +28,6 @@ def make_model_infos(the_model_info):
 @pytest.mark.parametrize(
     'in_yaml',
     [
-        """\
-FaceDetection:
-""",
         """\
 FaceDetection: {}
 """,
@@ -201,7 +198,10 @@ FaceDetection:
 """
     model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
     in_dict = yaml.safe_load(in_yaml)
-    with patch.object(utils, 'load_yaml_by_reference') as mock_template:
+    with patch.object(utils, 'load_yaml_by_reference') as mock_template, patch.object(
+        schema, 'load'
+    ) as mock_schema:
+        mock_schema.return_value = None
         mock_template.return_value = dict(
             input=dict(type='image'), preprocess=[dict(resize=dict(width=1024, height=768))]
         )
@@ -224,7 +224,10 @@ FaceDetection:
 """
     model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
     in_dict = yaml.safe_load(in_yaml)
-    with patch.object(utils, 'load_yaml_by_reference') as mock_template:
+    with patch.object(utils, 'load_yaml_by_reference') as mock_template, patch.object(
+        schema, 'load'
+    ) as mock_schema:
+        mock_schema.return_value = None
         mock_template.return_value = dict(
             input=dict(type='image'), preprocess=[dict(resize=dict(width=1024, height=768))]
         )
@@ -248,7 +251,10 @@ FaceDetection:
 """
     model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
     in_dict = yaml.safe_load(in_yaml)
-    with patch.object(utils, 'load_yaml_by_reference') as mock_template:
+    with patch.object(utils, 'load_yaml_by_reference') as mock_template, patch.object(
+        schema, 'load'
+    ) as mock_schema:
+        mock_schema.return_value = None
         mock_template.return_value = dict(
             input=dict(type='image'), preprocess=[dict(resize=dict(width=1024, height=768))]
         )
@@ -261,13 +267,16 @@ def test_parse_task_with_template_postprocess_with_extra_operator_before_templat
 FaceDetection:
   template_path: templates/face_detection.yaml
   postprocess:
-    - tracker:
+    - c:
     - topk:
 
 """
     model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
     in_dict = yaml.safe_load(in_yaml)
-    with patch.object(utils, 'load_yaml_by_reference') as mock_template:
+    with patch.object(utils, 'load_yaml_by_reference') as mock_template, patch.object(
+        schema, 'load'
+    ) as mock_schema:
+        mock_schema.return_value = None
         mock_template.return_value = dict(
             input=dict(type='image'), postprocess=[dict(topk=dict())]
         )
@@ -281,12 +290,15 @@ FaceDetection:
   template_path: templates/face_detection.yaml
   postprocess:
     - topk: # simple treat topk as a decoder not a real case
-    - tracker:
+    - ctc-decoder:
 
 """
     model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
     in_dict = yaml.safe_load(in_yaml)
-    with patch.object(utils, 'load_yaml_by_reference') as mock_template:
+    with patch.object(utils, 'load_yaml_by_reference') as mock_template, patch.object(
+        schema, 'load'
+    ) as mock_schema:
+        mock_schema.return_value = None
         mock_template.return_value = dict(
             input=dict(type='image'), postprocess=[dict(topk=dict())]
         )
@@ -296,7 +308,7 @@ FaceDetection:
     assert mp.preprocess == []
     assert mp.postprocess == [
         operators.postprocessing.TopK(),
-        operators.postprocessing.Tracker(),
+        operators.postprocessing.CTCDecoder(),
     ]
 
 
@@ -305,12 +317,15 @@ def test_parse_task_with_template_postprocess_with_extra_operator_in_yaml():
 FaceDetection:
   template_path: templates/face_detection.yaml
   postprocess:
-    - tracker:
+    - ctc-decoder:
 
 """
     model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
     in_dict = yaml.safe_load(in_yaml)
-    with patch.object(utils, 'load_yaml_by_reference') as mock_template:
+    with patch.object(utils, 'load_yaml_by_reference') as mock_template, patch.object(
+        schema, 'load'
+    ) as mock_schema:
+        mock_schema.return_value = None
         mock_template.return_value = dict(
             input=dict(type='image'), postprocess=[dict(topk=dict())]
         )
@@ -320,13 +335,16 @@ FaceDetection:
     assert mp.preprocess == []
     assert mp.postprocess == [
         operators.postprocessing.TopK(),
-        operators.postprocessing.Tracker(),
+        operators.postprocessing.CTCDecoder(),
     ]
 
 
 @pytest.fixture
 def mock_template():
-    with patch.object(utils, 'load_yaml_by_reference') as mock_template:
+    with patch.object(utils, 'load_yaml_by_reference') as mock_template, patch.object(
+        schema, 'load'
+    ) as mock_schema:
+        mock_schema.return_value = None
         yield mock_template
 
 
@@ -343,13 +361,11 @@ FaceDetection:
         where: ObjectDetection
         which: CENTER
         top_k: 5
-        expand_margin: 0
 """,
             operators.InputFromROI(
                 where='ObjectDetection',
                 which='CENTER',
                 top_k=5,
-                expand_margin=0,
             ),
         ),
         (
@@ -612,67 +628,6 @@ def test_parse_operator_with_duplicate_validation_settings():
     [
         (
             """\
-FaceDetection: hello
-""",
-            r'Task properties must be dict \(found type str\)',
-        ),
-        (
-            """\
-FaceDetection:
-- template_path:
-""",
-            r'Task properties must be dict \(found type list\)',
-        ),
-        (
-            """\
-FaceDetection:
-  template_path:
-  - templates/face_detection.yaml
-""",
-            r'template_path must be str \(found type list\)',
-        ),
-        (
-            """
-FaceDetection:
-  unknown_key: templates/face_detection.yaml
-""",
-            r'unknown_key is not a valid property of a Task',
-        ),
-        (
-            """
-FaceDetection:
-  unknown_key: templates/face_detection.yaml
-  other: huh
-""",
-            r'unknown_key, other are not valid properties of a Task',
-        ),
-        (
-            """\
-FaceDetection:
-  input:
-  - type: image
-""",
-            r'Task input must be dict \(found type list\)',
-        ),
-        (
-            """\
-FaceDetection:
-  preprocess:
-    torch-totensor:
-""",
-            r'preprocess operations must be list \(found type dict\)',
-        ),
-        (
-            """\
-FaceDetection:
-  postprocess:
-  - torch-totensor:
-    -  positional
-""",
-            r'postprocess operator properties must be dict\|None \(found type list\)',
-        ),
-        (
-            """\
 FaceDetection:
   postprocess:
   - unknownop:
@@ -687,13 +642,36 @@ UnknownModel:
 """,
             r'Model UnknownModel not found in models',
         ),
+        (
+            """\
+FaceDetection:
+  postprocess:
+  - tracker:
+""",
+            r'tracker is a classical CV operator, not allowed in postprocess',
+        ),
     ],
 )
 def test_parse_task_non_conformant(in_yaml, expected_error):
     model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
-    in_dict = yaml.safe_load(in_yaml)
     with pytest.raises(ValueError, match=expected_error):
-        pipeline.parse_task(in_dict, {}, model_infos)
+        in_yaml = yaml.safe_load(in_yaml)
+        pipeline.parse_task(in_yaml, {}, model_infos)
+
+
+def test_parse_task_non_classical_cv_operator_in_cv_process():
+    in_yaml = """
+Tracker:
+  input:
+    source: full
+    color_format: RGB
+  cv_process:
+  - topk:
+"""
+    model_infos = make_model_infos(TRACKER_MODEL_INFO)
+    with pytest.raises(ValueError, match=r'topk: Not a valid classical CV operator'):
+        in_yaml = yaml.safe_load(in_yaml)
+        pipeline.parse_task(in_yaml, {}, model_infos)
 
 
 def test_trace_model_info():
@@ -715,11 +693,16 @@ def test_trace_model_info():
               labels a, b, c, d, e
                      f, g, h, i
         label_filter []
+          model_type DEEP_LEARNING
          weight_path
           weight_url
           weight_md5
+   prequantized_path
     prequantized_url
     prequantized_md5
+    precompiled_path
+     precompiled_url
+     precompiled_md5
              dataset
             base_dir
           class_name
@@ -840,13 +823,27 @@ class {class_name}(operators.AxOperator):
 
 def create_custom_decode(
     class_name='CustomDecode',
+    set_dequant=False,
+    set_transpose=False,
+    set_postamble=False,
     add_post_init=False,
 ):
+    # Dynamically create a decode class with the desired flags
+    flag_lines = []
+    if set_dequant:
+        flag_lines.append('self.cpp_decoder_does_dequantization_and_depadding = True')
+    if set_transpose:
+        flag_lines.append('self.cpp_decoder_does_transpose = True')
+    if set_postamble:
+        flag_lines.append('self.cpp_decoder_does_postamble = True')
     if add_post_init:
-        post_init_impl = """
+        flag_lines.append('self.cpp_decoder_does_all = True')
+    if flag_lines:
+        flag_code = '\n        '.join(flag_lines)
+        post_init_impl = f"""
     def _post_init(self):
-        self.gst_decoder_does_dequantization_and_depadding = True
-            """
+        {flag_code}
+        """
     else:
         post_init_impl = ""
 
@@ -888,15 +885,80 @@ FaceDetection:
     mp = pipeline.parse_task(in_dict, ops, model_infos)
 
     if include_model_config:
-        assert mp.inference_config.gst_focus_layer_on_host is True
+        assert mp.inference_config.cpp_focus_layer_on_host is True
     else:
-        assert mp.inference_config.gst_focus_layer_on_host is False
+        assert mp.inference_config.cpp_focus_layer_on_host is False
 
     decode_op = mp.postprocess[0]
     assert isinstance(decode_op, Decode)
     assert decode_op.conf_threshold == 0.25
 
     if add_post_init:
-        assert decode_op.gst_decoder_does_dequantization_and_depadding
+        assert decode_op.cpp_decoder_does_dequantization_and_depadding
+        assert decode_op.cpp_decoder_does_transpose
+        assert decode_op.cpp_decoder_does_postamble
     else:
-        assert not decode_op.gst_decoder_does_dequantization_and_depadding
+        assert not decode_op.cpp_decoder_does_dequantization_and_depadding
+        assert not decode_op.cpp_decoder_does_transpose
+        assert not decode_op.cpp_decoder_does_postamble
+
+
+def test_cpp_decoder_does_all_property():
+    from axelera.app.operators.base import AxOperator
+
+    class DummyDecode(AxOperator):
+        conf_threshold: float = 0.25
+
+        def exec_torch(self, *a, **kw):
+            pass
+
+        def build_gst(self, *a, **kw):
+            pass
+
+    # All False by default
+    d = DummyDecode(conf_threshold=0.25)
+    assert not d.cpp_decoder_does_all
+
+    # Only one True
+    d = DummyDecode(conf_threshold=0.25)
+    d.cpp_decoder_does_dequantization_and_depadding = True
+    assert not d.cpp_decoder_does_all
+
+    d = DummyDecode(conf_threshold=0.25)
+    d.cpp_decoder_does_transpose = True
+    assert not d.cpp_decoder_does_all
+
+    d = DummyDecode(conf_threshold=0.25)
+    d.cpp_decoder_does_postamble = True
+    assert not d.cpp_decoder_does_all
+
+    # Two True
+    d = DummyDecode(conf_threshold=0.25)
+    d.cpp_decoder_does_dequantization_and_depadding = True
+    d.cpp_decoder_does_transpose = True
+    assert not d.cpp_decoder_does_all
+
+    d = DummyDecode(conf_threshold=0.25)
+    d.cpp_decoder_does_transpose = True
+    d.cpp_decoder_does_postamble = True
+    assert not d.cpp_decoder_does_all
+
+    d = DummyDecode(conf_threshold=0.25)
+    d.cpp_decoder_does_dequantization_and_depadding = True
+    d.cpp_decoder_does_postamble = True
+    assert not d.cpp_decoder_does_all
+
+    # All three True
+    d = DummyDecode(conf_threshold=0.25)
+    d.cpp_decoder_does_dequantization_and_depadding = True
+    d.cpp_decoder_does_transpose = True
+    d.cpp_decoder_does_postamble = True
+    assert d.cpp_decoder_does_all
+
+    # _cpp_decoder_does_all set directly
+    d = DummyDecode(conf_threshold=0.25)
+    d.cpp_decoder_does_all = True
+    assert d.cpp_decoder_does_all
+    # Setting to False disables all
+    d.cpp_decoder_does_all = False
+    assert not d.cpp_decoder_does_all

@@ -25,7 +25,14 @@ description: yolov3 ultralytics v9.6.0, input size 640x640 (COCO)
 pipeline:
   - detections:
       model_name: yolov3-coco-onnx
-      template_path: $AXELERA_FRAMEWORK/pipeline-template/yolo-letterbox.yaml
+      input:
+        type: image
+      preprocess:
+        - letterbox:
+            width: ${{input_width}}
+            height: ${{input_height}}
+            scaleup: True
+        - torch-totensor:
       postprocess:
         - decodeyolo:
             max_nms_boxes: 30000
@@ -33,13 +40,22 @@ pipeline:
             nms_iou_threshold: 0.45
             nms_class_agnostic: False
             nms_top_k: 300
+            box_format: xywh
+            normalized_coord: False
+            label_filter: ${{label_filter}}
+            use_multi_label: False
+            eval: # overrides for evaluating accuracy
+              conf_threshold: 0.001
+              nms_iou_threshold: 0.65
+              use_multi_label: True
+              nms_class_agnostic: False
 
 models:
   yolov3-coco-onnx:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: weights/yolov3.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/model_cards/weights/yolo/object_detection/yolov3.onnx
+    weight_url: https://media.axelera.ai/artifacts/model_cards/weights/yolo/object_detection/yolov3.onnx
     weight_md5: 28db45eabed8f885f6bd399a789c33aa
     task_category: ObjectDetection
     input_tensor_layout: NCHW
@@ -59,11 +75,16 @@ models:
 
 datasets: # Python dataloader
   CocoDataset-COCO2017:
-    class: ObjDataAdaptor
+    class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
-    download_year: 2017
+    label_type: COCO2017
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa
+
+operators:
+  decodeyolo:
+    class: DecodeYolo
+    class_path: $AXELERA_FRAMEWORK/ax_models/decoders/yolo.py

@@ -11,13 +11,15 @@
     - [--reload-firmware](#--reload-firmware)
     - [--pcie-rescan](#--pcie-rescan)
     - [--refresh](#--refresh)
+    - [--reboot](#--reboot)
+    - [--report](#--report)
 
 The `axdevice` tool is used to enumerate and configure Axelera devices. In the basic case, it
 is used to list all the available Axelera devices currently installed in the system.
 
 Note that when using the YAML-based Pipeline Builder the pipeline at initialization will configure
 the device to ensure it is configured correctly. The settings used are configured in the
-pipeline YAML. However, this means that changes to core clock, DDR size, and MVM limitation
+pipeline YAML. However, this means that changes to core clock, and MVM limitation
 will be overwritten. This device configuration can be prevented by setting the environment
 variable `AXELERA_CONFIGURE_DEVICE=0`. `axrunmodel` does not configure the device so this
 is not necessary.
@@ -29,7 +31,7 @@ axdevice
 ```
 
 As no arguments were provided, all devices found will be listed. Information about each device, such
-as its name, type, firmware version, clock speed and the MVM limitation will be provided.
+as its name, amount of DDR, type, firmware versions, clock speed and the MVM limitation will be provided.
 
 This can be used to quickly determine which devices are available, along with their names and ID,
 which is useful if you wish to run subsequent commands on a specific device. For example:
@@ -53,8 +55,8 @@ For example:
 
 ```bash
 $ axdevice
-Device 0: metis-0:1:0 board_type=pcie fwver=v1.0.0-a6-15-g9d681b7bcfe9 clock=800MHz
-Device 1: metis-0:3:0 board_type=pcie fwver=v1.0.0-a6-15-g9d681b7bcfe9 clock=800MHz
+Device 0: metis-0:1:0 4GiB pcie flver=1.3.0 bcver=1.4 clock=800MHz(0-3:800MHz) mvm=0-3:100%
+Device 1: metis-0:3:0 4GiB pcie flver=1.3.0 bcver=1.4 clock=800MHz(0-3:800MHz) mvm=0-3:100%
 $ axdevice -d1 --set-clock 400
 $ axdevice -dmetis-0:3:0 --set-clock 400
 ```
@@ -115,13 +117,16 @@ without arguments.
 
 ### --reload-firmware
 
-The 'reload firmware' argument is used to to reload the firmware of the enumerated
+The 'reload firmware' argument is used to reload the device runtime firmware of the enumerated
 Axelera PCIE/M.2 device(s).
 
 It can be used on its own to reload all devices, or with the `--device` argument to only
-reload the firmware of a specific device.
+reload the device runtime firmware of a specific device.
 
 The devices will be listed after running.
+
+This command is rarely required.  To force a rescan of available devices it is generally better
+to use `--refresh`.
 
 ### --pcie-rescan
 
@@ -138,3 +143,27 @@ there are issues with PCIE enumeration after a boot that means it can take up to
 to get devices enumerated properly.  
 
 The re-enumerated devices will be listed after running.
+
+### --reboot
+
+The 'reboot' argument will force the Axelera device(s) to power cycle.  This is sometimes necessary
+to fix connection issues if `--refresh` does not recover the device.
+
+The re-enumerated devices will be listed after running.
+
+### --report
+
+This command will create a zip file in the current directory, for example `report-2025-06-05_11_56_12.zip`.
+
+This file includes two files :
+
+- kernel-log-2025-06-05_11_56_12.txt - the dmesg log
+- report-2025-06-05_11_56_12.txt - host and Axelera information
+  - Host OS, RAM, version etc
+  - The current environment
+  - Axelera package information
+  - The result of calling `lspci -tv`
+  - Axelera firmware versions and configuration
+  - Axelera device error logs
+
+We suggest adding this zip file when you report an issue to Axelera Customer Support.

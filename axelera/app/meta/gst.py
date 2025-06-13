@@ -5,12 +5,9 @@ import importlib
 from typing import Any, Optional
 import warnings
 
-import gi
 import numpy as np
 
 warnings.filterwarnings("ignore", category=ImportWarning, module="importlib")
-gi.require_version("Gst", "1.0")
-gi.require_version("GstApp", "1.0")
 from gi.repository import Gst
 
 from .. import logging_utils
@@ -37,8 +34,8 @@ def decode_tracking(data):
     meta_module = importlib.import_module('axelera.app.meta')
     tracking_history = {}
     class_ids = []
-    frame_object_meta: dict[str, list[AxTaskMeta]] = {}
-    object_meta: dict[str, list[AxTaskMeta]] = {}
+    frame_object_meta: dict[str, dict[int, AxTaskMeta]] = {}
+    object_meta: dict[str, dict[int, AxTaskMeta]] = {}
     objmeta_key_to_string = dict()
     for key in data.keys():
         if key == 'objmeta_keys':
@@ -61,10 +58,20 @@ def decode_tracking(data):
             tracking_history[track_id] = decode_bbox(bbox_data)
             ind_track_data = num_boxes * 16 + 8
             ind_track_data = process_object_metadata(
-                meta_module, frame_object_meta, objmeta_key_to_string, track_data, ind_track_data
+                track_id,
+                meta_module,
+                frame_object_meta,
+                objmeta_key_to_string,
+                track_data,
+                ind_track_data,
             )
             ind_track_data = process_object_metadata(
-                meta_module, object_meta, objmeta_key_to_string, track_data, ind_track_data
+                track_id,
+                meta_module,
+                object_meta,
+                objmeta_key_to_string,
+                track_data,
+                ind_track_data,
             )
 
     return TrackerMeta(
@@ -76,7 +83,7 @@ def decode_tracking(data):
 
 
 def process_object_metadata(
-    meta_module, object_meta, objmeta_key_to_string, track_data, ind_track_data
+    track_id, meta_module, object_meta, objmeta_key_to_string, track_data, ind_track_data
 ):
     results_objmeta: dict[GstMetaInfo, Any] = {}
     num_objmeta = np.frombuffer(track_data[ind_track_data : ind_track_data + 4], dtype=np.int32)[0]
@@ -127,42 +134,26 @@ def process_object_metadata(
     for results_key, results_data in results_objmeta.items():
         meta_type = results_key[1]
         meta_class = getattr(meta_module, meta_type)
-        object_meta.setdefault(results_key[0], []).append(meta_class.decode(results_data))
+        object_meta.setdefault(results_key[0], {}).update(
+            {track_id: meta_class.decode(results_data)}
+        )
 
     return ind_track_data
 
 
-def decode_embeddings(data):
-    buffer = data.get("data", b"")
-    num_embeddings = int.from_bytes(buffer[:4], byteorder='little')
-    embeddings = np.frombuffer(buffer[4:], dtype=np.float32)
-    # Reshape to (num_embeddings, M) where M is the vector length of each embedding
-    return embeddings.reshape(num_embeddings, -1)
-
-
-class timespec(ctypes.Structure):
-    _fields_ = [
-        ("tv_sec", ctypes.c_long),
-        ("tv_nsec", ctypes.c_long),
-    ]
+def _decode_single(data, field, dtype):
+    bin = data.get(field)
+    if bin is None:
+        raise RuntimeError(f"Expecting {field} meta element")
+    sz = dtype(0).itemsize
+    if not isinstance(bin, bytes) or len(bin) != sz:
+        raise RuntimeError(f"Expecting {field} to be a byte stream {sz} bytes long")
+    return np.frombuffer(bin, dtype=dtype)[0]
 
 
 def decode_stream_meta(data):
-    stream_id_binary = data.get("stream_id")
-    if stream_id_binary is None:
-        raise RuntimeError("Expecting stream_id meta element")
-    sz = np.int32(0).itemsize
-    if not isinstance(stream_id_binary, bytes) or len(stream_id_binary) != sz:
-        raise RuntimeError(f"Expecting stream_id to be a byte stream {sz} bytes long")
-    stream_id = int(np.frombuffer(stream_id_binary, dtype=np.int32)[0])
-    ts = data.get("timestamp")
-    if ts is None:
-        raise RuntimeError("Expecting timestamp meta element")
-    sz = ctypes.sizeof(timespec)
-    if not isinstance(ts, bytes) or len(ts) != sz:
-        raise RuntimeError(f"Expecting timestamp to be a byte stream {sz} bytes long")
-    ts = timespec.from_buffer_copy(ts)
-    ts = ts.tv_sec + ts.tv_nsec / 1000000000
+    stream_id = int(_decode_single(data, "stream_id", np.int32))
+    ts = int(_decode_single(data, "timestamp", np.uint64)) / 1000000000
     return stream_id, ts
 
 
@@ -263,7 +254,6 @@ class GstDecoder:
             "landmarks": decode_landmarks,
             "tracking_meta": decode_tracking,
             "stream_meta": decode_stream_meta,
-            "embeddings": decode_embeddings,
         }
         self.meta_module = importlib.import_module('axelera.app.meta')
 
@@ -308,10 +298,6 @@ class GstDecoder:
                             key = GstMetaInfo(
                                 subtask_name, meta_type, subframe_index, master_task_name
                             )
-                            if master_task_name == subtask_name:
-                                # The tracker stores detections as submeta
-                                # But here they are not required any more
-                                continue
                             val = ctypes.string_at(meta_entry.data, meta_entry.size)
                             entry = results.get(key, {})
                             if subtype in entry:

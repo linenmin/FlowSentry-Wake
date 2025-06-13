@@ -2,19 +2,39 @@ axelera-model-format: 1.0.0
 
 name: yolov8sseg-coco
 
-description: yolov8s seg estimation ultralytics v8.2, 640x640 (COCO), native PyTorch model
+description: yolov8s seg estimation ultralytics v8.2, 640x640 (COCO), native PyTorch
+  model
 # converted from https://github.com/ultralytics/ultralytics
 
 pipeline:
   - segmentations:
       model_name: yolov8sseg-coco
-      template_path: $AXELERA_FRAMEWORK/pipeline-template/yoloseg-letterbox.yaml
+      input:
+        type: image
+      preprocess:
+        - letterbox:
+            width: ${{input_width}}
+            height: ${{input_height}}
+            scaleup: True
+            half_pixel_centers: True
+        - torch-totensor:
       postprocess:
         - decodeyoloseg:
             max_nms_boxes: 30000
             conf_threshold: 0.25
             nms_iou_threshold: 0.45
             nms_top_k: 300
+            box_format: xywh
+            normalized_coord: False
+            label_filter: ${{label_filter}}
+            use_multi_label: False
+            nms_class_agnostic: False
+            unpad: True
+            eval: # overrides for evaluating accuracy
+              conf_threshold: 0.001
+              nms_iou_threshold: 0.7
+              use_multi_label: True
+              unpad: False
 
 models:
   yolov8sseg-coco:
@@ -32,6 +52,10 @@ models:
     extra_kwargs:
       m2:
         mvm_limitation: 57
+      max_compiler_cores: 4
+      compilation_config:
+        split_buffer_promotion: True
+        tiling_depth: 6
 
 datasets: # Python dataloader
   CocoDataset-Segment-COCO2017:
@@ -39,9 +63,9 @@ datasets: # Python dataloader
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
     data_dir_name: coco
-    download_year: 2017
+    label_type: COCO2017
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa
     # val_data: val2017.txt
     # mask_size: [160, 160] # 640//4
@@ -49,3 +73,8 @@ datasets: # Python dataloader
 model-env:
   dependencies:
     - ultralytics
+
+operators:
+  decodeyoloseg:
+    class: DecodeYoloSeg
+    class_path: $AXELERA_FRAMEWORK/ax_models/decoders/yoloseg.py

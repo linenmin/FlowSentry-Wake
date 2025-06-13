@@ -2,150 +2,11 @@
 #pragma once
 
 #include <AxMetaBBox.hpp>
+#include <AxStreamerUtils.hpp>
 #include <shared_mutex>
 #include <unordered_map>
 #include <vector>
-#include "AxMetaObjectDetection.hpp"
-
-#include "MultiObjTracker.hpp"
-
-static cv::Scalar
-getColorForTracker(int trackId)
-{
-  static const uint32_t colormap[] = {
-    0xff0000,
-    0xffb27d,
-    0xffffff,
-    0x84b9ff,
-    0x0009ff,
-    0x000088,
-    0x000000,
-    0x730000,
-    0xfc0000,
-    0xffa46f,
-    0xfffdf9,
-    0x92c5ff,
-    0x081cff,
-    0x000096,
-    0x00000a,
-    0x650000,
-    0xf10000,
-    0xff9561,
-    0xfffbee,
-    0xa0d1ff,
-    0x132eff,
-    0x0000a4,
-    0x000016,
-    0x570000,
-    0xe50000,
-    0xff8653,
-    0xfff7e2,
-    0xaedbff,
-    0x1f41ff,
-    0x0000b2,
-    0x000022,
-    0x490000,
-    0xd90000,
-    0xff7546,
-    0xfff2d6,
-    0xbce4ff,
-    0x2b53ff,
-    0x0000bf,
-    0x00002f,
-    0x3c0000,
-    0xcc0000,
-    0xff6438,
-    0xffecc9,
-    0xc9ecff,
-    0x3864ff,
-    0x0000cc,
-    0x00003c,
-    0x2f0000,
-    0xbf0000,
-    0xff532b,
-    0xffe4bc,
-    0xd6f2ff,
-    0x4675ff,
-    0x0000d9,
-    0x000049,
-    0x220000,
-    0xb20000,
-    0xff411f,
-    0xffdbae,
-    0xe2f7ff,
-    0x5386ff,
-    0x0000e5,
-    0x000057,
-    0x160000,
-    0xa40000,
-    0xff2e13,
-    0xffd1a0,
-    0xeefbff,
-    0x6195ff,
-    0x0000f1,
-    0x000065,
-    0x0a0000,
-    0x960000,
-    0xff1c08,
-    0xffc592,
-    0xf9fdff,
-    0x6fa4ff,
-    0x0000fc,
-    0x000073,
-    0x000000,
-    0x880000,
-    0xff0900,
-    0xffb984,
-    0xfffeff,
-    0x7db2ff,
-    0x0000ff,
-    0x000081,
-    0x000000,
-    0x7a0000,
-    0xff0000,
-    0xffab76,
-    0xfffeff,
-    0x8bbfff,
-    0x0212ff,
-    0x00008f,
-    0x000005,
-    0x6c0000,
-    0xf60000,
-    0xff9d68,
-    0xfffcf4,
-    0x99cbff,
-    0x0d25ff,
-    0x00009d,
-    0x000010,
-    0x5e0000,
-    0xeb0000,
-    0xff8e5a,
-    0xfff9e8,
-    0xa7d6ff,
-    0x1938ff,
-    0x0000ab,
-    0x00001c,
-    0x500000,
-    0xdf0000,
-    0xff7e4c,
-    0xfff5dc,
-    0xb5dfff,
-    0x254aff,
-    0x0000b8,
-    0x000028,
-    0x420000,
-    0xd30000,
-    0xff6d3f,
-    0xffefcf,
-    0xc2e8ff,
-    0x325cff,
-    0x0000c6,
-    0x000035,
-  };
-  const auto color
-      = colormap[static_cast<size_t>(std::abs(trackId)) % (sizeof(colormap) / sizeof(colormap[0]))];
-  return cv::Scalar((color & 0xff0000) >> 16, (color & 0xff00) >> 8, (color & 0xff));
-}
+#include "AxColor.hpp"
 
 class TrackerMetaFrameDataKeys
 {
@@ -198,26 +59,88 @@ class TrackerMetaFrameDataKeys
   inline static std::vector<char> subtask_keystrings;
 };
 
+template <typename Plugin, typename Ret, typename... Args> class TrackerCallback
+{
+  public:
+  TrackerCallback(const TrackerCallback &) = delete;
+  TrackerCallback &operator=(const TrackerCallback &) = delete;
+  TrackerCallback(TrackerCallback &&) = delete;
+  TrackerCallback &operator=(TrackerCallback &&) = delete;
+  TrackerCallback(const std::string &lib_name, const Ax::StringMap &options, Ax::Logger &l)
+      : logger(l), lib(logger, lib_name, true)
+  {
+    Ax::load_v1_plugin(lib, plugin);
+    if (!plugin.init_and_set_static_properties) {
+      if (!options.empty()) {
+        throw std::runtime_error(
+            "TrackerCallback: Function -init_and_set_static_properties- not found but options not empty");
+      }
+    } else {
+      if (!options.empty()) {
+        if (!plugin.allowed_properties) {
+          throw std::runtime_error(
+              "TrackerCallback: Function -allowed_properties- not found but options not empty");
+        }
+        const auto &allowed_properties_stringset = plugin.allowed_properties();
+        for (const auto &opt : options) {
+          if (allowed_properties_stringset.count(opt.first) == 0) {
+            throw std::runtime_error(
+                "TrackerCallback: Property not allowed - " + opt.first + ".");
+          }
+        }
+      }
+      subplugin_data = plugin.init_and_set_static_properties(options, logger);
+    }
+    if (plugin.set_dynamic_properties) {
+      throw std::runtime_error(
+          "TrackerCallback: Function -set_dynamic_properties- found but dynamic properties not available for tracker");
+    }
+
+    if constexpr (std::is_same_v<Plugin, Ax::V1Plugin::DetermineObjectAttribute>) {
+      callback = plugin.determine_object_attribute;
+    } else if constexpr (std::is_same_v<Plugin, Ax::V1Plugin::TrackerFilter>) {
+      callback = plugin.filter;
+    } else {
+      throw std::logic_error("Invalid plugin type for TrackerCallback in AxMetaTracker");
+    }
+  }
+
+  Ret operator()(Args... args) const
+  {
+    return callback(subplugin_data.get(), std::forward<Args>(args)..., logger);
+  }
+
+  private:
+  Ax::Logger &logger;
+  Ax::SharedLib lib;
+  Plugin plugin;
+  Ret (*callback)(const void *subplugin_properties, Args... args, Ax::Logger &logger)
+      = nullptr;
+  std::shared_ptr<void> subplugin_data;
+};
+
 struct TrackingElement {
   BboxXyxy bbox;
   std::unordered_map<uint8_t, std::shared_ptr<AxMetaBase>> frame_data_map;
 };
 
+using DetermineObjectAttributeCallback
+    = TrackerCallback<Ax::V1Plugin::DetermineObjectAttribute, std::shared_ptr<AxMetaBase>,
+        int, int, uint8_t, const std::unordered_map<int, TrackingElement> &>;
+
 class TrackingCollection
 {
   public:
-  TrackingCollection(int track_id, int detection_class_id, int history_length)
+  TrackingCollection(int track_id, int detection_class_id,
+      float detection_score, int history_length,
+      const std::unordered_map<std::string, DetermineObjectAttributeCallback> &determine_object_attribute_map)
       : track_string{ "track_" + std::to_string(track_id) },
-        detection_class_id{ detection_class_id }, history_length{ history_length }
+        detection_class_id{ detection_class_id }, detection_score{ detection_score },
+        history_length{ history_length }, determine_object_attribute_map{ determine_object_attribute_map }
   {
     if (history_length < 1) {
       throw std::runtime_error("history_length must be at least 1");
     }
-  }
-
-  const std::string &get_track_string() const
-  {
-    return track_string;
   }
 
   const TrackingElement &get_frame(int frame_id) const
@@ -320,17 +243,15 @@ class TrackingCollection
   }
 
   void set_frame_data_map(int frame_id, const std::string &key_string,
-      std::shared_ptr<AxMetaBase> value,
-      std::shared_ptr<AxMetaBase> (*func)(
-          int, int, uint8_t, const std::unordered_map<int, TrackingElement> &)
-      = nullptr)
+      std::shared_ptr<AxMetaBase> value)
   {
     int first_id = std::max(0, frame_id - history_length + 1);
     std::unique_lock lock(mutex);
     uint8_t key = TrackerMetaFrameDataKeys::get(key_string);
     frame_id_to_element[frame_id].frame_data_map[key] = std::move(value);
-    if (func) {
-      tracker_data_map[key] = func(first_id, frame_id, key, frame_id_to_element);
+    auto itr = determine_object_attribute_map.find(key_string);
+    if (itr != determine_object_attribute_map.end()) {
+      tracker_data_map[key] = itr->second(first_id, frame_id, key, frame_id_to_element);
     }
   }
 
@@ -340,12 +261,15 @@ class TrackingCollection
     frame_id_to_element.erase(frame_id - history_length + 1);
   }
 
+  const std::string track_string;
+  const int detection_class_id;
+  const float detection_score;
+  const int history_length;
+
   private:
   mutable std::shared_mutex mutex;
   std::unordered_map<int, TrackingElement> frame_id_to_element;
-  const std::string track_string;
-  const int detection_class_id;
-  const int history_length;
+  const std::unordered_map<std::string, DetermineObjectAttributeCallback> &determine_object_attribute_map;
   std::unordered_map<uint8_t, std::shared_ptr<AxMetaBase>> tracker_data_map;
 };
 
@@ -354,14 +278,20 @@ struct TrackingDescriptor {
   int detection_meta_id = -1;
   std::shared_ptr<TrackingCollection> collection;
 
-  TrackingDescriptor(int track_id, int detection_class_id, int history_length)
-      : frame_id{ 0 }, collection{ std::make_shared<TrackingCollection>(
-                           track_id, detection_class_id, history_length) }
+  TrackingDescriptor(int track_id, int detection_class_id,
+      float detection_score, int history_length,
+      const std::unordered_map<std::string, DetermineObjectAttributeCallback> &determine_object_attribute_map)
+      : frame_id{ 0 }, collection{ std::make_shared<TrackingCollection>(track_id,
+                           detection_class_id, detection_score, history_length,
+                           determine_object_attribute_map) }
   {
   }
 };
 
-class AxMetaTracker : public AxMetaBbox
+using KeepBoxCallback
+    = TrackerCallback<Ax::V1Plugin::TrackerFilter, bool, const TrackingDescriptor &>;
+
+class AxMetaTracker : public AxMetaBase
 {
   public:
   std::unordered_map<int, TrackingDescriptor> track_id_to_tracking_descriptor;
@@ -369,19 +299,14 @@ class AxMetaTracker : public AxMetaBbox
   int num_subtask_runs;
   mutable std::unordered_map<int, std::vector<char>> extern_meta_storage;
 
-  AxMetaTracker() : AxMetaBbox({}), history_length{ 1 }, num_subtask_runs{ 0 }
+  AxMetaTracker() : history_length{ 1 }
   {
   }
 
-  AxMetaTracker(int history_length, int num_subtask_runs)
-      : AxMetaBbox({}), history_length{ history_length }, num_subtask_runs{ num_subtask_runs }
+  explicit AxMetaTracker(int history_length) : history_length{ history_length }
   {
     if (history_length < 1) {
       throw std::runtime_error("history_length must be at least 1");
-    }
-    if (num_subtask_runs < 0 || num_subtask_runs > history_length) {
-      throw std::runtime_error(
-          "num_subtask_runs must be at either zero or at least 1 and at most history_length");
     }
   }
 
@@ -389,54 +314,6 @@ class AxMetaTracker : public AxMetaBbox
   {
     for (auto &[track_id, tracking_descriptor] : track_id_to_tracking_descriptor) {
       tracking_descriptor.collection->delete_frame(tracking_descriptor.frame_id);
-    }
-  }
-
-  void create_box_meta(int width, int height)
-  {
-    bboxvec.clear();
-    for (const auto &[track_id, tracking_descriptor] : track_id_to_tracking_descriptor) {
-      if (!num_subtask_runs || tracking_descriptor.frame_id < num_subtask_runs) {
-        const auto &frame
-            = tracking_descriptor.collection->get_frame(tracking_descriptor.frame_id);
-        if (frame.bbox.x1 < 0 || frame.bbox.y1 < 0 || frame.bbox.x2 >= width
-            || frame.bbox.y2 >= height) {
-          continue;
-        }
-        bboxvec.push_back(tracking_descriptor.collection
-                              ->get_frame(tracking_descriptor.frame_id)
-                              .bbox);
-      }
-    }
-  }
-
-  void track_object(const std::vector<ax::TrackedObject> &trackers,
-      std::unordered_map<int, TrackingDescriptor> &static_track_id_to_tracking_descriptor,
-      int width, int height)
-  {
-    for (const auto &tracker : trackers) {
-      const auto &xyxy = tracker.GetXyxy(width, height);
-
-      auto [itr, success] = static_track_id_to_tracking_descriptor.try_emplace(
-          tracker.track_id, tracker.track_id, tracker.class_id, history_length);
-
-      if (!success) {
-        ++itr->second.frame_id;
-      }
-      itr->second.detection_meta_id = tracker.latest_detection_id;
-      itr->second.collection->set_frame(itr->second.frame_id,
-          TrackingElement{ BboxXyxy{ std::get<0>(xyxy), std::get<1>(xyxy),
-                               std::get<2>(xyxy), std::get<3>(xyxy) },
-              {} });
-      track_id_to_tracking_descriptor.insert(*itr);
-    }
-    for (auto itr = static_track_id_to_tracking_descriptor.begin();
-         itr != static_track_id_to_tracking_descriptor.end();) {
-      if (track_id_to_tracking_descriptor.count(itr->first)) {
-        ++itr;
-      } else {
-        itr = static_track_id_to_tracking_descriptor.erase(itr);
-      }
     }
   }
 
@@ -484,9 +361,9 @@ class AxMetaTracker : public AxMetaBbox
                        .try_emplace(track_id, tracking_descriptor.collection->get_history(
                                                   tracking_descriptor.frame_id))
                        .first->second;
-      metas.push_back({ "tracking_meta",
-          tracking_descriptor.collection->get_track_string().c_str(),
-          static_cast<int>(data.size()), data.data() });
+      metas.push_back(
+          { "tracking_meta", tracking_descriptor.collection->track_string.c_str(),
+              static_cast<int>(data.size()), data.data() });
     }
     metas.push_back({ "tracking_meta", "objmeta_keys",
         static_cast<int>(TrackerMetaFrameDataKeys::strings().size()),

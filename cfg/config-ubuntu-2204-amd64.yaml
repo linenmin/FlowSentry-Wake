@@ -7,14 +7,14 @@ os:
   version: 22.04
 
 vars:
-  AX_RELEASE_URL: https://d1o2y3tc25j7ge.cloudfront.net
+  AX_RELEASE_URL: https://media.axelera.ai
   AX_DEBIAN_URL: https://software.axelera.ai/artifactory/axelera-apt-source/
   AX_PYPI_RUNTIME_URL: https://software.axelera.ai/artifactory/axelera-runtime-pypi/
   AX_PYPI_DEVELOPMENT_URL: https://software.axelera.ai/artifactory/axelera-dev-pypi/
   AX_PIP_EXTRA_ARGS: ""
-  AX_CFG_DIR: cfg/
-  AX_VERSION: 1.2.5
-  AX_DKMS_VERSION: 0.07.16
+  AX_CFG_DIR: cfg
+  AX_VERSION: 1.3.1
+  AX_DKMS_VERSION: 1.0.2
 
 dependencies:
   - git
@@ -34,7 +34,7 @@ penv:
       ssl: true
       default: true
     - name: pytorch
-      url: https://download.pytorch.org/whl/
+      url: https://download.pytorch.org/whl/cpu
       ssl: false
     - name: axelera_runtime
       url: ${AX_PYPI_RUNTIME_URL}
@@ -43,6 +43,7 @@ penv:
     - name: axelera_development
       url: ${AX_PYPI_DEVELOPMENT_URL}
       ssl: false
+      requires_auth: true
       pip_extra_args: ${AX_PIP_EXTRA_ARGS}
   common:
     index_url: https://pypi.org/simple
@@ -54,18 +55,19 @@ penv:
     - cityscapesscripts: "*"
     - climage: "*"
     - cmake: "{version = \"<4.0.0\"}"
-    - nanobind: "{version = \"==2.5.0\"}"
     - cython: "*"
     - ftfy: "6.2.0"
     - grpcio: "*"
+    - h5py: "*"
     - jinja2: "*"
+    - lap: "*"
     - matplotlib: "{version = \"<3.10\"}"
     - matplotlib-inline: "*"
     - more-itertools: "*"
     - networkx: "{version = \">=3.3,<4\"}"
     - numpy: "{version = \"<2\"}"
     - onnxruntime: "{version = \">=1.16,<2\"}"
-    - onnx: "{version = \">=1.16,<2\"}"
+    - onnx: "{version = \">=1.16,<=1.17.0\"}"
     - onnxoptimizer: "{version = \">=0.3.13,<0.4\"}"
     - onnxsim: "{version = \">=0.4.36,<0.5\"}"
     - opencv-python: "*"
@@ -79,10 +81,9 @@ penv:
     - PyYAML: "*"
     - rich: "*"
     - scipy: "*"
+    - sewar: "*"
     - siphash24: "*"
     - strictyaml: "*"
-    - torch: "{index = \"pytorch\", version = \"==1.13.1\"}"
-    - torchvision: "{index = \"pytorch\", version = \"==0.14.1\"}"
     - tqdm: "*"
     - typer: "*"
   axeleracommon:
@@ -91,13 +92,18 @@ penv:
     libs:
     - axelera-types: "{index = \"axelera_runtime\" }"
     - axelera-runtime: "{index = \"axelera_runtime\" }"
+  torch:
+    index_url: https://download.pytorch.org/whl/cpu
+    requires_auth: false
+    libs:
+    - torch: "{index = \"pytorch\", version = \"==1.13.1\"}"
+    - torchvision: "{index = \"pytorch\", version = \"==0.14.1\"}"
   development:
     index_url: ${AX_PYPI_DEVELOPMENT_URL}
     requires_auth: true
     libs:
     - axelera-compiler: "{index = \"axelera_development\" }"
     - axelera-qtoolsv2: "{index = \"axelera_development\" }"
-    - axelera-qtools: "{index = \"axelera_development\" }"
     - axelera-onnx2torch: "{index = \"axelera_development\" }"
     - axelera-onnx-graph-cleaner: "{index = \"axelera_development\" }"
     - axelera-qtools-tvm-interface: "{index = \"axelera_development\" }"
@@ -112,23 +118,14 @@ penv:
     requires_auth: false
     libs: []
 
-  cuda:
-    - version: 10.2, 11.0, 11.1, 11.2
-      torch: "{index = \"pytorch\", version = \"==1.12.1+cu102\"}"
-      torchvision: "{index = \"pytorch\", version = \"==0.13.1+cu102\"}"
-      compat: 10.2
-    - version: 11.3, 11.4, 11.5
-      compat: 11.3
-      torch: "{index = \"pytorch\", version = \"==1.12.1+cu113\"}"
-      torchvision: "{index = \"pytorch\", version = \"==0.13.1+cu113\"}"
-      docker-base: nvidia/cuda:11.8.0-base-ubuntu22.04
-      docker-target: axelera/framework-cu118-ubuntu22.04
-    - version: 11.6, 11.7, 12.0, 12.1
-      compat: 11.6
-      torch: "{index = \"pytorch\", version = \"==1.12.1+cu116\"}"
-      torchvision: "{index = \"pytorch\", version = \"==0.13.1+cu116\"}"
-      docker-base: nvidia/cuda:11.8.0-base-ubuntu22.04
-      docker-target: axelera/framework-cu118-ubuntu22.04
+  llm:
+    index_url: https://pypi.org/simple
+    requires_auth: false
+    libs:
+    - gradio: "{version = \">=5.9.0\"}"
+    - transformers: "{version = \">=4.45.1\"}"
+    - accelerate: "*"
+
   requirements: ${AX_CFG_DIR}/requirements-ubuntu-2204-amd64.txt
   pyenv:
     - url: https://github.com/pyenv/pyenv.git
@@ -176,7 +173,6 @@ penv:
     - tk-dev
     - libffi-dev
     - liblzma-dev
-    - python3-openssl
     - libcairo2-dev
     - libgirepository1.0-dev
 
@@ -203,8 +199,6 @@ docker:
     - containerd.io
     - docker-buildx-plugin
     - docker-compose-plugin
-  system-cuda-dependencies:
-    - nvidia-container-toolkit >= 1.10.0
   migrate:
     - docker
     - docker-engine
@@ -218,8 +212,8 @@ docker:
 runtime:
   description: Runtime
   libs:
-    - axelera-runtime-1.2.5
-    - axelera-compiler-examples-1.2.5
+    - axelera-runtime-1.3.1
+    - axelera-compiler-examples-1.3.1
     - libgstreamer1.0-dev
     - libgstreamer-plugins-base1.0-dev
     - libgstreamer-plugins-good1.0-dev
@@ -247,17 +241,25 @@ runtime:
     - meson
     - libeigen3-dev
     - libsimde-dev
+    - libasio-dev
+    - libprotobuf-dev
+    - libzmq3-dev
+    - qt6-base-dev
+    - libboost-program-options1.74.0
+    - libboost-log1.74.0
+    - libboost-thread1.74.0
+    - libboost-regex1.74.0
+    - libboost-filesystem1.74.0
+
   envs:
     - name: AXELERA_RUNTIME_DIR
-      value: "/opt/axelera/runtime-1.2.5-1"
+      value: "/opt/axelera/runtime-1.3.1-1"
     - name: AXELERA_DEVICE_DIR
-      value: "/opt/axelera/device-1.2.5-1/omega"
+      value: "/opt/axelera/device-1.3.1-1/omega"
     - name: AXELERA_RISCV_TOOLCHAIN_DIR
       value: "/opt/axelera/riscv-gnu-newlib-toolchain-409b951ba662-7"
     - name: AXELERA_EXAMPLES_DIR
-      value: "/opt/axelera/compiler-examples-1.2.5-1"
-    - name: GST_PLUGIN_PATH
-      value: "${AXELERA_RUNTIME_DIR}/lib/gstreamer-1.0"
+      value: "/opt/axelera/compiler-examples-1.3.1-1"
     - name: PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION
       value: python
     - name: AXELERA_FRAMEWORK
@@ -269,6 +271,8 @@ runtime:
       value: "${AXELERA_DEVICE_DIR}/bin/start_axelera_runtime_stage0.bin"
     - name: TVM_HOME
       value: "${AXELERA_RUNTIME_DIR}/tvm/tvm-src"
+    - name: GST_PLUGIN_PATH
+      value: "${AXELERA_RUNTIME_DIR}/lib/gstreamer-1.0:${AXELERA_FRAMEWORK}/operators/lib${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
     - name: PYTHONPATH
       value: "${AXELERA_FRAMEWORK}:${AXELERA_RUNTIME_DIR}/tvm/tvm-src${PYTHONPATH:+:$PYTHONPATH}"
     - name: LD_LIBRARY_PATH
@@ -281,7 +285,7 @@ runtime:
 driver:
   description: PCIe driver
   libs:
-    - metis-dkms == 0.07.16
+    - metis-dkms == 1.0.2
 
 repositories:
   - list: /etc/apt/sources.list.d/docker.list
@@ -313,9 +317,9 @@ repositories:
       - https://packages.microsoft.com/repos/code stable main
   - list: /etc/apt/sources.list.d/axelera.list
     packages:
-      - axelera-device-1.2.5
-      - axelera-runtime-1.2.5
-      - axelera-compiler-examples-1.2.5
+      - axelera-device-1.3.1
+      - axelera-runtime-1.3.1
+      - axelera-compiler-examples-1.3.1
       - axelera-riscv-gnu-newlib-toolchain-409b951ba662-7
       - axelera-riscv-openocd
       - metis-dkms

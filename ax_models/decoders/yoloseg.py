@@ -3,7 +3,6 @@
 # generalized metadata representation
 
 from pathlib import Path
-import re
 from typing import List, Optional
 
 import numpy as np
@@ -31,8 +30,8 @@ class DecodeYoloSeg(AxOperator):
 
     box_format: str
     normalized_coord: bool
-    label_filter: Optional[List[str]] = None
-    label_exclude: Optional[List[str]] = None
+    label_filter: Optional[List[str] | str] = None
+    label_exclude: Optional[List[str] | str] = None
     conf_threshold: float = 0.25
     max_nms_boxes: int = 30000
     use_multi_label: bool = False
@@ -43,20 +42,12 @@ class DecodeYoloSeg(AxOperator):
     unpad: bool = True
 
     def _post_init(self):
-        if isinstance(self.label_filter, str) and not self.label_filter.startswith('$$'):
-            stripped = (self.label_filter or '').strip()
-            self.label_filter = [x for x in re.split(r'\s*[,;]\s*', stripped) if x]
-        else:
-            self.label_filter = []
-        if isinstance(self.label_exclude, str) and not self.label_exclude.startswith('$$'):
-            stripped = (self.label_exclude or '').strip()
-            self.label_exclude = [x for x in re.split(r'\s*[,;]\s*', stripped) if x]
-        else:
-            self.label_exclude = []
+        self.label_filter = utils.parse_labels_filter(self.label_filter)
+        self.label_exclude = utils.parse_labels_filter(self.label_exclude)
         self._tmp_labels: Optional[Path] = None
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
             raise ValueError(f"Unknown box format {self.box_format}")
-        self.gst_decoder_does_dequantization_and_depadding = True
+        self.cpp_decoder_does_all = True
         super()._post_init()
 
     def __del__(self):
@@ -69,16 +60,20 @@ class DecodeYoloSeg(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         if self.label_filter and self.label_exclude:
-            self.label_filter = [x for x in self.labels if x not in self.label_exclude]
+            self.label_filter = utils.label_exclude_to_label_filter(
+                self.label_filter, self.label_exclude
+            )
         elif not self.label_filter and self.label_exclude:
-            self.label_filter = [x for x in model_info.labels if x not in self.label_exclude]
+            self.label_filter = utils.label_exclude_to_label_filter(
+                model_info.labels, self.label_exclude
+            )
         self.meta_type_name = "InstanceSegmentationMeta"
         if model_info.manifest and model_info.manifest.is_compiled():
             self._deq_scales, self._deq_zeropoints = zip(*model_info.manifest.dequantize_params)
@@ -90,6 +85,7 @@ class DecodeYoloSeg(AxOperator):
         self.model_height = model_info.input_height
         self.labels = model_info.labels
         self.num_classes = model_info.num_classes
+        self._association = context.association or None
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         # Supports only yolov8seg for now
@@ -99,15 +95,12 @@ class DecodeYoloSeg(AxOperator):
             )
         if self._tmp_labels is None:
             self._tmp_labels = utils.create_tmp_labels(self.labels)
-        if not gst.new_inference:
-            conns = {'src': f'decoder_task{self._taskn}{stream_idx}.sink_0'}
-            gst.queue(name=f'queue_decoder_task{self._taskn}{stream_idx}', connections=conns)
         scales = ','.join(str(s) for s in self._deq_scales)
         zeros = ','.join(str(s) for s in self._deq_zeropoints)
-        sieve = utils.build_class_sieve(self.label_filter, self._tmp_labels)
-        master_key = ''
-        if self._where:
-            master_key = f'master_meta:{self._where};'
+        sieve = utils.build_class_sieve(self.label_filter, self.labels)
+        master_key = f'master_meta:{self._where};' if self._where else str()
+        association_key = f'association_meta:{self._association};' if self._association else str()
+
         gst.decode_muxer(
             name=f'decoder_task{self._taskn}{stream_idx}',
             lib='libdecode_yolov8seg.so',
@@ -115,6 +108,7 @@ class DecodeYoloSeg(AxOperator):
             options=f'meta_key:{str(self.task_name)};'
             f'decoder_name:{self.meta_type_name};'
             f'{master_key}'
+            f'{association_key}'
             f'classes:{self.num_classes};'
             f'confidence_threshold:{self.conf_threshold};'
             f'scales:{scales};'
@@ -206,6 +200,7 @@ class DecodeYoloSeg(AxOperator):
                 boxes[:, [1, 3]] += base_box[1]
 
             model_meta = InstanceSegmentationMeta(
+                seg_shape=proto.shape[2:0:-1],
                 labels=self.labels,
             )
             aranged_masks = []
@@ -213,7 +208,6 @@ class DecodeYoloSeg(AxOperator):
                 for i, sbox in enumerate(masks[0]):
                     mbox = _translate_image_space_rect(sbox, bbox)
                     aranged_masks.append((*sbox, *mbox, masks[1][i]))
-
             model_meta.add_results(aranged_masks, boxes, classes, scores)
             meta.add_instance(self.task_name, model_meta, self._where)
         return image, predict, meta

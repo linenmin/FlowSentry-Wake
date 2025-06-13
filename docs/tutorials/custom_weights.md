@@ -5,10 +5,14 @@
   - [Deploy a PyTorch object detector directly (YOLOv8n with custom weights)](#deploy-a-pytorch-object-detector-directly-yolov8n-with-custom-weights)
     - [Model definition](#model-definition)
     - [Data adapter definition](#data-adapter-definition)
+    - [Model env definition](#model-env-definition)
     - [Use the Voyager SDK to deploy your new model](#use-the-voyager-sdk-to-deploy-your-new-model)
   - [Deploy an ONNX-exported model (YOLOv8n with custom weights)](#deploy-an-onnx-exported-model-yolov8n-with-custom-weights)
   - [Deploy a PyTorch classifier directly (ResNet50 with custom weights)](#deploy-a-pytorch-classifier-directly-resnet50-with-custom-weights)
   - [All supported dataset adapters](#all-supported-dataset-adapters)
+  - [Automatic asset management with URLs and MD5 checksums](#automatic-asset-management-with-urls-and-md5-checksums)
+    - [Model weight management](#model-weight-management)
+    - [Dataset management](#dataset-management)
 
 Axelera model zoo models are provided with default weights based on industry-standard datasets.
 This enables you to quickly and easily evaluate model accuracy on Metis compared to other
@@ -17,7 +21,7 @@ own pretrained weights, commonly referred to as *custom weights*.
 
 During model deployment, the Axelera compiler inspects images from your custom training dataset.
 This subset of images is referred to as the *calibration dataset*,
-because the compiler uses these images to determine quantisation parameters automatically.
+because the compiler uses these images to determine quantization parameters automatically.
 Post-deployment accuracy is then measured in the usual way using your validation dataset.
 
 Deploying custom weights on Metis is usually as simple as modifying an existing YAML file and
@@ -47,13 +51,6 @@ The first step to deploy your custom weights is to locate the model zoo YAML fil
 for your model (based on industry-standard weights) and copy this from a location
 in `ax_models/zoo` to `customers`.
 
-For this example, first we must install the ultralytics python module.
-
-```bash
-pip install --upgrade pip
-pip install ultralytics
-```
-
 To create a new project based on YOLOv8n, run the following commands from the root
 of the repository:
 
@@ -65,13 +62,13 @@ cp ax_models/zoo/yolo/object_detection/yolov8n-coco.yaml customers/mymodels/yolo
 To download the pretrained weights, run the following command:
 
 ```bash
-wget -P customers/mymodels https://d1o2y3tc25j7ge.cloudfront.net/artifacts/model_cards/weights/yolo/object_detection/yolov8n_licenseplate.pt
+wget -P customers/mymodels https://media.axelera.ai/artifacts/model_cards/weights/yolo/object_detection/yolov8n_licenseplate.pt
 ```
 
 To download and unzip the dataset, run the following commands:
 
 ```bash
-wget -P data https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/licenseplate_v4_resized640_aug3x-ACCURATE.zip
+wget -P data https://media.axelera.ai/artifacts/data/licenseplate_v4_resized640_aug3x-ACCURATE.zip
 unzip -q data/licenseplate_v4_resized640_aug3x-ACCURATE.zip -d data/licenseplate_v4_resized640_aug3x-ACCURATE
 ```
 
@@ -82,6 +79,10 @@ the example below.
 name: yolov8n-licenseplate
 
 description: A custom YOLOv8n model trained on a licenseplate dataset
+
+model-env:
+  dependencies:
+    - ultralytics
 
 pipeline:
   - YOLOv8n-licenseplate:
@@ -94,7 +95,7 @@ pipeline:
             nms_class_agnostic: False
             nms_top_k: 300
             eval:
-               conf_threshold: 0.9     # overwrites above parameter during accuracy measurements
+               conf_threshold: 0.001     # overwrites above parameter during accuracy measurements
 
 models:
   YOLOv8n-licenseplate:
@@ -103,20 +104,20 @@ models:
     weight_path: $AXELERA_FRAMEWORK/customers/mymodels/yolov8n_licenseplate.pt  # pretrained weights file
     task_category: ObjectDetection
     input_tensor_layout: NCHW
-    input_tensor_shape: [1, 3, 640, 640]                                         # your model input size
+    input_tensor_shape: [1, 3, 640, 640]                                        # your model input size
     input_color_format: RGB
-    num_classes: 1                                                               # the number of classes in your dataset
+    num_classes: 1                                                              # the number of classes in your dataset
     dataset: licenseplate
 
 datasets:
   licenseplate:
-    class: ObjDataAdaptor
+    class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: licenseplate_v4_resized640_aug3x-ACCURATE
     label_type: YOLOv8
     labels: data.yaml
-    cal_data: valid
-    val_data: test
+    cal_data: val.txt     # Text file with image paths or directory like `valid`
+    val_data: test.txt    # Text file with image paths or directory like `test`
 ```
 
 The YAML file contains five top-level sections:
@@ -125,6 +126,7 @@ The YAML file contains five top-level sections:
 | :---- | :---------- |
 | `name` | A unique name. The Axelera model zoo convention is to specify the model name followed by a dash followed by the dataset name e.g. `yolov8n-licenseplate` |
 | `description` | A user-friendly description |
+| `model-env` | Optional section specifying model-specific dependencies that are auto-installed during deployment but isolated from SDK dependencies. |
 | `pipeline` | An end-to-end pipeline description including image preprocessing, model and post-processing. The model names in this section must reference models declared in the `models` section |
 | `models` | List of models used in the pipeline, in this case a single `YOLOv8n-licenseplate` model and its configuration parameters |
 | `datasets` | List of datasets associated with the models, in this case a single `licenseplate` model (referenced in the `dataset` field of `YOLOv8n-licenseplate`) |
@@ -132,6 +134,14 @@ The YAML file contains five top-level sections:
 There is usually no need to modify `pipeline` settings when changing only the weights. The YOLO
 decoder has a number of configuration properties that can be fine tuned later when running the
 model using `inference.py` or the application-integration APIs.
+
+Modifying parameters like `conf_threshold` can be useful for specific use cases. In the YAML pipeline, the top-level `conf_threshold` (e.g., 0.25) applies to general inference with `inference.py` on media input. However, the `eval` section’s `conf_threshold` (e.g., 0.001) takes over during evaluation (e.g., `inference.py <model> dataset`) to measure performance. Evaluation often uses a lower threshold, like `0.001` in YOLO, for broader detection, while real-world scenarios may require testing higher values (e.g., `0.25`) to optimize precision and recall. Here’s an example of how this might look in the YAML configuration:
+
+```yaml
+conf_threshold: 0.25
+eval:
+  conf_threshold: 0.001
+```
 
 ### Model definition
 
@@ -165,10 +175,10 @@ configured dataset in the `AxTaskMeta` format used by the Voyager tools.
 | `class` | The name of a Voyager data adapter class. For this example, set to `ObjDataAdapter` |
 | `class_path` | Absolute path to a Python file containing the above class definition. For this example, set to [`/ax_datasets/objdataadapter.py`](/ax_datasets/objdataadapter.py) |
 | `data_dir_name` | The name of the dataset directory, which is specified relative to a *data root*. The default data root is the Voyager repository `data` directory, and this can be changed when running the Voyager tools by setting the command-line option `--data-root` |
-| `label_type` | The label annotation format. Supported formats include `YOLOv8` and `COCO JSON` |
+| `label_type` | The label annotation format. Supported formats include `YOLOv8` and `COCO JSON` for custom datasets, both widely recognized as industry-standard labeling formats, and `COCO2017` and `COCO2014` for the official COCO 2017 and 2014 datasets. |
 | `labels` | The name of the labels file, specified relative to `data_dir_name`. If your labels file is maintained elsewhere, use `labels_path` to provide an absolute path instead |
-| `cal_data` | A text file, specified relative to `data_dir_name`, which contains a list of image paths used by the compiler during calibration. The list of images is also specified relative to `data_dir_name` |
-| `val_data` | A text file, specified relative to `data_dir_name`, which contains a list of image paths used to measure end-to-end accuracy of the deployed model. The list of images is also specified relative to `data_dir_name` |
+| `cal_data` | Calibration data. For `label_type: YOLOv8`, a text file (e.g., `val.txt`) with image paths or a directory (e.g., `valid`) with labels and images subdirs, relative to `data_dir_name`. For `label_type: COCO JSON`, a COCO JSON file (e.g., `val.json`) relative to `data_dir_name`. |
+| `val_data` | Validation data for end-to-end accuracy. For `label_type: YOLOv8`, a text file (e.g., `test.txt`) with image paths or a directory (e.g., `test`) with labels and images subdirs, relative to `data_dir_name`. For `label_type: COCO JSON`, a COCO JSON file (e.g., `test.json`) relative to `data_dir_name`. |
 | `repr_imgs_dir_path` | Absolute path to a directory containing a set of representative images. Can be specified instead of `cal_data` |
 
 The Axelera data adapter `ObjDataAdapter` is a flexible generic adapter that can be
@@ -179,25 +189,66 @@ metadata ensures that the dataset can be used with any model with the same task 
 and with any of the Axelera evaluation libraries for calculating related metrics, such as
 mean average precision (mAP).
 
-This example uses the YOLOv8 label format, in which a YAML file (`labels: data.yaml`) contains
-an ordered list of class names, the first representing a detection with class zero, the second with
-class one, and so on. If this data is not provided, detections will still be displayed but only
+This example uses the YOLOv8 label format. Class names can be defined in two ways:
+
+1. **YAML File**: A YAML file (e.g., `labels: data.yaml`) specifies an ordered list of class names. Examples:
+
+```yaml
+names: ['License_Plate']          # List format: class 0 is "License_Plate"
+```
+Or:
+```yaml
+names: 
+  0: License_Plate               # Dictionary format: class 0 is "License_Plate"
+```
+
+The first entry corresponds to class 0, the second to class 1, and so on.
+
+2. **Names File**: A text file (e.g., `labels: labels.names`) lists class names, one per line. Example:
+
+```text
+License_Plate                    # Class 0
+```
+
+Each line maps to a class ID in order (first line = class 0, second = class 1, etc.).
+If no class name data is provided, detections are displayed as integer class IDs (e.g., 0, 1, etc.) instead of names. If `labels` is not provided, detections will still be displayed but only
 as class id integer numbers.
 
+
 > [!CAUTION]
-> Ensure the field `download_year` is removed from your YAML otherwise the data adapter
+> Ensure the field `label_type` is set to `YOLOv8` or `COCO JSON` in your YAML otherwise the data adapter
 > will default to using the default COCO 2017 dataset instead.
 
 The field `cal_data` points to the calibration dataset, and the field `val_data` points to the validation
 dataset. In this example, the corresponding field values `valid` and `text` are defined in `data.yaml`
 as text files each providing a list of images. In most cases you should set the calibration dataset to be
 your training or validation dataset, and the compiler will select a randomly-shuffled subset of images
-automatically during quantisation.
+automatically during quantization.
 
 > [!TIP]
 > As an alternative to specifying `cal_data` you can specify `repr_imgs_dir_path` as a path to a
 > directory containing a set of representative images. The calibration dataset should contain
 > between 200-400 images.
+
+### Model env definition
+
+The `model-env` section allows you to specify Python packages required specifically for your model implementation:
+
+```yaml
+model-env:
+  dependencies:
+    - ultralytics
+```
+
+These dependencies are automatically installed during deployment without requiring manual pip install commands. You can specify exact versions using standard pip syntax:
+
+```yaml
+dependencies:
+  - ultralytics==8.0.12
+```
+
+This approach keeps model-specific dependencies separate from SDK dependencies, ensuring cleaner deployment. When needed, you can specify exact package versions (e.g., those used during training) to maintain consistency between environments, though this is optional for many cases.
+
 
 ### Use the Voyager SDK to deploy your new model
 
@@ -226,14 +277,14 @@ You can easily deploy YOLO models that have been
 It is easiest to use the Ultralytics command-line export tool, for example:
 
 ```bash
-yolo export model=yolov8n_licenseplate.pt format=onnx opset=14
+yolo export model=yolov8n_licenseplate.pt format=onnx opset=17
 
 ```
 
 > [!NOTE]
-> The Axelera compiler defaults to [ONNX opset14](/docs/reference/onnx-opset14-support.md).
+> The Axelera compiler defaults to [ONNX opset17](/docs/reference/onnx-opset17-support.md).
 
-default supports opset 14 (not all operators fully supports opset 14 and  model zoo YOLO model has been fully verified using only opsets 14-17.
+default supports opset 17 (not all operators fully supports opset 17 and  model zoo YOLO model has been fully verified using only opsets 14-17.
 
 To create a new project based on this ONNX model, copy the file `yolov8n-licenseplate.yaml`
 (defined in the previous section) to a new file `yolov8n-licenseplate-onnx.yaml` and update
@@ -275,7 +326,7 @@ cp ax_models/zoo/torchvision/classification/resnet50-imagenet.yaml customers/mym
 Open the new file `resnet50-mydataset.yaml` in an editor and modify it so it looks similar to
 the example below.
 
-```bash
+```yaml
 name: resnet50-mydataset
 
 description: A custom ResNet-50 model trained on mydataset
@@ -337,8 +388,62 @@ labelling format.
 | Data adapter class | Task category | Description | YAML fields |
 | :----------------- | :------------ | :---------- | :---------- |
 | [TorchvisionDataAdapter](/ax_datasets/torchvision.py) | `Classification` | Axelera generic data loader for classifier models based on torchvision. Provides built-in support for many torchvision datasets such as ImageNet, MNIST, LFWPairs, LFWPeople and CalTech101 | [reference](/docs/reference/adapters.md#torchvisiondataadapter) |
-| [ObjDataAdapter](/ax_datasets/objdataadapter.py) | `ObjectDetection` | Axelera generic data loader with multi-format label support. Provides built-in support for [COCO 2014 and 2017 datasets](https://cocodataset.org) | [reference](/docs/reference/adapters.md#objdataadaptor) |
+| [ObjDataAdapter](/ax_datasets/objdataadapter.py) | `ObjectDetection` | Axelera generic data loader with multi-format label support. Provides built-in support for [COCO 2014 and 2017 datasets](https://cocodataset.org) | [reference](/docs/reference/adapters.md#objdataadapter) |
 | [KptDataAdapter](/ax_datasets/objdataadapter.py) | `KeypointDetection` | Axelera data loader for YOLO keypoints. Provides built-in support for [COCO 2017 dataset](https://cocodataset.org) | [reference](/docs/reference/adapters.md#kptdataadapter) |
 | [SegDataAdapter](/ax_datasets/objdataadapter.py) | `InstanceSegmentation` | Axelera data loader for YOLO segmentation. Provides built-in support for [COCO 2017 dataset](https://cocodataset.org) | [reference](/docs/reference/adapters.md#segdataadapter) |
 
 If your cannot use any of these data adapters for your dataset, you can instead implement your own custom data adapter.
+
+## Automatic asset management with URLs and MD5 checksums
+
+The Axelera model zoo provides mechanisms to automatically download and verify model weights and datasets. This is particularly useful for ISVs who want to distribute models to end customers without requiring manual asset management.
+
+### Model weight management
+
+When defining a model in your YAML file, you can include `weight_url` and `weight_md5` fields:
+
+```yaml
+    models:
+      YOLOv8n-custom:
+        weight_path: weights/yolov8n_custom.onnx
+        weight_url: https://example.com/path/to/yolov8n_custom.onnx
+        weight_md5: 292190cdc6452001c1d1d26c46ecf88b
+```
+
+With this configuration:
+
+1. The system will first check if the file exists at the specified `weight_path`
+2. If the file exists, it verifies the MD5 checksum matches the provided `weight_md5`
+3. If the file doesn't exist or the MD5 doesn't match, it downloads the file from `weight_url` to `~/.cache/axelera/weights/yolov8n_custom.onnx`
+
+> [!IMPORTANT]
+> If you're using your own custom weights, make sure to remove the `weight_url` and `weight_md5` fields from your YAML file to prevent automatic downloads that might overwrite your custom weights.
+
+### Dataset management
+
+Similarly, datasets can be automatically downloaded and extracted using the following fields:
+
+```yaml
+    datasets:
+      custom_dataset:
+        data_dir_name: custom_dataset
+        dataset_url: https://example.com/path/to/custom_dataset.zip
+        dataset_md5: 92a3905a986b28a33bb66b0b17184d16  # optional
+        dataset_drop_dirs: 0  # controls directory structure after extraction
+```
+
+When these fields are present:
+
+1. The system will download the dataset archive from `dataset_url` if it doesn't exist locally
+2. If `dataset_md5` is provided, it verifies the checksum
+3. The archive is extracted to `data_root/custom_dataset/`
+4. The `dataset_drop_dirs` parameter controls how many directory levels to remove during extraction:
+   - `0` (default): Preserves the original directory structure
+   - `1`: Removes one level of directories from the archive
+
+For example, with a ZIP file containing `dataset/train/` and `dataset/val/`:
+- With `dataset_drop_dirs: 0`: Files extract to `data_root/custom_dataset/dataset/train/` and `data_root/custom_dataset/dataset/val/`
+- With `dataset_drop_dirs: 1`: Files extract to `data_root/custom_dataset/train/` and `data_root/custom_dataset/val/`
+
+> [!TIP]
+> The `weight_path` field supports absolute paths and paths with `~/` for home directory expansion, giving you flexibility in where you store your model weights.

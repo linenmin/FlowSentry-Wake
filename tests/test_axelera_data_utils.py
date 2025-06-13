@@ -287,7 +287,7 @@ def test_dataset_download_scenarios(
             assert "not found in configuration" in str(exc_info.value)
             return
 
-        if s3_available == '0':
+        if s3_available == '0' and is_private:
             with pytest.raises(RuntimeError) as exc_info:
                 check_and_download_dataset(dataset_name, tmp_path, is_private=is_private)
             assert "Please follow the hint to download the dataset." in str(exc_info.value)

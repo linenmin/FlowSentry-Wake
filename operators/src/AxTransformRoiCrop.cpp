@@ -6,7 +6,7 @@
 #include "AxMetaBBox.hpp"
 #include "AxUtils.hpp"
 
-struct croproi_properties {
+struct roicrop_properties {
   std::string meta_key;
 };
 
@@ -23,19 +23,19 @@ extern "C" std::shared_ptr<void>
 init_and_set_static_properties(
     const std::unordered_map<std::string, std::string> &input, Ax::Logger &logger)
 {
-  auto prop = std::make_shared<croproi_properties>();
-  prop->meta_key = Ax::get_property(input, "meta_key", "croproi_properties", prop->meta_key);
+  auto prop = std::make_shared<roicrop_properties>();
+  prop->meta_key = Ax::get_property(input, "meta_key", "roicrop_properties", prop->meta_key);
   return prop;
 }
 
 extern "C" AxDataInterface
 set_output_interface_from_meta(const AxDataInterface &interface,
-    const croproi_properties *prop, unsigned int subframe_index, unsigned int number_of_subframes,
+    const roicrop_properties *prop, unsigned int subframe_index, unsigned int number_of_subframes,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map,
     Ax::Logger &logger)
 {
   if (!std::holds_alternative<AxVideoInterface>(interface)) {
-    throw std::runtime_error("croproi works on video input only");
+    throw std::runtime_error("roicrop works on video input only");
   }
   AxDataInterface output = interface;
   auto &out_info = std::get<AxVideoInterface>(output).info;
@@ -43,31 +43,41 @@ set_output_interface_from_meta(const AxDataInterface &interface,
   auto input = std::get<AxVideoInterface>(interface);
 
   if (!prop->meta_key.empty()) {
-    AxMetaBbox *box_meta
-        = dynamic_cast<AxMetaBbox *>(meta_map.at(prop->meta_key).get());
-    if (box_meta == nullptr) {
-      logger(AX_ERROR) << "croproi has not been provided with AxMetaBbox" << std::endl;
-      throw std::runtime_error("croproi has not been provided with AxMetaBbox");
+    if (number_of_subframes == 0) {
+      //  This is a gap frame, so we create a fake bounding box to push this
+      //  through inference. The decoder will ignore
+      out_info.width = 16;
+      out_info.height = 16;
+      out_info.x_offset = 0;
+      out_info.y_offset = 0;
+      out_info.cropped = true;
+    } else {
+      auto meta = meta_map.find(prop->meta_key);
+      if (meta == meta_map.end()) {
+        logger.throw_error("roicrop: meta_key " + prop->meta_key + " not found in meta map");
+      }
+      AxMetaBbox *box_meta
+          = dynamic_cast<AxMetaBbox *>(meta_map.at(prop->meta_key).get());
+      if (!box_meta) {
+        logger.throw_error("roicrop has not been provided with AxMetaBbox");
+      }
+      if (number_of_subframes <= subframe_index) {
+        logger.throw_error("roicrop subframe index must be less than number of subframes");
+      }
+      const auto &[x1, y1, x2, y2] = box_meta->get_box_xyxy(subframe_index);
+      out_info.width = 1 + x2 - x1;
+      out_info.height = 1 + y2 - y1;
+      out_info.x_offset = x1;
+      out_info.y_offset = y1;
+      out_info.cropped = true;
     }
-    if (number_of_subframes <= subframe_index) {
-      logger(AX_ERROR)
-          << "Subframe index must be less than number of subframes" << std::endl;
-      throw std::runtime_error("Subframe index must be less than number of subframes");
-    }
-
-    const auto &[x1, y1, x2, y2] = box_meta->get_box_xyxy(subframe_index);
-    out_info.width = 1 + x2 - x1;
-    out_info.height = 1 + y2 - y1;
-    out_info.x_offset = x1;
-    out_info.y_offset = y1;
-    out_info.cropped = true;
   }
   return output;
 }
 
 extern "C" void
 transform(const AxDataInterface &input, const AxDataInterface &output,
-    const croproi_properties *prop, unsigned int subframe_index, unsigned int subframe_number,
+    const roicrop_properties *prop, unsigned int subframe_index, unsigned int subframe_number,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map, Ax::Logger &logger)
 {
   auto &input_video = std::get<AxVideoInterface>(input);
@@ -90,7 +100,7 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
 
   auto &output_video = std::get<AxVideoInterface>(output);
   if (input_video.info.format != output_video.info.format)
-    throw std::runtime_error("croproi cannot do video format conversions");
+    throw std::runtime_error("roicrop cannot do video format conversions");
 
   cv::Mat output_mat(cv::Size(output_video.info.width, output_video.info.height),
       Ax::opencv_type_u8(output_video.info.format), output_video.data,

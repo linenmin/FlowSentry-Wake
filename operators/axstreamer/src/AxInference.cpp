@@ -1,10 +1,12 @@
 // Copyright Axelera AI, 2025
 #include "AxInference.hpp"
 #include <array>
+#include <axruntime/axruntime.hpp>
 #include <chrono>
 #include <fstream>
 #include <map>
 #include <queue>
+#include <regex>
 #include <string>
 #include "AxStreamerUtils.hpp"
 
@@ -16,7 +18,7 @@ namespace
 constexpr std::array<uint32_t, 256>
 init_crc_table()
 {
-  std::array<uint32_t, 256> table;
+  std::array<uint32_t, 256> table{};
   for (uint32_t i = 0; i < 256; ++i) {
     uint32_t crc = i;
     for (uint32_t j = 0; j < 8; ++j) {
@@ -243,37 +245,133 @@ parse_options(Ax::Logger &logger, const std::string &options)
   return m;
 }
 
+
 std::unique_ptr<Ax::Inference>
-create_single_inference(Ax::Logger &logger, const Ax::InferenceProperties &props)
+maybe_create_mock_inference(Ax::Logger &logger, const Ax::InferenceProperties &props)
 {
   auto opts = parse_options(logger, props.options);
-  if (opts.contains("mock-load")) {
-    const auto path = opts["mock-load"];
-    auto shapes = opts["mock-shapes"];
-    if (shapes.empty()) {
-      std::ifstream file(path + "/shapes.txt");
-      std::getline(file, shapes);
-    }
-    const auto fps = std::stoi(opts.contains("mock-fps") ? opts["mock-fps"] : "500");
-    return std::make_unique<MockInference>(logger, path, shapes, fps);
+  if (!opts.contains("mock-load")) {
+    return {};
+  }
+  const auto path = opts["mock-load"];
+  auto shapes = opts["mock-shapes"];
+  if (shapes.empty()) {
+    std::ifstream file(path + "/shapes.txt");
+    std::getline(file, shapes);
+  }
+  const auto fps = std::stoi(opts.contains("mock-fps") ? opts["mock-fps"] : "500");
+  return std::make_unique<MockInference>(logger, path, shapes, fps);
+}
+
+std::unique_ptr<Ax::Inference>
+create_single_inference(Ax::Logger &logger, axrContext *ctx, axrModel *model,
+    const Ax::InferenceProperties &props)
+{
+  auto opts = parse_options(logger, props.options);
+  auto mock = maybe_create_mock_inference(logger, props);
+  if (mock) {
+    return mock;
   }
   if (opts.contains("mock-save")) {
     const auto path = opts["mock-save"];
     auto subprops = props;
     subprops.options.clear(); // strip any mock options
-    auto inf = create_single_inference(logger, subprops);
+    auto inf = create_single_inference(logger, ctx, model, subprops);
     return std::make_unique<SaveInference>(path, std::move(inf));
   }
-  return create_axruntime_inference(logger, props);
+  return create_axruntime_inference(logger, ctx, model, props);
 }
 
+AxTensorInterface
+to_axtensorinfo(const axrTensorInfo &info)
+{
+  AxTensorInterface tensor;
+  tensor.sizes.assign(info.dims, info.dims + info.ndims);
+  tensor.bytes = info.bits / 8;
+  return tensor;
+}
+
+std::tuple<AxTensorsInterface, AxTensorsInterface>
+get_shapes_from_model(axrModel *model)
+{
+  auto inputs = axr_num_model_inputs(model);
+  AxTensorsInterface input_shapes;
+  AxTensorsInterface output_shapes;
+  for (int n = 0; n != inputs; ++n) {
+    input_shapes.push_back(to_axtensorinfo(axr_get_model_input(model, n)));
+  }
+  auto outputs = axr_num_model_outputs(model);
+  for (int n = 0; n != outputs; ++n) {
+    output_shapes.push_back(to_axtensorinfo(axr_get_model_output(model, n)));
+  }
+  return { input_shapes, output_shapes };
+}
+
+void
+log(void *arg, axrLogLevel level, const char *msg)
+{
+  auto &logger = *static_cast<Ax::Logger *>(arg);
+  const auto ax_level = static_cast<Ax::Severity>(level);
+  const auto tag = Ax::SeverityTag{ ax_level, {}, 0, {} };
+  logger(tag) << msg << std::endl;
+}
+
+// Conversion from gst debug level to axr log level
+static const axrLogLevel gst_levels[] = {
+  AXR_LOG_ERROR, // (pad with error just to make array line up with gst values)
+  AXR_LOG_ERROR, // 1=ERROR
+  AXR_LOG_WARNING, // 2=WARNING
+  AXR_LOG_FIXME, // 3=FIXME
+  AXR_LOG_INFO, // 4=INFO
+  AXR_LOG_DEBUG, // 5=DEBUG
+  AXR_LOG_LOG, // 6=LOG
+  AXR_LOG_TRACE, // 7=TRACE
+};
+
+axrLogLevel
+read_gst_debug_level(const std::string &gst_debug)
+{
+  auto level = AXR_LOG_WARNING;
+  for (auto &debug : Ax::Internal::split(gst_debug, ',')) {
+    const auto colon = debug.find(':');
+    if (colon == std::string::npos) {
+      continue;
+    }
+    // convert wildcard to regex
+    const auto expr = std::regex_replace(
+        std::string(debug.substr(0, colon)), std::regex("\\*"), ".*");
+    if (std::regex_match("axinference", std::regex(expr))) {
+      const auto nlevel = std::stoi(std::string(debug.substr(colon + 1)));
+      if (nlevel >= 0 && nlevel < std::size(gst_levels)) {
+        level = gst_levels[nlevel];
+      }
+    }
+  }
+  return level;
+}
+
+axr::ptr<axrContext>
+create_context(Ax::Logger &logger)
+{
+  auto ctx = axr::to_ptr(axr_create_context());
+  auto level = read_gst_debug_level(getenv("GST_DEBUG") ? getenv("GST_DEBUG") : "");
+  axr_set_logger(ctx.get(), level, log, &logger);
+  return ctx;
+}
 
 class MultiThreadedInference : public Ax::Inference
 {
   public:
   MultiThreadedInference(Ax::Logger &logger, const Ax::InferenceProperties &props)
-      : logger_(logger)
+      : logger_(logger), context_(create_context(logger)),
+        model_(axr_load_model(context_.get(), props.model.c_str()))
   {
+    if (!model_) {
+      throw std::runtime_error("Failed to load model: "s
+                               + axr_last_error_string(AXR_OBJECT(context_.get())));
+    }
+    std::tie(input_shapes_, output_shapes_) = get_shapes_from_model(model_.get());
+
     const auto num_threads = std::max(props.num_children, 1);
     auto devices = Ax::Internal::split(props.devices, ",");
     if (devices.empty()) {
@@ -283,32 +381,27 @@ class MultiThreadedInference : public Ax::Inference
       for (auto &&device : devices) {
         auto subprops = props;
         subprops.devices = device;
-        logger_(AX_INFO)
-            << "Creating instance " << n << " on device " << device << std::endl;
         inqs_.emplace_back(std::make_unique<Ax::BlockingQueue<Ax::InferenceParams>>());
         outqs_.emplace_back(std::make_unique<Ax::BlockingQueue<Ax::InferenceParams>>());
-        instances_.push_back(create_single_inference(logger, subprops));
+        subprops_.emplace_back(subprops);
       }
     }
-    logger_(AX_INFO) << "Done creating runtime instances, starting threads" << std::endl;
-    for (auto n = size_t{ 0 }; n != instances_.size(); ++n) {
-      threads_.emplace_back(&MultiThreadedInference::thread_func, this, n);
-    }
+    jthreads_.emplace_back(&MultiThreadedInference::thread_func, this, 0);
   }
 
   int batch_size() const override
   {
-    return instances_.front()->batch_size();
+    return input_shapes_.front().sizes[0];
   }
 
   const AxTensorsInterface &input_shapes() const override
   {
-    return instances_.front()->input_shapes();
+    return input_shapes_;
   }
 
   const AxTensorsInterface &output_shapes() const override
   {
-    return instances_.front()->output_shapes();
+    return output_shapes_;
   }
 
   void dispatch(const std::vector<std::shared_ptr<void>> &input_ptrs,
@@ -318,23 +411,23 @@ class MultiThreadedInference : public Ax::Inference
   {
     inqs_[next_available_child_]->push(
         Ax::InferenceParams(input_ptrs, input_fds, output_ptrs, output_fds));
-    next_available_child_ = (next_available_child_ + 1) % threads_.size();
+    next_available_child_ = (next_available_child_ + 1) % jthreads_.size();
   }
 
   void collect(const std::vector<std::shared_ptr<void>> &) override
   {
     outqs_[next_ready_child_]->wait_one();
-    next_ready_child_ = (next_ready_child_ + 1) % threads_.size();
+    next_ready_child_ = (next_ready_child_ + 1) % jthreads_.size();
   }
 
   ~MultiThreadedInference()
   {
     stop_queues(inqs_);
     stop_queues(outqs_);
-    for (auto &thread : threads_) {
-      thread.join();
-    }
+    jthreads_.clear();
     logger_(AX_INFO) << "Inference threads joined" << std::endl;
+    instances_.clear();
+    logger_(AX_INFO) << "Inference instances destroyed" << std::endl;
   }
 
   private:
@@ -348,6 +441,22 @@ class MultiThreadedInference : public Ax::Inference
 
   void thread_func(size_t n)
   {
+    if (n == 0) {
+      int instance_no = 0;
+      for (const auto &subprop : subprops_) {
+        logger_(AX_INFO) << "Creating instance " << instance_no++
+                         << " on device " << subprop.devices << std::endl;
+        instances_.push_back(
+            create_single_inference(logger_, context_.get(), model_.get(), subprop));
+      }
+      logger_(AX_INFO) << "Done creating runtime instances, starting extra threads"
+                       << std::endl;
+      for (auto t = size_t{ 1 }; t != instances_.size(); ++t) {
+        jthreads_.emplace_back(&MultiThreadedInference::thread_func, this, t);
+      }
+    }
+
+
     auto &tvm = *instances_[n];
     auto &inq = *inqs_[n];
     auto &outq = *outqs_[n];
@@ -364,13 +473,18 @@ class MultiThreadedInference : public Ax::Inference
     }
   }
 
+  Ax::Logger &logger_;
+  axr::ptr<axrContext> context_;
+  axr::ptr<axrModel> model_;
   std::vector<std::unique_ptr<Ax::BlockingQueue<Ax::InferenceParams>>> inqs_;
   std::vector<std::unique_ptr<Ax::BlockingQueue<Ax::InferenceParams>>> outqs_;
+  std::vector<Ax::InferenceProperties> subprops_;
   std::vector<std::unique_ptr<Ax::Inference>> instances_;
-  std::vector<std::thread> threads_;
-  Ax::Logger &logger_;
+  std::vector<std::jthread> jthreads_;
   size_t next_available_child_ = 0;
   size_t next_ready_child_ = 0;
+  AxTensorsInterface input_shapes_;
+  AxTensorsInterface output_shapes_;
 };
 } // namespace
 

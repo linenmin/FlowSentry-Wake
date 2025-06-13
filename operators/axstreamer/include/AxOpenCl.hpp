@@ -90,20 +90,31 @@ template <typename T> class cl_object
     return object;
   }
 
+  operator bool() const
+  {
+    return object != nullptr;
+  }
+
   ~cl_object()
   {
     if (object)
       release_clobject(object);
   }
 
-  private:
+  // private:
   T object;
 };
 
 class CLProgram
 {
   public:
-  explicit CLProgram(const std::string &source, Ax::Logger &logger);
+  explicit CLProgram(const std::string &source, void *display, Ax::Logger &logger);
+
+  explicit CLProgram(const std::string &source, Ax::Logger &logger)
+      : CLProgram(source, nullptr, logger)
+  {
+  }
+
 
   using ax_kernel = cl_object<cl_kernel>;
   using ax_buffer = cl_object<cl_mem>;
@@ -125,8 +136,11 @@ class CLProgram
   /// @param ptr - The data to copy into the buffer (or nullptr if it will be written later)
   ///            or a file descriptor if the buffer is to be created from a dma_buf
   /// @return A handle to the buffer
+  std::vector<ax_buffer> create_buffers(int elem_size, int num_elemes, int flags,
+      const std::variant<void *, int, VASurfaceID_proxy *> &ptr, int num_planes) const;
+
   ax_buffer create_buffer(int elem_size, int num_elemes, int flags,
-      const std::variant<void *, int> &ptr) const;
+      const std::variant<void *, int, VASurfaceID_proxy *> &ptr, int num_planes) const;
 
   /// @brief Create a buffer on the device from the description
   /// @param details - The buffer details that decide the size and type of the buffer
@@ -203,7 +217,16 @@ class CLProgram
 
   bool can_use_dmabuf() const
   {
-    return extensions.clImportMemoryARM_dmabuf != nullptr;
+    return can_import_dmabuf(extensions);
+  }
+
+  int acquireva(std::span<cl_mem> input_buffers);
+
+  int releaseva(std::span<cl_mem> input_buffers);
+
+  bool can_use_va() const
+  {
+    return can_import_va(extensions);
   }
 
   struct flush_details {
@@ -225,6 +248,9 @@ class CLProgram
   private:
   int unmap_buffer(const ax_buffer &out, void *mapped);
 
+  bool has_host_arm_import{};
+  bool has_dma_buf_arm_import{};
+
   Ax::Logger &logger;
   cl_device_id device_id{};
   cl_context context{};
@@ -234,6 +260,6 @@ class CLProgram
   static std::mutex cl_mutex;
 };
 
-const char *get_kernel_utils();
+std::string get_kernel_utils(int rotate_type = 0);
 
 } // namespace ax_utils

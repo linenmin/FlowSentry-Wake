@@ -28,6 +28,11 @@ for arg in "$@"; do
     "--verbose") set -- "$@" "-v" ;;
     "--dry-run") set -- "$@" "-n" ;;
     "--help")    set -- "$@" "-h" ;;
+    --?*)        echo Invalid option: $arg
+                 echo
+                 set -- "-h"
+                 break
+                 ;;
     "--")        _ignore="ignore"
                  set -- "$@" "$arg"
                  ;;
@@ -138,14 +143,26 @@ if $ARGL_delete; then
   volumes=$(sg "docker" "docker volume ls" | grep -E "axelera_${ARG_tag}" | awk '{print $2}')
   images=${images//$'\n'/ }
   volumes=${volumes//$'\n'/ }
-  echo "Removing Axelera Docker images and associated volumes:"
-  echo
-  sg "docker" "docker image ls" | grep -E "(^REPOSITORY|${images// /|})"
-  echo
-  sg "docker" "docker volume ls" | grep -E "(VOLUME NAME|${volumes// /|})"
+  if [[ -z "$images$volumes" ]]; then
+    echo "No Axelera Docker images or volumes found"
+    exit 0
+  fi
+  echo "Removing Axelera Docker images and/or associated volumes:"
+  if [[ -n "$images" ]]; then
+    echo
+    sg "docker" "docker image ls" | grep -E "(^REPOSITORY|${images// /|})"
+  fi
+  if [[ -n "$volumes" ]]; then
+    echo
+    sg "docker" "docker volume ls" | grep -E "(VOLUME NAME|${volumes// /|})"
+  fi
   if response_is_yes "Confirm delete?"; then
-    sg "docker" "docker image rm ${images}"
-    sg "docker" "docker volume rm ${volumes}"
+    if [[ -n "$images" ]]; then
+      sg "docker" "docker image rm ${images}"
+    fi
+    if [[ -n "$volumes" ]]; then
+      sg "docker" "docker volume rm ${volumes}"
+    fi
   fi
   exit 0
 fi
@@ -188,12 +205,6 @@ launch="$launch -v ${vol_local}:$HOME/.local"
 launch="$launch --ipc host"
 launch="$launch --env NO_AT_BRIDGE=1"
 launch="$launch --env DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix"
-
-# GPU-specific settings
-if ! streq "$VAR_installed_cuda_runtime" "$STR_not_detected"; then
-  launch="$launch --privileged"
-  launch="$launch --gpus $ARGL_ngpu"
-fi
 
 # make X11 work for ssh host
 if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then

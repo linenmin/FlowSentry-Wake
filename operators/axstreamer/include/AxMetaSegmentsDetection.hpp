@@ -8,11 +8,11 @@
 #include "AxMetaBBox.hpp"
 #include "AxMetaSegments.hpp"
 #include "AxUtils.hpp"
-
+/*
 struct SegmentShape {
   size_t width;
   size_t height;
-};
+};*/
 
 class AxMetaSegmentsDetection : public AxMetaBbox, public AxMetaSegments
 {

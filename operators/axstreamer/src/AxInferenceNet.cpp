@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,9 +22,7 @@ namespace Ax
 {
 
 struct Frame : public CompletedFrame {
-  std::shared_ptr<BatchedBuffer> inf_input;
-  SharedBatchBufferView decode_input;
-  MetaMap *meta_map = nullptr;
+  SharedBatchBufferView op_input;
   bool skip_inference = false;
   int stream_id;
   int subframe_index = 0;
@@ -54,6 +53,8 @@ class Operator
 
   virtual void downstream_supports_crop(bool) = 0;
 
+  virtual bool consumes_frames() const = 0;
+
   virtual ~Operator() = default;
 };
 
@@ -68,18 +69,29 @@ class OperatorList
   void add_operator(std::string libname, std::string options,
       std::string mode = "none", std::string batch_size = "1");
 
-  AxDataInterface compile(const AxDataInterface &input,
-      DataInterfaceAllocator &allocator, Buffers &buffers);
-
-  std::shared_ptr<BatchedBuffer> run(const AxVideoInterface &video, SharedBatchBufferView input,
-      MetaMap &meta_map, int subframe_index, int number_of_subframes);
-
-  std::shared_ptr<BatchedBuffer> flush(const AxVideoInterface &video,
-      SharedBatchBufferView input, MetaMap &meta_map);
+  AxDataInterface compile(const AxDataInterface &input, DataInterfaceAllocator &allocator,
+      std::function<void(std::unique_ptr<Frame>)> release_frame);
 
   void set_allocator(int batch_size, std::unique_ptr<DataInterfaceAllocator> &&allocator)
   {
-    params.back().op->set_allocator(batch_size, std::move(allocator));
+    operators.back()->set_allocator(batch_size, std::move(allocator));
+  }
+
+  BlockingQueue<std::unique_ptr<Ax::Frame>> &input_queue()
+  {
+    return links.front();
+  }
+
+  BlockingQueue<std::unique_ptr<Ax::Frame>> &output_queue()
+  {
+    return links.back();
+  }
+
+  void stop()
+  {
+    for (auto &q : links) {
+      q.stop();
+    }
   }
 
   void initialise()
@@ -95,11 +107,10 @@ class OperatorList
   }
 
   private:
-  std::queue<time_point> &get_element_queue(const std::string &element_name);
+  void log_throughput(const std::string &op, time_point throughput_start,
+      time_point latency_start);
 
-  void add_time(const std::string &op, time_point time);
-
-  time_point get_time(const std::string &op);
+  void operator_thread(int which, std::function<void(std::unique_ptr<Ax::Frame>)> release_frame);
 
   Logger &logger;
   LatencyCallback log_latency;
@@ -108,7 +119,8 @@ class OperatorList
     Operator *op;
   };
   std::vector<OpCallParams> params;
-  std::vector<std::pair<std::string, std::queue<time_point>>> element_queues;
+  std::vector<std::jthread> threads;
+  std::vector<BlockingQueue<std::unique_ptr<Ax::Frame>>> links;
 };
 
 class AxInferenceNet : public InferenceNet
@@ -121,20 +133,17 @@ class AxInferenceNet : public InferenceNet
       const AxVideoInterface &video, MetaMap &axmetamap, int stream_id) override;
   void stop() override;
   void end_of_input() override;
+  void cascade_frame(CompletedFrame &frame) override;
 
   private:
-  void release_frame(std::unique_ptr<Frame> &&frame);
+  void release_frame(std::unique_ptr<Frame> frame);
+  void init_frame(Ax::Frame &frame);
   std::unique_ptr<Frame> build_eos_frame(
       Frame *last_frame, int batch, std::shared_ptr<BatchedBuffer> batched);
-  bool flush_buffer(std::queue<std::unique_ptr<Frame>> &pending_frames,
-      std::shared_ptr<BatchedBuffer> &batched_input, int batch_size,
-      std::shared_ptr<BatchedBuffer> &batched_output);
-
   bool unbatch(std::queue<std::unique_ptr<Frame>> &pending_frames,
       std::shared_ptr<BatchedBuffer> out, int batch_size, int current_batch,
       const ManagedDataInterface &output);
-  std::unique_ptr<Frame> next_frame(
-      bool at_eos, const std::shared_ptr<BatchedBuffer> &last_good_input);
+  std::unique_ptr<Frame> next_frame(bool at_eos, const SharedBatchBufferView &last_good_input);
 
   struct Stream {
     std::atomic_uint64_t frame_id{ 0 };
@@ -142,22 +151,22 @@ class AxInferenceNet : public InferenceNet
     int count = 0;
   };
 
-  void preprocessing_thread(const int batch_size);
   void inference_thread(const int batch_size);
-  void postprocessing_thread(const int batch_size);
   std::unique_ptr<Frame> new_frame();
   void initialise_pipeline(const AxVideoInterface &video);
   void update_stream_latency(int which, std::chrono::microseconds latency);
   void update_frame_latency(Frame &frame, const char *label);
   void log_latency(const std::string &op, std::chrono::high_resolution_clock::time_point start);
+  void finalize_thread();
 
   const InferenceNetProperties properties;
   Logger &logger;
+  std::unique_ptr<Inference> inference;
   OperatorList pre_ops;
   OperatorList post_ops;
-  std::unique_ptr<Inference> inference;
 
-  std::vector<std::thread> threads;
+  std::vector<std::jthread> threads;
+  std::jthread push_thread;
   std::vector<std::unique_ptr<Frame>> frame_pool;
   std::mutex frame_pool_mutex;
 
@@ -168,16 +177,12 @@ class AxInferenceNet : public InferenceNet
   std::unique_ptr<DataInterfaceAllocator> allocator;
   std::unique_ptr<BatchedBufferPool> inf_input_pool;
   std::unique_ptr<BatchedBufferPool> inf_output_pool;
-  BlockingQueue<std::unique_ptr<Frame>> preq;
-  BlockingQueue<std::unique_ptr<Frame>> inferenceq;
-  BlockingQueue<std::unique_ptr<Frame>> postq;
   std::unordered_map<int, Stream> streams;
   std::once_flag compile_once_flag;
   InferenceDoneCallback done_callback;
   LatencyCallback latency_callback;
   int num_to_flush = 0;
 };
-
 
 std::unordered_map<std::string, int> plugin_names_count{};
 
@@ -192,6 +197,8 @@ make_plugin_name(std::string n)
   return name + "_" + std::to_string(count);
 }
 
+const auto empty_allowed = StringSet{};
+
 template <typename PluginType> struct AxPlugin {
 
   AxPlugin(Ax::Logger &logger, Ax::SharedLib &&shared_, std::string options,
@@ -199,15 +206,12 @@ template <typename PluginType> struct AxPlugin {
       : logger(logger), shared(std::move(shared_)),
         name_(make_plugin_name(shared.libname()))
   {
-    if (options.empty()) {
-      return;
-    }
-
     Ax::load_v1_plugin(shared, fns);
-
-    const auto &allowed_properties = fns.allowed_properties();
-    auto opts = Ax::parse_and_validate_plugin_options(logger, options, allowed_properties);
-    subplugin_data = fns.init_and_set_static_properties(opts, logger);
+    const auto &allowed = fns.allowed_properties ? fns.allowed_properties() : empty_allowed;
+    auto opts = Ax::parse_and_validate_plugin_options(logger, options, allowed);
+    if (fns.init_and_set_static_properties) {
+      subplugin_data = fns.init_and_set_static_properties(opts, logger);
+    }
     if (fns.set_dynamic_properties) {
       fns.set_dynamic_properties(opts, subplugin_data.get(), logger);
     }
@@ -256,7 +260,7 @@ class TransformOp : public Ax::Operator
   {
     if (++current_batch != batch) {
       out_buf = std::move(output_buffer);
-      return {};
+      return get_shared_view_of_batch_buffer(out_buf, 0);
     }
     current_batch = 0;
     out_buf.reset();
@@ -319,12 +323,7 @@ class TransformOp : public Ax::Operator
     (void) video;
     auto use_double_buffer = Ax::get_env("AXELERA_USE_CL_DOUBLE_BUFFER", "1");
     if (!input) {
-      //  Here we should flush any pending buffer
-      auto output = dbl_buffer.inbuffer ? finish_previous_transform({}, {}, [] {}) :
-                                          std::move(input);
-      return !output && out_buf ?
-                 get_shared_view_of_batch_buffer(std::move(out_buf), 0) :
-                 output;
+      return dbl_buffer.inbuffer ? finish_previous_transform({}, {}, [] {}) : input;
     }
     auto out = set_output_interface(*input, plugin.subplugin_data.get(), logger);
 
@@ -423,6 +422,10 @@ class TransformOp : public Ax::Operator
     downstream_supports_cropmeta = supports;
   }
 
+  bool consumes_frames() const override
+  {
+    return false;
+  }
 
   private:
   struct double_buffer_details {
@@ -497,6 +500,11 @@ class InplaceOp : public Ax::Operator
   {
   }
 
+  bool consumes_frames() const override
+  {
+    return false;
+  }
+
   private:
   AxPlugin<Ax::V1Plugin::InPlace> plugin;
   Ax::Logger &logger;
@@ -522,10 +530,12 @@ class DecodeOp : public Ax::Operator
       return input;
     }
     auto &tensor = std::get<AxTensorsInterface>(*input);
-    plugin.fns.decode_to_meta(tensor, plugin.subplugin_data.get(),
-        subframe_index, number_of_subframes, meta_map, video, logger);
     auto out = pool->new_batched_buffer(video, false);
-    return number_of_subframes == subframe_index + 1 ?
+    if (number_of_subframes != 0) {
+      plugin.fns.decode_to_meta(tensor, plugin.subplugin_data.get(),
+          subframe_index, number_of_subframes, meta_map, video, logger);
+    }
+    return number_of_subframes == 0 || number_of_subframes == subframe_index + 1 ?
                get_shared_view_of_batch_buffer(out, 0) :
                Ax::SharedBatchBufferView{};
   }
@@ -552,6 +562,11 @@ class DecodeOp : public Ax::Operator
   {
   }
 
+  bool consumes_frames() const override
+  {
+    return true;
+  }
+
   private:
   AxPlugin<Ax::V1Plugin::Decoder> plugin;
   Ax::Logger &logger;
@@ -574,82 +589,7 @@ strip_pointers(AxDataInterface in)
   return in;
 }
 
-void
-OperatorList::add_operator(std::string libname, std::string options,
-    std::string mode /*= "none"*/, std::string batch_size)
-{
-  auto batch_size_int = batch_size.empty() ? 1 : std::stoi(batch_size);
-  Ax::SharedLib shared(logger, libname);
-  if (shared.has_symbol("transform")) {
-    operators.push_back(std::make_unique<TransformOp>(logger, std::move(shared),
-        libname, options, mode, batch_size_int, create_heap_allocator()));
-  } else if (shared.has_symbol("inplace")) {
-    operators.push_back(std::make_unique<InplaceOp>(
-        logger, std::move(shared), libname, options, mode));
-  } else if (shared.has_symbol("decode_to_meta")) {
-    operators.push_back(std::make_unique<DecodeOp>(
-        logger, std::move(shared), libname, options, mode));
-  } else {
-    throw std::runtime_error("Unknown module " + libname);
-  }
-}
-
-AxDataInterface
-OperatorList::compile(const AxDataInterface &input,
-    Ax::DataInterfaceAllocator &allocator, Ax::Buffers &buffers)
-{
-  AxDataInterface in = input;
-  for (auto &op : operators) {
-    auto out = op->allocate_output(in);
-    params.push_back({ op.get() });
-    in = out;
-  }
-  return strip_pointers(in);
-}
-
-std::shared_ptr<Ax::BatchedBuffer>
-OperatorList::flush(const AxVideoInterface &video, SharedBatchBufferView input,
-    Ax::MetaMap &meta_map)
-{
-  if (params.empty()) {
-    throw std::runtime_error("No prerun performed");
-  }
-  // if we do a thread pool this is a potential problem, we need separate execution contexts
-
-  for (auto &p : params) {
-    auto out = p.op->execute(video, input, 0, 1, meta_map);
-    input = std::move(out);
-  }
-  return input.underlying();
-}
-
-using time_point = std::chrono::high_resolution_clock::time_point;
-
-std::queue<time_point> &
-OperatorList::get_element_queue(const std::string &element_name)
-{
-  auto it = std::find_if(element_queues.begin(), element_queues.end(),
-      [element_name](const auto &q) { return q.first == element_name; });
-  if (it == element_queues.end()) {
-    element_queues.push_back({ element_name, {} });
-    return element_queues.back().second;
-  }
-  return it->second;
-}
-
-void
-OperatorList::add_time(const std::string &op, time_point time)
-{
-  auto &q = get_element_queue(op);
-  q.push(time);
-}
-
-time_point
-OperatorList::get_time(const std::string &op)
-{
-  auto &q = get_element_queue(op);
-  return Ax::pop_queue(q);
-}
+using time_point = Ax::time_point;
 
 auto
 as_duration(time_point start, time_point end)
@@ -669,58 +609,119 @@ duration_since(time_point start)
   return as_duration(start, std::chrono::high_resolution_clock::now());
 }
 
-std::shared_ptr<Ax::BatchedBuffer>
-OperatorList::run(const AxVideoInterface &video, SharedBatchBufferView input,
-    Ax::MetaMap &meta_map, int subframe_index, int number_of_subframes)
+auto
+duration_since_ns(time_point start)
 {
-  if (params.empty()) {
-    throw std::runtime_error("No prerun performed");
-  }
-  // if we do a thread pool this is a potential problem, we need separate execution contexts
-
-  auto current_time = std::chrono::high_resolution_clock::now();
-  for (auto &p : params) {
-    auto out = p.op->execute(
-        video, std::move(input), subframe_index, number_of_subframes, meta_map);
-    auto element_name = p.op->name();
-    add_time(element_name, current_time);
-    auto now = std::chrono::high_resolution_clock::now();
-    auto throughput = as_duration_ns(current_time, now);
-
-    //  Put current into the queue
-    if (!out) {
-      log_latency(element_name, throughput.count(), 0);
-      return {};
-    }
-    input = std::move(out);
-    auto last_time = get_time(element_name);
-    auto latency = as_duration_ns(last_time, now);
-    log_latency(element_name, throughput.count(), latency.count());
-    current_time = now;
-  }
-  return input.underlying();
-}
-
-bool
-is_gap_frame(const Ax::Frame &frame)
-{
-  return frame.number_of_subframes == 0;
+  return as_duration_ns(start, std::chrono::high_resolution_clock::now());
 }
 
 void
-forward_gap_frames(auto &inputs, auto &outputs)
+Ax::OperatorList::operator_thread(
+    int which, std::function<void(std::unique_ptr<Ax::Frame>)> release_frame)
 {
-  while (!inputs.empty() && is_gap_frame(*inputs.front())) {
-    auto out_frame = Ax::pop_queue(inputs);
-    outputs.push(std::move(out_frame));
+  auto &input_queue = links[which];
+  auto &output_queue = links[which + 1];
+  auto &op = *operators[which];
+  auto previous_frame = std::unique_ptr<Ax::Frame>{};
+  while (true) {
+    auto frame = input_queue.wait_one();
+    if (!frame) {
+      return;
+    }
+    auto now = std::chrono::high_resolution_clock::now();
+    frame->latency_start = now;
+    static Ax::MetaMap dummy_meta_map{};
+    auto &meta_map = frame->meta_map ? *frame->meta_map : dummy_meta_map;
+    if (frame->end_of_input) {
+      //  Here we just flush any pending frames and then send on the
+      //  EOS/Gap frame
+      auto out = op.execute({}, {}, 0, 1, meta_map);
+      log_throughput(op.name(), now, frame->latency_start);
+      if (out) {
+        previous_frame->op_input = std::move(out);
+        output_queue.push({ std::move(previous_frame) });
+      }
+      frame->op_input = {};
+      output_queue.push(std::move(frame));
+    } else {
+      const auto &video = frame->video;
+      auto subframe_index = frame->subframe_index;
+      auto number_of_subframes = frame->number_of_subframes;
+      auto out = op.execute(video, std::move(frame->op_input), subframe_index,
+          number_of_subframes, meta_map);
+      log_throughput(op.name(), now, frame->latency_start);
+      if (out) {
+        if (op.consumes_frames()) {
+          //  After the decoder we can reset subframes
+          frame->subframe_index = 0;
+          frame->number_of_subframes = 1;
+        }
+        if (previous_frame) {
+          std::swap(frame, previous_frame);
+        }
+        frame->op_input = std::move(out);
+        output_queue.push({ std::move(frame) });
+      } else if (op.consumes_frames()) {
+        release_frame(std::move(frame));
+      } else {
+        previous_frame = std::move(frame);
+      }
+    }
   }
+}
+
+void
+OperatorList::add_operator(std::string libname, std::string options,
+    std::string mode /*= "none"*/, std::string batch_size)
+{
+  auto batch_size_int = batch_size.empty() ? 1 : std::stoi(batch_size);
+  Ax::SharedLib shared(logger, libname);
+  if (shared.has_symbol("transform") || shared.has_symbol("transform_async")) {
+    operators.push_back(std::make_unique<TransformOp>(logger, std::move(shared),
+        libname, options, mode, batch_size_int, create_heap_allocator()));
+  } else if (shared.has_symbol("inplace")) {
+    operators.push_back(std::make_unique<InplaceOp>(
+        logger, std::move(shared), libname, options, mode));
+  } else if (shared.has_symbol("decode_to_meta")) {
+    operators.push_back(std::make_unique<DecodeOp>(
+        logger, std::move(shared), libname, options, mode));
+  } else {
+    throw std::runtime_error("Unknown module " + libname);
+  }
+}
+
+
+AxDataInterface
+Ax::OperatorList::compile(const AxDataInterface &input, Ax::DataInterfaceAllocator &allocator,
+    std::function<void(std::unique_ptr<Ax::Frame>)> release_frame)
+{
+  auto size = operators.size();
+  std::vector<BlockingQueue<std::unique_ptr<Ax::Frame>>> queues(size + 1);
+  links = std::move(queues);
+  AxDataInterface in = input;
+  for (int i = 0; i != operators.size(); ++i) {
+    auto out = operators[i]->allocate_output(in);
+    threads.emplace_back(std::jthread(&OperatorList::operator_thread, this, i, release_frame));
+    in = out;
+  }
+  return strip_pointers(in);
+}
+
+void
+Ax::OperatorList::log_throughput(
+    const std::string &op, time_point throughput_start, time_point latency_start)
+{
+  log_latency(op, duration_since_ns(throughput_start).count(),
+      duration_since_ns(latency_start).count());
 }
 
 AxInferenceNet::AxInferenceNet(const Ax::InferenceNetProperties &properties,
     Ax::Logger &logger, InferenceDoneCallback done_callback, LatencyCallback latency_callback)
-    : properties(properties), logger(logger), pre_ops(logger, latency_callback),
-      post_ops(logger, latency_callback), allocator(create_heap_allocator()),
-      done_callback(done_callback), latency_callback(latency_callback)
+    : properties(properties), logger(logger),
+      inference(create_inference(logger, properties)),
+      pre_ops(logger, latency_callback), post_ops(logger, latency_callback),
+      allocator(create_heap_allocator()), done_callback(done_callback),
+      latency_callback(latency_callback)
 {
   logger(AX_INFO) << "InferenceNet created" << std::endl;
 }
@@ -728,82 +729,10 @@ AxInferenceNet::AxInferenceNet(const Ax::InferenceNetProperties &properties,
 void
 AxInferenceNet::update_frame_latency(Ax::Frame &frame, const char *label)
 {
-  auto now = std::chrono::high_resolution_clock::now();
-  auto start = std::exchange(frame.latency_start, now);
-  log_latency(label, start);
-}
-
-void
-AxInferenceNet::preprocessing_thread(const int batch_size)
-{
-  auto null_alloc = Ax::NullDataInterfaceAllocator();
-  auto inf_allocator = properties.dmabuf_inputs ? create_dma_buf_allocator() :
-                                                  create_heap_allocator();
-  pre_ops.set_allocator(batch_size, std::move(inf_allocator));
-  std::queue<std::unique_ptr<Ax::Frame>> inputs;
-  while (true) {
-    auto frame = preq.wait_one();
-    if (!frame) {
-      return;
-    }
-    if (!frame->end_of_input) {
-      if (is_gap_frame(*frame)) {
-        inputs.push(std::move(frame));
-        continue;
-      }
-      //  From this frame we need to build a suitable input for the pre-ops
-      AxDataInterface in{ frame->video };
-      const auto &video = frame->video;
-      Ax::MetaMap &meta_map = *frame->meta_map;
-
-      logger(AX_DEBUG) << "preproc frame:" << frame->frame_id << std::endl;
-      auto input = std::make_shared<Ax::BatchedBuffer>(1, in, null_alloc);
-      auto subframe_index = frame->subframe_index;
-      auto number_of_subframes = frame->number_of_subframes;
-      auto inf_input = pre_ops.run(video, get_shared_view_of_batch_buffer(input, 0),
-          meta_map, subframe_index, number_of_subframes);
-      inputs.push(std::move(frame));
-      if (!inf_input) {
-        //  We exitted due to one of the operators filling its doouble buffer
-        //  pipeline (or batching) So go back and get the next frame ready for processing
-        continue;
-      }
-      //  Given that we have input for inference the inputs queue must contain a full batch
-      //  frames. Set the inference input to the same for each frame and forward them
-      for (int n = 0; n != batch_size; ++n) {
-        //  Push through any gap frames
-        forward_gap_frames(inputs, inferenceq);
-        frame = Ax::pop_queue(inputs);
-        frame->inf_input = inf_input;
-        update_frame_latency(*frame, "Preprocessing latency");
-        inferenceq.push(std::move(frame));
-      }
-    } else {
-      while (!inputs.empty()) {
-        //  We need to keep pushing EOS frames through until we have flushed
-        //  all the pending buffers thoguh the pipeline
-        if (is_gap_frame(*inputs.front())) {
-          auto prev_frame = Ax::pop_queue(inputs);
-          inferenceq.push(std::move(prev_frame));
-        } else {
-          auto inf_input = pre_ops.flush({}, {}, *frame->meta_map);
-          if (inf_input) {
-            int num_frames = 0;
-            while (!inputs.empty() && num_frames != batch_size) {
-              auto prev_frame = Ax::pop_queue(inputs);
-              if (is_gap_frame(*prev_frame)) {
-                inferenceq.push(std::move(prev_frame));
-                continue;
-              }
-              prev_frame->inf_input = inf_input;
-              inferenceq.push(std::move(prev_frame));
-              ++num_frames;
-            }
-          }
-        }
-      }
-      inferenceq.push(std::move(frame));
-    }
+  if (!frame.end_of_input) {
+    auto now = std::chrono::high_resolution_clock::now();
+    auto start = std::exchange(frame.latency_start, now);
+    log_latency(label, start);
   }
 }
 
@@ -818,15 +747,12 @@ AxInferenceNet::unbatch(std::queue<std::unique_ptr<Frame>> &pending_frames,
   auto num_frames = current_batch != 0 ? current_batch : batch_size;
   for (int n = 0; n != num_frames && !eos;) {
     auto out_frame = Ax::pop_queue(pending_frames);
-    if (!is_gap_frame(*out_frame)) {
-      out_frame->decode_input = get_shared_view_of_batch_buffer(out, n++);
-      eos = out_frame->end_of_input;
-    }
+    out_frame->op_input = get_shared_view_of_batch_buffer(out, n++);
+    eos = out_frame->end_of_input;
     update_frame_latency(*out_frame, "Inference latency");
-    postq.push(std::move(out_frame));
+    post_ops.input_queue().push(std::move(out_frame));
   }
   //  Push any following gap frames
-  forward_gap_frames(pending_frames, postq);
   return eos;
 }
 
@@ -840,19 +766,19 @@ struct params {
 //  of the end Of the queue. It will then block until the queue terminates.
 //
 std::unique_ptr<Ax::Frame>
-AxInferenceNet::next_frame(bool at_eos, const std::shared_ptr<BatchedBuffer> &last_good_input)
+AxInferenceNet::next_frame(bool at_eos, const Ax::SharedBatchBufferView &last_good_input)
 {
   if (at_eos && num_to_flush != 0) {
     --num_to_flush;
     auto fr = new_frame();
-    fr->inf_input = last_good_input;
+    fr->op_input = last_good_input;
     fr->end_of_input = num_to_flush == 0;
     fr->frame_id = -2;
     fr->timestamp = std::chrono::high_resolution_clock::now();
     fr->latency_start = std::chrono::high_resolution_clock::now();
     return fr;
   }
-  auto frame = inferenceq.wait_one();
+  auto frame = pre_ops.output_queue().wait_one();
   return frame;
 }
 
@@ -875,10 +801,11 @@ AxInferenceNet::inference_thread(const int batch_size)
   auto pre_fill = pipeline_pre_fill(properties);
   bool at_eos = false;
   auto this_batched_input = inf_input_pool->new_batched_buffer(false);
+  auto last_good_input = get_shared_view_of_batch_buffer(this_batched_input, 0);
   int current_batch = 0;
   while (true) {
     auto current = std::chrono::high_resolution_clock::now();
-    auto frame = next_frame(at_eos, this_batched_input);
+    auto frame = next_frame(at_eos, last_good_input);
     if (!frame) {
       return;
     }
@@ -892,33 +819,27 @@ AxInferenceNet::inference_thread(const int batch_size)
       }
       if (current_batch != 0) {
         //  We do not have a complete batch so we need to seend wahtever frames are leftover
-        auto [inf_input, inf_output] = Ax::pop_queue(pending_params);
+        auto [op_input, inf_output] = Ax::pop_queue(pending_params);
         inf_output->map();
         inference->collect({});
         auto eos = unbatch(pending_frames, inf_output, batch_size,
             current_batch, inf_output->get_batched(false));
       }
-      postq.push(std::move(frame));
-      log_latency("inference", current);
-      continue;
-    }
-    if (is_gap_frame(*frame)) {
-      pending_frames.push(std::move(frame));
+      post_ops.input_queue().push(std::move(frame));
       log_latency("inference", current);
       continue;
     }
     if (current_batch == 0) {
       //  We use the inpput from the first frane of the batch
-      this_batched_input = frame->inf_input;
+      last_good_input = frame->op_input;
     }
-    auto batched_input = this_batched_input;
+    auto batched_input = last_good_input.underlying();
     pending_frames.push(std::move(frame));
     if (++current_batch != batched_input->batch_size()) {
       log_latency("inference", current);
       continue;
     }
     current_batch = 0;
-    forward_gap_frames(pending_frames, postq);
     auto batched_output = inf_output_pool->new_batched_buffer(false);
     const auto &input = batched_input->get_batched(properties.dmabuf_inputs);
     const auto &output = batched_output->get_batched(properties.dmabuf_outputs);
@@ -930,7 +851,7 @@ AxInferenceNet::inference_thread(const int batch_size)
       continue;
     }
 
-    auto [inf_input, inf_output] = Ax::pop_queue(pending_params);
+    auto [op_input, inf_output] = Ax::pop_queue(pending_params);
     if (num_to_drop) {
       --num_to_drop;
       inference->collect(inf_output->get_batched(false).buffers());
@@ -951,12 +872,6 @@ AxInferenceNet::inference_thread(const int batch_size)
   }
 }
 
-bool
-is_final_frame(const Ax::Frame &frame)
-{
-  return frame.number_of_subframes == frame.subframe_index + 1;
-}
-
 void
 AxInferenceNet::update_stream_latency(int which, std::chrono::microseconds latency)
 {
@@ -965,55 +880,19 @@ AxInferenceNet::update_stream_latency(int which, std::chrono::microseconds laten
 }
 
 void
-AxInferenceNet::postprocessing_thread(const int batch_size)
+AxInferenceNet::finalize_thread()
 {
-  std::queue<std::unique_ptr<Ax::Frame>> inputs;
-
   while (true) {
-    auto frame = postq.wait_one();
+    auto frame = post_ops.output_queue().wait_one();
     if (!frame) {
       return;
-    }
-    if (!frame->end_of_input) {
-      if (is_gap_frame(*frame)) {
-        inputs.push(std::move(frame));
-      } else if (frame->decode_input) {
-        Ax::MetaMap &meta_map = *frame->meta_map;
-        const auto &video = frame->video;
-        auto input = std::exchange(frame->decode_input, {});
-        auto subframe_index = frame->subframe_index;
-        auto number_of_subframes = frame->number_of_subframes;
-
-        if (is_final_frame(*frame)) {
-          inputs.push(std::move(frame));
-        }
-        if (!post_ops.run(video, input, meta_map, subframe_index, number_of_subframes)) {
-          //  We exitted due to one of the operators filling its doouble buffer
-          //  pipeline, batching or the frame being consumed by the decoder
-          continue;
-        }
-      } else {
-        logger(AX_INFO) << "post skip :" << frame->frame_id << std::endl;
-      }
-      frame = Ax::pop_queue(inputs);
-    } else {
-      Ax::MetaMap meta_map;
-      while (!inputs.empty()) {
-        auto out = post_ops.flush({}, {}, meta_map);
-        if (out) {
-          auto prev_frame = Ax::pop_queue(inputs);
-          frame->subframe_index = 0;
-          frame->number_of_subframes = 1;
-          done_callback(*prev_frame);
-          update_stream_latency(prev_frame->stream_id, duration_since(prev_frame->timestamp));
-          release_frame(std::move(prev_frame));
-        }
-      }
     }
     frame->subframe_index = 0;
     frame->number_of_subframes = 1;
     update_frame_latency(*frame, "Postprocessing latency");
-    log_latency("Total latency", frame->timestamp);
+    if (!frame->end_of_input) {
+      log_latency("Total latency", frame->timestamp);
+    }
     done_callback(*frame);
     update_stream_latency(frame->stream_id, duration_since(frame->timestamp));
     release_frame(std::move(frame));
@@ -1023,14 +902,9 @@ AxInferenceNet::postprocessing_thread(const int batch_size)
 void
 AxInferenceNet::stop()
 {
-  preq.stop();
-  inferenceq.stop();
-  postq.stop();
-  for (auto &thread : threads) {
-    if (thread.joinable()) {
-      thread.join();
-    }
-  }
+  pre_ops.stop();
+  post_ops.stop();
+  threads.clear();
 }
 
 std::unique_ptr<Ax::Frame>
@@ -1046,18 +920,39 @@ AxInferenceNet::new_frame()
 }
 
 void
-AxInferenceNet::release_frame(std::unique_ptr<Frame> &&frame)
+AxInferenceNet::release_frame(std::unique_ptr<Frame> frame)
 {
   frame->stream_id = 0;
   frame->frame_id = 0;
   frame->buffer_handle.reset();
   frame->video.data = nullptr;
   frame->meta_map = nullptr;
-  frame->inf_input.reset();
-  frame->decode_input.reset();
+  frame->op_input.reset();
   frame->end_of_input = false;
   std::unique_lock<std::mutex> lock(frame_pool_mutex);
   frame_pool.push_back(std::move(frame));
+}
+
+void
+AxInferenceNet::init_frame(Ax::Frame &frame)
+{
+  AxDataInterface in{ frame.video };
+  auto null_alloc = Ax::NullDataInterfaceAllocator();
+  auto input = std::make_shared<Ax::BatchedBuffer>(1, in, null_alloc);
+  frame.op_input = get_shared_view_of_batch_buffer(input, 0);
+}
+
+static size_t
+get_number_of_subframes(const MetaMap &axmetamap, const std::string &meta_to_distribute)
+{
+  if (!meta_to_distribute.empty()) {
+    auto meta = axmetamap.find(meta_to_distribute);
+    if (meta == axmetamap.end()) {
+      throw std::runtime_error("Meta " + meta_to_distribute + " not found, cannot distribute");
+    }
+    return meta->second->get_number_of_subframes();
+  }
+  return 1;
 }
 
 void
@@ -1082,36 +977,38 @@ AxInferenceNet::push_new_frame(std::shared_ptr<void> &&buffer_handle,
   frame->end_of_input = false;
   frame->timestamp = std::chrono::high_resolution_clock::now();
   frame->latency_start = std::chrono::high_resolution_clock::now();
-  auto meta_to_distribute = properties.meta;
-  const auto num = meta_to_distribute.empty() ?
-                       1 :
-                       axmetamap.at(meta_to_distribute)->get_number_of_subframes();
-  if (num == 0) {
-    //  This is a gap frame, it needs to flow through the pipeline but does
-    //  not take part in preprocessing, inference or postprocessing
-    frame->subframe_index = 0;
-    frame->number_of_subframes = 0;
-    preq.push(std::move(frame));
-  } else {
-    //  It is one or more subframes
-    frame->subframe_index = 0;
-    frame->number_of_subframes = num;
-    preq.push(std::move(frame));
-    for (int n = 1; n != num; ++n) {
-      auto subframe = new_frame();
-      subframe->buffer_handle = buffer_handle;
-      subframe->video = video;
-      subframe->meta_map = &axmetamap;
-      subframe->stream_id = stream_id;
-      subframe->frame_id = frame_id;
-      subframe->subframe_index = n;
-      subframe->number_of_subframes = num;
-      subframe->end_of_input = false;
-      subframe->timestamp = std::chrono::high_resolution_clock::now();
-      subframe->latency_start = std::chrono::high_resolution_clock::now();
+  auto &preq = pre_ops.input_queue();
+  const auto num = get_number_of_subframes(axmetamap, properties.meta);
+  //  It is one or more subframes
+  frame->subframe_index = 0;
+  frame->number_of_subframes = num;
+  init_frame(*frame);
+  preq.push(std::move(frame));
+  for (int n = 1; n < num; ++n) {
+    auto subframe = new_frame();
+    subframe->buffer_handle = buffer_handle;
+    subframe->video = video;
+    subframe->meta_map = &axmetamap;
+    subframe->stream_id = stream_id;
+    subframe->frame_id = frame_id;
+    subframe->subframe_index = n;
+    subframe->number_of_subframes = num;
+    subframe->end_of_input = false;
+    subframe->timestamp = std::chrono::high_resolution_clock::now();
+    subframe->latency_start = std::chrono::high_resolution_clock::now();
+    init_frame(*subframe);
+    preq.push(std::move(subframe));
+  }
+}
 
-      preq.push(std::move(subframe));
-    }
+void
+AxInferenceNet::cascade_frame(CompletedFrame &frame)
+{
+  if (frame.end_of_input) {
+    end_of_input();
+  } else {
+    push_new_frame(std::move(frame.buffer_handle), frame.video, *frame.meta_map,
+        frame.stream_id);
   }
 }
 
@@ -1129,10 +1026,13 @@ AxInferenceNet::initialise_pipeline(const AxVideoInterface &video)
   };
 
   compile_list(properties.preproc, pre_ops);
-  inference = create_inference(logger, properties);
   compile_list(properties.postproc, post_ops);
   ManagedDataInterfaces buffers;
-  auto inf_input_template = pre_ops.compile(video, *allocator, buffers);
+  auto releaser = std::function<void(std::unique_ptr<Ax::Frame>)>(
+      [this](std::unique_ptr<Ax::Frame> frame) {
+        return release_frame(std::move(frame));
+      });
+  auto inf_input_template = pre_ops.compile(video, *allocator, releaser);
   const auto exp_model_input
       = Ax::to_string(AxDataInterface(inference->input_shapes()));
   const auto got_model_input = Ax::to_string(inf_input_template);
@@ -1142,7 +1042,7 @@ AxInferenceNet::initialise_pipeline(const AxVideoInterface &video)
                              + " but got input=" + got_model_input);
   }
   auto inf_output_template = inference->output_shapes();
-  post_ops.compile(Ax::batch_view(inf_output_template, 0), *allocator, buffers);
+  post_ops.compile(Ax::batch_view(inf_output_template, 0), *allocator, releaser);
 
   inf_input_allocator = properties.dmabuf_inputs ? create_dma_buf_allocator() :
                                                    create_heap_allocator();
@@ -1153,9 +1053,11 @@ AxInferenceNet::initialise_pipeline(const AxVideoInterface &video)
   inf_output_pool = std::make_unique<BatchedBufferPool>(
       batch_size, inf_output_template, *inf_output_allocator);
 
-  threads.emplace_back(&AxInferenceNet::preprocessing_thread, this, batch_size);
   threads.emplace_back(&AxInferenceNet::inference_thread, this, batch_size);
-  threads.emplace_back(&AxInferenceNet::postprocessing_thread, this, batch_size);
+  push_thread = std::jthread(&AxInferenceNet::finalize_thread, this);
+  auto inf_allocator = properties.dmabuf_inputs ? create_dma_buf_allocator() :
+                                                  create_heap_allocator();
+  pre_ops.set_allocator(batch_size, std::move(inf_allocator));
 }
 
 void
@@ -1167,20 +1069,19 @@ AxInferenceNet::end_of_input()
   frame->stream_id = 0;
   frame->frame_id = -2;
   frame->buffer_handle.reset();
-  frame->inf_input.reset();
-  frame->decode_input.reset();
+  frame->op_input.reset();
   frame->end_of_input = true;
   frame->timestamp = std::chrono::high_resolution_clock::now();
   frame->latency_start = std::chrono::high_resolution_clock::now();
-  preq.push(std::move(frame));
+  pre_ops.input_queue().push(std::move(frame));
 }
-
-} // namespace Ax
 
 void
 default_latency_callback(const std::string &, uint64_t, uint64_t)
 {
 }
+
+} // namespace Ax
 
 std::unique_ptr<Ax::InferenceNet>
 Ax::create_inference_net(const InferenceNetProperties &properties, Ax::Logger &logger,
@@ -1197,10 +1098,11 @@ as_bool(const std::string &s)
 }
 
 Ax::InferenceNetProperties
-Ax::properties_from_string(const std::string &s, Ax::Logger &logger)
+Ax::read_inferencenet_properties(std::istream &s, Ax::Logger &logger)
 {
   InferenceNetProperties props;
-  for (auto line : Ax::Internal::split(s, "\n")) {
+  std::string line;
+  while (std::getline(s, line)) {
     if (line.empty()) {
       continue;
     }
@@ -1267,4 +1169,14 @@ Ax::properties_from_string(const std::string &s, Ax::Logger &logger)
     }
   }
   return props;
+}
+
+Ax::InferenceNetProperties
+Ax::read_inferencenet_properties(const std::string &path, Ax::Logger &logger)
+{
+  std::ifstream f(path);
+  if (!f) {
+    throw std::runtime_error("Failed to open file: " + path);
+  }
+  return read_inferencenet_properties(f, logger);
 }

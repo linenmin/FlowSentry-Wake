@@ -15,6 +15,7 @@ set(SOURCE_FILES
     src/AxNms.cpp
     src/AxOpenCl.cpp
     src/AxOpenClExtensions.cpp
+    src/AxOpenCVRender.cpp
     src/AxOpUtils.cpp
     src/AxStreamerUtils.cpp
 )

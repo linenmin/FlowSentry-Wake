@@ -6,16 +6,15 @@ import os
 from pathlib import Path
 from unittest.mock import call, patch
 
-import gi
-
-gi.require_version('Gst', '1.0')
-gi.require_version('GstVideo', '1.0')
-
-from gi.repository import GObject, Gst, GstApp, GstVideo
 import pytest
 
 from axelera.app import gst_builder, operators, pipe, pipeline
-from axelera.app.pipe import gst, gst_helper
+from axelera.app.pipe import gst, gst_helper, io
+
+# isort: off
+from gi.repository import Gst
+
+# isort: on
 
 
 def _sorted(elements):
@@ -36,49 +35,48 @@ def test_iteration_appsinks(num_sinks):
         pipeline.add(element)
         appsinks.append(element)
 
-    assert [videosrc] == gst_helper._gst_iterate(
-        pipeline.iterate_all_by_element_factory_name('videotestsrc')
-    )
+    assert [videosrc] == gst_helper.list_all_by_element_factory_name(pipeline, 'videotestsrc')
     assert _sorted(appsinks) == _sorted(
-        gst_helper._gst_iterate(pipeline.iterate_all_by_element_factory_name('appsink'))
+        gst_helper.list_all_by_element_factory_name(pipeline, 'appsink')
     )
 
 
-def _expected_rtsp_input_builder():
-    exp = gst_builder.BuilderNewInference()
+def _expected_rtsp_input_builder(source_id_offset=0):
+    exp = gst_builder.Builder()
     exp.rtspsrc(
         {'user-id': '', 'user-pw': ''},
         location='rtsp://localhost:8554/test',
         latency=500,
-        connections={'stream_%u': 'rtspcapsfilter0.sink'},
+        connections={'stream_%u': f'rtspcapsfilter{source_id_offset}.sink'},
     )
-    exp.capsfilter({'caps': 'application/x-rtp,media=video'}, name='rtspcapsfilter0')
+    exp.capsfilter(
+        {'caps': 'application/x-rtp,media=video'}, name=f'rtspcapsfilter{source_id_offset}'
+    )
     exp.decodebin(
         {'expose-all-streams': False, 'force-sw-decoders': False},
         caps='video/x-raw(ANY)',
-        connections={'src_%u': 'axinplace-addstreamid0.sink'},
-        name='queue_in0',
+        connections={'src_%u': f'decodebin-link{source_id_offset}.sink'},
     )
     # exp.queue(name='queue_in0')
     exp.axinplace(
         lib='libinplace_addstreamid.so',
         mode='meta',
-        options='stream_id:0',
-        name='axinplace-addstreamid0',
+        options=f'stream_id:{source_id_offset}',
+        name=f'decodebin-link{source_id_offset}',
     )
     return exp
 
 
 def test_build_input_with_normal_input():
-    pipein = pipe.PipeInput('gst', 'rtsp://localhost:8554/test')
-    builder = gst_builder.BuilderNewInference()
+    pipein = io.SinglePipeInput('gst', 'rtsp://localhost:8554/test')
+    builder = gst_builder.Builder()
     tasks = [
         pipeline.AxTask(
             'task0',
             operators.Input(),
         )
     ]
-    pipe.gst._build_input_pipeline(builder, tasks, pipein)
+    pipe.gst._build_input_pipeline(builder, tasks, pipein, 0)
     exp = _expected_rtsp_input_builder()
     exp.videoconvert()
     exp.capsfilter({'caps': 'video/x-raw,format=RGBA'})
@@ -86,9 +84,26 @@ def test_build_input_with_normal_input():
     assert list(builder) == list(exp)
 
 
+def test_build_input_with_normal_input_with_sourceid():
+    pipein = io.SinglePipeInput('gst', 'rtsp://localhost:8554/test')
+    builder = gst_builder.Builder()
+    tasks = [
+        pipeline.AxTask(
+            'task0',
+            operators.Input(),
+        )
+    ]
+    pipe.gst._build_input_pipeline(builder, tasks, pipein, 4)
+    exp = _expected_rtsp_input_builder(4)
+    exp.videoconvert()
+    exp.capsfilter({'caps': 'video/x-raw,format=RGBA'})
+    exp.queue(connections={'src': 'inference-task0.sink_%u'})
+    assert list(builder) == list(exp)
+
+
 def test_build_input_with_image_processing():
-    pipein = pipe.PipeInput('gst', 'rtsp://localhost:8554/test')
-    builder = gst_builder.BuilderNewInference()
+    pipein = io.SinglePipeInput('gst', 'rtsp://localhost:8554/test')
+    builder = gst_builder.Builder()
     matrix = '0.6,0.3,-67.2,-0.4,0.5,493.6,0.0,0.0,1.0'
     tasks = [
         pipeline.AxTask(
@@ -100,7 +115,7 @@ def test_build_input_with_image_processing():
             ),
         )
     ]
-    pipe.gst._build_input_pipeline(builder, tasks, pipein)
+    pipe.gst._build_input_pipeline(builder, tasks, pipein, 0)
     exp = _expected_rtsp_input_builder()
     exp.videoconvert()
     exp.capsfilter({'caps': 'video/x-raw,format=RGBA'})

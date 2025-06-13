@@ -48,9 +48,10 @@ class Logger
   public:
   /// @brief Constructor
   /// @param severity - The severity level to filter for this logger
-  /// @param source - For a gstreamer element this should be the gst element
-  /// @param debug - For a gstreamer element this should be a debug category
-  Logger(Severity severity, void *source, void *debug);
+  /// @param source - For a gstreamer element this should be the gst element (otherwise null)
+  /// @param debug - For a gstreamer element this should be a debug category (otherwise null)
+  explicit Logger(Severity severity = Severity::warning, void *source = nullptr,
+      void *debug = nullptr);
 
   /// @brief Overloaded operator() to return the logger or the null sink
   /// @param severity - Return real logger if severity_ is less than or equal to this
@@ -61,6 +62,14 @@ class Logger
   ///   logger (Ax::Severity::debug) << "This is a debug message";
   std::ostream &operator()(Ax::SeverityTag severity);
 
+  // A helper to avoid the common pattern of log and throw the same message
+  template <typename Exception = std::runtime_error>
+  [[noreturn]] void throw_error(const std::string &message)
+  {
+    SeverityTag tag{ Ax::Severity::error, {}, {}, {} };
+    (*this)(tag) << message << std::endl;
+    throw Exception(message);
+  }
 
   using Sink = void (*)(SeverityTag, Tag, const std::string &);
   void init_log_sink(Ax::Severity severity, Sink sink);

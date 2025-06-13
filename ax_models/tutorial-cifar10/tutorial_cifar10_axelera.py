@@ -13,7 +13,7 @@ class TutorialCIFAR10(TutorialCIFAR10, types.Model):
     def __init__(self, **kwargs):
         super().__init__()
 
-    def init_model_deploy(self):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         if not Path(WEIGHTS).exists():
             print(f"First train model to generate weights ('{WEIGHTS}')")
             train(self, trainloader())

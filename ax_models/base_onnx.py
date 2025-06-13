@@ -65,7 +65,7 @@ def update_model_specific_config(model_info: types.ModelInfo):
 class AxONNXModel(types.ONNXModel):
     """Create an axelera.types.ONNXModel instance with auto download"""
 
-    def init_model_deploy(self, model_info: types.ModelInfo):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         weights = Path(model_info.weight_path)
         if not weights.exists() or (
             model_info.weight_md5 and not utils.md5_validates(weights, model_info.weight_md5)

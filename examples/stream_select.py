@@ -2,62 +2,112 @@
 # Copyright Axelera AI, 2025
 
 '''
-This example runs all 4 streams and the user can remove and add streams from keyboard.
-The benefit of this approach is the we don't need to set pipeline to paused state so adding and removing streams is instant, but we need to know RTSP, and they need to be live.
+This example runs all 4 streams and then processes a command list to add, remove, pause, and
+unpause streams.  It shows how the pipeline can be modified to add and remove streams whislt the
+pipeline is running.
 '''
 
-
+import itertools
+import sys
 import threading
+import time
 
-import gi
-
-gi.require_version('Gst', '1.0')
-from gi.repository import Gst
-
-from axelera.app import config, logging_utils
+from axelera.app import config, inf_tracers, logging_utils
 from axelera.app.display import App
 from axelera.app.stream import create_inference_stream
 
-# Define all stream sources
-source = {
-    0: "rtsp://127.0.0.1:8554/0",
-    1: "rtsp://127.0.0.1:8554/1",
-    2: "rtsp://127.0.0.1:8554/0",
-    3: "rtsp://127.0.0.1:8554/1",
-}
+LOG = logging_utils.getLogger(__name__)
+NETWORK = 'yolov8s-coco'
 
-streams = [0, 1, 2, 3]
+# format: off
+commands = [
+    ('sleep', 2),  #  PLAY      PAUSED   REMOVED
+    ('remove', 0),  #  1,2,3                0
+    ('remove', 1),  #  2,3                 0,1
+    ('pause', 2),  #  3         2         0,1
+    ('sleep', 2),  #
+    ('pause', 3),  #            2,3       0,1
+    ('sleep', 2),  #
+    ('add', 0),  #  0         2,3       1
+    ('sleep', 2),  #
+    ('add', 1),  #  0,1       2,3
+    ('resume', 2),  #  0,1,2     3
+    ('sleep', 2),  #
+    ('pause', 0),  #  1,2       0,3
+    ('pause', 1),  #  2         0,1,3
+    ('sleep', 2),  #
+    ('resume', 0),  #  0,2       1,3
+    ('sleep', 2),  #
+    ('resume', 3),  #  0,2,3     1
+    ('resume', 1),  #  0,1,2,3
+    ('check',),  # all streams enabled and present again, so we can start at the beginning
+]
+# format: on
 
-hw_caps = config.HardwareCaps(
-    config.HardwareEnable.detect,
-    config.HardwareEnable.detect,
-    config.HardwareEnable.detect,
-)
+
+def _short_source(source):
+    return source[:50] + '...' if len(source) > 50 else source
 
 
-def control_func(stream):
-    while True:
-        print(f"Current streams: {streams}")
-        user_input = input(
-            f"Select stream to toggle [{min(source.keys())}-{max(source.keys())}]: "
-        )
-
-        if not user_input.isdigit() or int(user_input) not in source:
-            print(f"Select one of {list(source.keys())}")
+def control_func(window, stream):
+    stopped = {}
+    sources = stream.sources.copy()
+    for stream_id, source in sources.items():
+        window.options(stream_id, title=f"{_short_source(source)} : PLAYING")
+    for cmdn, (cmd, *args) in zip(itertools.count(), itertools.cycle(commands)):
+        if cmd == 'sleep':
+            time.sleep(*args)
             continue
-
-        idx = int(user_input)
-
-        if idx in streams:
-            streams.remove(idx)
+        LOG.debug(f"#{cmdn} Command: {cmd} {args}")
+        if cmd in ('pause', 'resume'):
+            playing_streams = set(stream.get_stream_select())
+            (stream_id,) = args
+            source = stream.sources[stream_id]
+            if cmd == 'pause' and stream_id in playing_streams:
+                playing_streams.remove(stream_id)
+            elif cmd == 'resume' and stream_id not in playing_streams:
+                playing_streams.add(stream_id)
+            else:
+                state = 'playing' if stream_id in playing_streams else 'paused'
+                LOG.warning(f"Stream {stream_id} : {source} is already {state}")
+                continue
+            stream.stream_select(playing_streams)
+            state = 'playing' if stream_id in playing_streams else 'paused'
+        elif cmd in ('add', 'remove'):
+            (stream_id,) = args
+            existing_source = stream.sources.get(stream_id)
+            if cmd == 'add':
+                if existing_source is not None:
+                    LOG.warning(f"Stream {stream_id} is already playing as {existing_source}")
+                    continue
+                source = sources[stream_id]
+                del stopped[stream_id]
+                stream.add_source(source, stream_id)
+                state = 'added'
+            else:
+                stream.remove_source(stream_id)
+                stopped[stream_id] = existing_source
+                state = 'removed'
+        elif cmd == 'check':
+            if set(stream.get_stream_select()) == set(range(len(sources))):
+                LOG.debug("All streams are present and playing")
+            else:
+                LOG.warning("The command list has not restored the starting state")
+            continue
         else:
-            streams.append(idx)
-        stream.stream_select(','.join(map(str, streams)))
+            LOG.error(f"Unknown command {cmd}")
+            continue
+        window.options(stream_id, title=f"{_short_source(source)} : {state.upper()}")
+        play = set(stream.get_stream_select())
+        pause = set(range(len(sources))) - play - set(stopped.keys())
+        fmt = lambda streams: ' '.join(str(i) for i in sorted(streams)).ljust(10)
+        desc = f"#{cmdn:<4d}: {cmd} {stream_id}"
+        LOG.info(f"{desc:<20s} Playing {fmt(play)} Paused {fmt(pause)} Removed {fmt(stopped)}")
 
 
 def main(window, stream):
     control = threading.Thread(
-        target=control_func, args=(stream,), name="ControlThread", daemon=True
+        target=control_func, args=(window, stream), name="ControlThread", daemon=True
     )
     control.start()
     for frame_result in stream:
@@ -66,22 +116,33 @@ def main(window, stream):
 
 
 if __name__ == '__main__':
+    parser = config.create_inference_argparser(
+        default_network=NETWORK, description='Perform inference on an Axelera platform'
+    )
+    args = parser.parse_args()
+    tracers = inf_tracers.create_tracers('core_temp', 'end_to_end_fps')
+    if args.pipe != 'gst':
+        sys.exit("Only gst pipe is supported for this example")
+    if args.sources == ['rtsp']:
+        # For simplicity allow sources to be just `rtsp` and use a local rtsp server
+        args.sources = [f'rtsp://127.0.0.1:8554/{n}' for n in range(4)]
+    if len(args.sources) < 4:
+        sys.exit("At least 4 sources are required for this example")
     stream = create_inference_stream(
-        network="yolov8n-license-plate",
-        sources=list(source.values()),
-        pipe_type='gst',  # Only gst pipe is supported for this example
-        log_level=logging_utils.INFO,
-        hardware_caps=config.HardwareCaps(
-            vaapi=config.HardwareEnable.detect,
-            opencl=config.HardwareEnable.detect,
-            opengl=config.HardwareEnable.detect,
-        ),
+        network=args.network,
+        sources=args.sources,
+        pipe_type=args.pipe,
+        log_level=logging_utils.get_config_from_args(args).console_level,
+        hardware_caps=config.HardwareCaps.from_parsed_args(args),
+        tracers=tracers,
+        specified_frame_rate=30,
+        device_selector=args.devices,
     )
     try:
-        with App(visible=True, opengl=stream.manager.hardware_caps.opengl) as app:
-            wnd = app.create_window("Stream select demo", (900, 600))
+        with App(visible=args.display, opengl=stream.hardware_caps.opengl) as app:
+            wnd = app.create_window("Stream select demo", args.window_size)
             app.start_thread(main, (wnd, stream), name='InferenceThread')
-            app.run(interval=1 / 10)
+            app.run()
 
     except KeyboardInterrupt:
         pass

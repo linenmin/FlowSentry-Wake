@@ -5,19 +5,16 @@ import argparse
 import collections
 import dataclasses
 import enum
-import json
 import os
 from pathlib import Path
-import platform
 import re
 import textwrap
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-from jsonschema import exceptions, validators
+from typing import Any, Callable, Optional, Tuple
 
 from . import environ, logging_utils, utils, yaml_parser
 
 LOG = logging_utils.getLogger(__name__)
+MODEL_FOR_HELP_EXAMPLE = 'yolov8n-coco'
 
 
 class DeployMode(enum.Enum):
@@ -62,14 +59,6 @@ DEFAULT_MAX_EXECUTION_CORES = 4
 
 DEFAULT_CORE_CLOCK = 800
 '''The default core clock frequency to use for the AIPU.'''
-
-
-DEFAULT_DDR_SIZE = {
-    Metis.none: 0x40000000,
-    Metis.pcie: 0x80000000,
-    Metis.m2: 0x40000000,
-}
-'''The default ddr size to set with `axdevice --set-ddr-size'''
 
 
 class _HardwareEnableAction(argparse.Action):
@@ -176,9 +165,9 @@ class HardwareCaps:
         parser.add_argument(
             '--aipu-cores',
             type=int,
-            choices=range(1, 5),
+            choices=range(0, 5),
             default=defaults.aipu_cores,
-            help='number of AIPU cores to use; supported options are %(choices)s; default is %(default)s',
+            help='number of AIPU cores to use; supported options are %(choices)s; default is %(default)s; 0 means this model is not a deep learning model',
         )
 
     def enabled(self, cap: str) -> bool:
@@ -211,6 +200,14 @@ def add_compile_extras(parser: argparse.ArgumentParser) -> None:
         default=1,
         help=argparse.SUPPRESS,  #'specify batch size for model quantization (default: %(default)s)',
     )
+    parser.add_argument(
+        '--cal-seed',
+        type=int,
+        default=0,
+        # Internal use: Specify the seed for the torch.manual_seed which will affect the dataset shuffling.
+        # We use it to experiment with different seeds to see the impact on the accuracy.
+        help=argparse.SUPPRESS,
+    )
 
 
 HardwareCaps.ALL = HardwareCaps(
@@ -230,253 +227,51 @@ HardwareCaps.OPENCL = HardwareCaps(
 )
 
 
-def _map_emulated_backend(emulate_str: str) -> str:
-    # check if emulate_str is valid
-    if emulate_str not in EmulatedBackend._value2member_map_:
-        raise ValueError(
-            f"Invalid emulated backend: {emulate_str}. Supported emulated backends are: "
-            f"{', '.join(EmulatedBackend.__members__)}"
-        )
+def gen_compilation_config(deploy_cores, user_cfg, deploy_mode):
+    """Generate the compilation configuration based on the user configuration.
 
-    mapping = {
-        EmulatedBackend.DEFAULT: 'axelera',
-        EmulatedBackend.CPU: 'x86-emu',
-        EmulatedBackend.QEMU: 'axelera-qemu',
-        EmulatedBackend.AIPU: 'aicore-simulator',
-    }
-
-    emulate = EmulatedBackend(emulate_str)
-    return mapping.get(emulate)
-
-
-def _load_schema() -> Dict[str, Any]:
-    from axelera.compiler.conf.configuration import _SCHEMA_PATH
-
-    with Path(_SCHEMA_PATH).open(encoding="UTF-8") as source:
-        return json.load(source)
-
-
-def _get_validated_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    '''Validate the config against the schema to avoid a wrong config from users,
-    and return a new config if it's missing some keys, to comply with the schema changes
-    during the EAP development.'''
-
-    schema = _load_schema()
-    try:
-        validator_class = validators.validator_for(schema)
-        validator = validator_class(schema)
-        validator.check_schema(schema)
-    except exceptions.SchemaError as e:
-        raise ValueError(f"The schema is not valid. Error: {e}")
-
-    fixed = {}
-    schema_properties = schema['properties']
-    for section_name, section_data in config.items():
-        if section_name not in schema_properties:
-            LOG.warning(f"Removing section '{section_name}' not defined in the schema.")
-            continue
-
-        section_schema = schema['$defs'][section_name]['properties']
-        for key, section_key_data in section_data.items():
-            if key not in section_schema:  # if key not in schema, remove it
-                LOG.warning(f"Removing '{key}' in '{section_name}' not defined in the schema.")
-                continue
-            fixed.setdefault(section_name, {})[key] = section_key_data
-
-    try:
-        validator.validate(fixed, schema)
-    except exceptions.ValidationError as e:
-        raise ValueError(f"Config is not unqualified: {e.message}")
-    return fixed
-
-
-def _get_base_compilation_config(quantize_only: bool = True) -> Dict[str, Any]:
-    """Get the base configuration for model compilation.
-
-    Args:
-        quantize_only: If True, returns config for quantization only.
-                      If False, returns config for full compilation.
-
-    Returns:
-        Dict containing the base configuration settings
+    NOTE: CompilerConfig is a Pydantic model that will validate the configuration
+    when it is created or when a field is set. If the configuration is invalid,
+    a ValueError or ValidationError will be raised.
     """
-    base_config = {
-        "control_flow_config": {
-            "quantize_only": quantize_only,
-        },
-        "quantization_config": {
-            "remove_quantization_of_inputs_outputs_from_graph": True,
-            "quantizer_version": 2,
-            "quantization_debug": False,
-        },
-    }
 
-    if not quantize_only:
-        base_config.update(
-            {
-                # according to software-platform/issues/1609
-                "frontend_config": {
-                    "apply_pword_padding": True,
-                    "remove_padding_and_layout_transform_of_inputs_outputs": True,
-                    "rewrite_concat_to_resadd": True,
-                },
-            }
-        )
+    from axelera.compiler.config import CompilerConfig, HostArch, HostOS, MulticoreMode
 
-    return base_config
+    # Deploy cores may be 0 for classical cv models. This is unsupported by the
+    # CompilerConfig. This is a workaround since the CompilerConfig is discarded
+    # ultimately for these models, and this avoids a larger refactor.
+    deploy_cores = max(1, deploy_cores)
 
+    compiler_config = CompilerConfig(
+        multicore_mode=MulticoreMode.BATCH,  # Default to batch mode
+        aipu_cores_used=deploy_cores,
+        resources_used=0.25 * deploy_cores,
+        host_processes_used=1,  # Will disable compiler-internal resource validation
+        host_arch=HostArch.auto_detect(),
+        host_os=HostOS.auto_detect(),
+        # NOTE: If we enable this and pass the correct model name, the compiler will
+        # automatically determine optimal settings based on the model name in the config.
+        # This could replace the current model-card specific configuration, and would
+        # probably help align the compiler behavior more closely with the app framework.
+        configure_model_specific=False,
+        model_name="model",
+    )
 
-def _verify_and_update_config(
-    config: Dict[str, Any], schema_attrs: Dict[str, List[str]], base_config: Dict[str, Any]
-) -> None:
-    """Verify and update configuration based on schema attributes.
+    # Apply any manual/user overrides
+    user_overrides = user_cfg.get('compilation_config', {})
+    for key, value in user_overrides.items():
+        setattr(compiler_config, key, value)
 
-    Args:
-        config: Configuration to verify and update
-        schema_attrs: Dictionary containing boolean and regular attributes to verify
-        base_config: Base configuration to update
-    """
-    bool_attrs = schema_attrs.get('bool_attrs', [])
-    attrs = schema_attrs.get('attrs', [])
-
-    missing = set(config.keys()) - set(bool_attrs + attrs)
-    if missing:
-        LOG.warning(
-            f"The following config keys will be ignored if present in the network yaml:\n\t{', '.join(missing)}"
-        )
-
-    for attr in attrs:
-        if attr in config:
-            base_config[attr] = config[attr]
-
-    for attr in bool_attrs:
-        if attr in config:
-            base_config[attr] = bool(config[attr])
-
-
-def _update_model_specific_quantization_config(
-    config: Dict[str, Dict[str, Any]], quantization_config: Dict[str, Any]
-) -> None:
-    if not quantization_config:
-        return
-
-    schema_attrs = {
-        'bool_attrs': ['remove_quantization_of_inputs_outputs_from_graph', 'quantization_debug'],
-        'attrs': ['quantizer_version', 'ptq_scheme'],
-    }
-
-    base_config = config.setdefault('quantization_config', {})
-    _verify_and_update_config(quantization_config, schema_attrs, base_config)
-
-
-def gen_compilation_config_with_user_config(user_cfg: Dict[str, Any]):
-    from axelera.compiler import Configuration
-
-    conf_data = _get_base_compilation_config(quantize_only=True)
-    _update_model_specific_quantization_config(conf_data, user_cfg.get('quantization_config', {}))
-    return Configuration(**conf_data)
-
-
-def gen_compilation_config(deploy_cores, user_cfg, deploy_mode, emulate):
     if deploy_mode == DeployMode.QUANTIZE:
-        return gen_compilation_config_with_user_config(user_cfg.get('compilation_config', {}))
+        return compiler_config
+
     elif deploy_mode == DeployMode.QUANTIZE_DEBUG:
-        user_quantization_cfg = user_cfg.get('compilation_config', {}).get(
-            'quantization_config', {}
-        )
-        if (
-            user_quantization_cfg.get('quantizer_version') == 1
-            or user_quantization_cfg.get('quantization_debug') == True
-        ):
-            raise ValueError(
-                "quantizer_version must be 2 and quantization_debug must be true for quantize_debug mode"
-            )
-        user_quantization_cfg.update(
-            {
-                "quantizer_version": 2,
-                "quantization_debug": True,
-            }
-        )
-        return gen_compilation_config_with_user_config(
-            {'quantization_config': user_quantization_cfg}
-        )
+        if not compiler_config.quantization_debug:
+            compiler_config.quantization_debug = True
+        return compiler_config
+
     else:
-        # TODO(fpedd): Once the compiler has refactored its configuration, we
-        # should evisit this function and reduce the settings explicitly set
-        # here to a minimum, relying on the compiler's default settings.
-
-        from axelera.compiler import Configuration
-
-        conf_data = _get_base_compilation_config(quantize_only=False)
-
-        # configs from command line
-        target = _map_emulated_backend(emulate)
-        new_configs = {
-            "backend_config": {
-                "host_arch": platform.uname().machine,
-                "generation": 'omega',
-                "target": target,
-                "aipu_cores": deploy_cores,
-                'subdevices': list(range(int(deploy_cores))),
-                "io_pool": "ddr",
-                "workspace_pool": "ddr",
-                "constant_pool": "ddr",
-                "dma_dual_channel": True,
-                "double_buffer": True,
-                "in_core_replication": True,
-                "async_pipeline_spatial_tiles": True,
-                "async_pipeline_channel_tiles": True,
-                "async_inter_operator": True,
-                "stream_tasklist": True,
-                "mvm_utilization_limit": 1.0,
-                # The compiler autom. sets reserved bytes in L2 to 0 if elf_in_ddr is True
-                "elf_in_ddr": True,
-                "tiling_depth": 1,
-                "page_memory": True,
-            },
-            "profiling_config": {
-                "enabled_profiling_levels": [],
-            },
-        }
-        if target == "axelera":
-            new_configs["profiling_config"] = {"enabled_profiling_levels": ["device_main"]}
-        if compilation_config := user_cfg.get('compilation_config', {}):
-            if quantization_config := compilation_config.get('quantization_config', {}):
-                _update_model_specific_quantization_config(new_configs, quantization_config)
-
-            if backend_config := compilation_config.get('backend_config', {}):
-                schema_attrs = {
-                    'bool_attrs': [
-                        'dma_dual_channel',
-                        'double_buffer',
-                        'single_op_network_double_buffer',
-                        'single_op_network_use_ddr',
-                        'in_core_replication',
-                        'async_pipeline_spatial_tiles',
-                        'async_pipeline_channel_tiles',
-                        'async_inter_operator',
-                        'stream_tasklist',
-                        'page_memory',
-                        'elf_in_ddr',
-                    ],
-                    'attrs': [
-                        'constant_pool',
-                        'io_pool',
-                        'l2_constraint',
-                        'l2_reserved_nbytes_tasklist',
-                        'single_op_network_aicore_start_idx',
-                        'workspace_pool',
-                        'subdevices',
-                        'mvm_utilization_limit',
-                        'tiling_depth',
-                    ],
-                }
-
-                base_config = new_configs['backend_config']
-                _verify_and_update_config(backend_config, schema_attrs, base_config)
-        conf_data.update(new_configs)
-        conf_data = _get_validated_config(conf_data)
-    return Configuration(**conf_data)
+        return compiler_config
 
 
 def positive_int_for_argparse(value: str) -> int:
@@ -563,9 +358,10 @@ def add_nn_and_network_arguments(
     default_network: str | None = None,
 ) -> None:
     example_yaml = next(iter(network_yaml_info.get_all_info())).yaml_path
-    valid_nets = '\n    '.join(
-        textwrap.wrap(', '.join(sorted(network_yaml_info.get_all_yaml_names())), 90)
-    )
+    # Format the list of available networks without breaking names across lines
+    all_yaml_names = sorted(network_yaml_info.get_all_yaml_names())
+    # Safer approach to format the list with one model name per line
+    valid_nets = '\n    '.join(all_yaml_names)
     nninfo = f"""network to run, this can be a path to a pipeline file, e.g.
     {example_yaml}
 or it can be a shorthand name for a network YAML file, e.g. one of:
@@ -612,15 +408,128 @@ def add_metis_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+class _LlmArgumentParser(argparse.ArgumentParser):
+    def __init__(
+        self,
+        network_yaml_info: yaml_parser.NetworkYamlInfo,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self._network_yaml_info = network_yaml_info
+
+    def parse_args(self, args=None, namespace=None) -> argparse.Namespace:
+        ns = super().parse_args(args, namespace)
+        _resolve_network(
+            self,
+            ns,
+            self._network_yaml_info,
+        )
+        ns.build_root = Path(ns.build_root).expanduser().absolute()
+        return ns
+
+
+GENAI_SYSTEM_PROMPT = "Be concise. You are a chatbot for Axelera AI, a start-up building a state-of-the-art AI accelerator chip, called Metis. Answer user questions accurately and to the best of your ability. You run on the Metis chip."
+
+
+def create_llm_argparser(
+    network_yaml_info: yaml_parser.NetworkYamlInfo, **kwargs
+) -> argparse.ArgumentParser:
+    """Create an argument parser for LLM tasks."""
+    parser = _LlmArgumentParser(network_yaml_info, **kwargs)
+    add_nn_and_network_arguments(parser, network_yaml_info)
+
+    # --- Simplified CLI modes and prompt handling ---
+    parser.add_argument(
+        '--ui',
+        nargs='?',
+        const='share',
+        default=None,
+        choices=[None, 'local', 'share', 'local_simple', 'share_simple'],
+        help='Enable Gradio web UI mode. Use --ui local or --ui share for classic UI, --ui local_simple or --ui share_simple for the simplified native UI. If not set, runs in CLI mode.',
+    )
+    parser.add_argument(
+        '--prompt',
+        type=str,
+        nargs='?',
+        default=None,
+        help='Prompt for single-prompt CLI mode. If not provided, runs in interactive CLI mode.',
+    )
+    parser.add_argument(
+        '--no-history',
+        action='store_true',
+        default=False,
+        help='Disable conversation history (stateless mode). Each message will be processed independently.',
+    )
+    parser.add_argument(
+        '--pipeline',
+        type=str.lower,
+        default='transformers-aipu',
+        choices=['transformers', 'transformers-aipu'],
+        help=argparse.SUPPRESS,  # we hide this for now as it requires a different version of pytorch
+        # help='Specify pipeline backend:\n'
+        # '  - transformers: Model runs on CPU/GPU based on the Hugging Face Transformers library\n'
+        # '  - transformers-aipu: Model runs on Axelera AIPU with Transformer\'s tokenizer on the host (default)\n',
+    )
+    parser.add_argument(
+        '--system-prompt',
+        type=str,
+        default=GENAI_SYSTEM_PROMPT,
+        metavar='STR',
+        help='Specify system prompt',
+    )
+    parser.add_argument(
+        '--temperature', type=float, default=0, metavar='INT', help='Logits temperature'
+    )
+    parser.add_argument(
+        '--show-stats',
+        action='store_true',
+        default=False,
+        help='show performance statistics',
+    )
+    # Add CPU and temperature monitoring flags (implicitly enabled when --show-stats is used with transformers-aipu)
+    parser.add_argument(
+        '--show-cpu-usage',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Enable/disable CPU usage monitoring (default: on when --show-stats is used)',
+    )
+    parser.add_argument(
+        '--show-temp',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Enable/disable temperature monitoring (default: on when --show-stats is used)',
+    )
+    parser.add_argument(
+        '--rich-cli',
+        action='store_true',
+        default=False,
+        help='Enable beautiful Rich-based CLI chat experience (colors, panels, markdown).',
+    )
+    parser.add_argument(
+        '--tokenizer-dir',
+        type=str,
+        default=None,
+        help='Path to a local directory containing tokenizer files (overrides tokenizer_url and HuggingFace)',
+    )
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=7860,
+        help='Port to connect to the server (default: 7860)',
+    )
+    logging_utils.add_logging_args(parser)
+    return parser
+
+
 def create_inference_argparser(
     network_yaml_info: yaml_parser.NetworkYamlInfo | None = None,
     default_caps: HardwareCaps | None = None,
     default_network: str | None = None,
-    default_display=True,
     default_show_stats=False,
     default_show_system_fps=True,
     default_show_device_fps=False,
-    default_show_host_fps=True,
+    default_show_host_fps=False,
     default_show_cpu_usage=True,
     default_show_temp=True,
     default_show_stream_timing=False,
@@ -633,7 +542,7 @@ def create_inference_argparser(
     parser = _InferenceArgumentParser(
         network_yaml_info,
         formatter_class=argparse.RawTextHelpFormatter,
-        epilog=f'\nExample: ./%(prog)s ssd-mobilenetv1-coco usb',
+        epilog=f'\nExample: ./%(prog)s {MODEL_FOR_HELP_EXAMPLE} usb',
         unsupported_yaml_cond=unsupported_yaml_cond,
         unsupported_reason=unsupported_reason,
         default_network=default_network,
@@ -642,7 +551,6 @@ def create_inference_argparser(
     add_nn_and_network_arguments(parser, network_yaml_info, default_network=default_network)
     source_help = '''source input device(s); one or more of:
    video file (filename.mp4)
-   csi camera (csi:0)
    usb camera (usb, usb:0, usb:1)
    uri (http://, https://, rtsp://)
    fakevideo (fakevideo:widthxheight)'''
@@ -668,10 +576,18 @@ def create_inference_argparser(
     ),
     parser.add_argument(
         '--display',
-        action=argparse.BooleanOptionalAction,
-        default=default_display,
-        help='display the results of the inference in a window. OpenGL if available\n'
-        'or OpenCV otherwise.',
+        choices=['none', 'opengl', 'opencv', 'console', 'auto'],
+        default='auto',
+        help='display the results of the inference in a window. The window can be opengl, opencv,\n'
+        'console (using ANSI control codes) or none. If auto then if DISPLAY is set then OpenGL\n'
+        'is preferred over OpenCV, and if DISPLAY is not set then a console display is used.',
+    )
+    parser.add_argument(
+        '--no-display',
+        dest='display',
+        action='store_const',
+        const='none',
+        help='This is an alias for --display=none',
     )
     default_window_size = (900, 600)
     parser.add_argument(
@@ -787,6 +703,39 @@ $ %(prog)s yolov5s-v7-coco media/traffic3_480p.mp4 -dmetis-0:3:0
 
 By default all devices available will be used.""",
     )
+
+    parser.add_argument(
+        "--tiled",
+        default='',
+        type=str,
+        help=argparse.SUPPRESS,
+        # "Enable tiled inference and specify the size of the tile. Default is (disabled).",
+    )
+
+    parser.add_argument(
+        "--tile-overlap",
+        default=0,
+        type=int,
+        help=argparse.SUPPRESS,
+        # "Specify minimum amount of overlap as a percentage. Default is 0.",
+    )
+
+    parser.add_argument(
+        "--tile-position",
+        default='none',
+        type=str,
+        choices=['none', 'left', 'right', 'bottom', 'top'],
+        help=argparse.SUPPRESS,
+        # "Specify the position of the tile. Default is none.",
+    )
+
+    parser.add_argument(
+        "--show-tiles",
+        action='store_true',
+        help=argparse.SUPPRESS,
+        # "Specify whether tiles should be shouwn. Default is False.",
+    )
+
     add_metis_arg(parser)
 
     if port is not None:
@@ -798,6 +747,19 @@ By default all devices available will be used.""",
 
     logging_utils.add_logging_args(parser)
     return parser
+
+
+def determine_tile_options(args: argparse.Namespace) -> Optional[dict[str, Any]]:
+    '''Convert the options from the command line into a dictionary of tile options or None.'''
+    if not args.tiled and not args.tile_overlap and args.tile_position == "none":
+        return None
+
+    return {
+        "tile": args.tiled if args.tiled else "default",
+        "tile_overlap": args.tile_overlap if args.tile_overlap else 0,
+        "tile_position": args.tile_position if args.tile_position else "none",
+        "show_tiles": args.show_tiles,
+    }
 
 
 def _is_dataset(x: str) -> bool:
@@ -907,6 +869,15 @@ class _InferenceArgumentParser(argparse.ArgumentParser):
                 else:
                     msg = f'{ns.pipe} pipeline requires torch to be installed'
                 self.error(f"{msg} : {e}")
+
+        if ns.display == 'none':
+            ns.display = False
+            ns.enable_opengl = HardwareEnable.disable
+        elif ns.display == 'opengl':
+            ns.enable_opengl = HardwareEnable.enable
+        elif not os.environ.get('DISPLAY') and ns.enable_opengl == HardwareEnable.detect:
+            LOG.debug('DISPLAY not set, disabling OpenGL detection')
+            ns.enable_opengl = HardwareEnable.disable
         return ns
 
 
@@ -929,7 +900,7 @@ def create_deploy_argparser(
         network_yaml_info,
         description='Deploy a model to Axelera platforms',
         formatter_class=argparse.RawTextHelpFormatter,
-        epilog=f'\nExample: ./%(prog)s ssd-mobilenetv1-coco',
+        epilog=f'\nExample: ./%(prog)s {MODEL_FOR_HELP_EXAMPLE}',
         **kwargs,
     )
     add_nn_and_network_arguments(parser, network_yaml_info)
@@ -939,13 +910,13 @@ def create_deploy_argparser(
         '--model',
         type=str,
         default='',
-        help='compile specified model in network YAML without deploying pipeline',
+        help='compile a specific model in the given network YAML without deploying pipeline',
     )
     deploy_group.add_argument(
         '--models-only',
         action='store_true',
         default=False,
-        help='compile all models in network YAML without deploying pipeline',
+        help='compile all models in the given network YAML without deploying pipeline',
     )
     deploy_group.add_argument(
         '--pipeline-only',
@@ -963,13 +934,6 @@ def create_deploy_argparser(
         " - QUANTIZE: Quantize the model. (Will NOT deploy pipeline)\n"
         " - QUANTCOMPILE: Quantize and compile the model.\n"
         " - PREQUANTIZED: Compile from a pre-quantized model (default).\n",
-    )
-    parser.add_argument(
-        '--emulate',
-        type=str.upper,
-        default='NONE',
-        choices=[member.value for member in EmulatedBackend],
-        help=argparse.SUPPRESS,
     )
     add_metis_arg(parser)
     parser.add_argument(

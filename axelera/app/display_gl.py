@@ -13,6 +13,7 @@ import queue
 import sys
 import time
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Tuple
+import uuid
 import weakref
 
 import numpy as np
@@ -132,7 +133,7 @@ class SpritePool:
     def __init__(self):
         self._pool = []
 
-    def create_sprite(self, image, x, y, z, rotation=None, batch=None, group=None):
+    def create_sprite(self, image, x, y, z, rotation=None, batch=None, group=None, opacity=255):
         try:
             # TODO possible opt is to select sprites based on t.owner
             s = self._pool.pop()
@@ -140,9 +141,11 @@ class SpritePool:
             s.batch = batch
             s.group = group
             s.visible = True
+            s.opacity = opacity
             s.update(x=x, y=y, z=z, rotation=rotation)
         except IndexError:
             s = pyglet.sprite.Sprite(image, x, y, z, batch=batch, group=group)
+            s.opacity = opacity
             if rotation is not None:
                 s.rotation = rotation
         proxy = _SpriteProxy(s)
@@ -191,6 +194,7 @@ class LabelPool:
         batch=None,
         group=None,
         back_color=None,
+        opacity=255,
     ):
         all_args = locals()
         args = tuple(all_args[k] for k in _label_argnames)
@@ -198,9 +202,9 @@ class LabelPool:
             t = self._textures[args]
         except KeyError:
             t = self._textures[args] = self._new_texture(args)
-        x += _ANCHOR_ADJUST_X[anchor_x] * t.width
+        x -= _ANCHOR_ADJUST_X[anchor_x] * t.width
         y -= _ANCHOR_ADJUST_Y[anchor_y] * t.height
-        s = self._sprites.create_sprite(t, x, y, z, rotation, batch, group)
+        s = self._sprites.create_sprite(t, x, y, z, rotation, batch, group, opacity)
         # for HiDPI scale the texture on rendering
         s.scale = _RENDER_FONT_SCALE / self._pixel_ratio
         return s
@@ -352,6 +356,23 @@ def _move_sprite(sprite: pyglet.sprite.Sprite, canvas: Canvas):
     sprite.x, sprite.y = canvas.glp((0, 0))
 
 
+@functools.lru_cache(maxsize=128)
+def _load_image_from_file(filename: str):
+    return pyglet.image.load(filename)
+
+
+def _load_sprite_from_file(filename: str, scale, batch, group) -> pyglet.sprite.Sprite:
+    i = _load_image_from_file(filename)
+    s = pyglet.sprite.Sprite(i, 0, 0, batch=batch, group=group)
+    if scale is None:
+        scale = 1.0, 1.0
+    elif isinstance(scale, float):
+        scale = (scale, scale)
+    s.scale_x = scale[0]
+    s.scale_y = scale[1]
+    return s
+
+
 def _get_layout(
     stream_id: int, num_streams: int, aspect: float
 ) -> Tuple[float, float, float, float]:
@@ -413,6 +434,7 @@ class MasterDraw:
         self._progresses = {}
         self._meta_cache = display.MetaCache()
         self._options: dict[int, GLOptions] = collections.defaultdict(GLOptions)
+        self._layers: dict[uuid.UUID, display._Layer] = collections.defaultdict()
 
     def _num_streams(self, new_stream_id: int) -> int:
         return (
@@ -433,11 +455,32 @@ class MasterDraw:
         for p in self._progresses.values():
             p.draw()
 
+    def _get_layers(self, stream_id):
+        '''
+        Delete any layers if necessary, and return the layers to be rendered by the
+        requested stream_id.
+
+        Stream 0 will render window layers, as well as stream 0 layers.
+        '''
+        now = time.time()
+        expired = [
+            k
+            for k, v in self._layers.items()
+            if v.fadeout_start and now - v.fadeout_start >= v.fadeout_duration
+        ]
+        for k in expired:
+            self._layers.pop(k)
+        if stream_id == 0:
+            return [x for x in self._layers.values() if stream_id in [-1, 0]]
+        return [x for x in self._layers.values() if x.stream_id == stream_id]
+
     def new_frame(
         self, stream_id: int, image: types.Image, axmeta: Optional[meta.AxMeta], buf_state: float
     ):
         cached, meta_map = self._meta_cache.get(stream_id, axmeta)
         cached  # TODO we should optimise by updating the image and leaving the rest of the draw
+        layers = self._get_layers(stream_id)
+
         self._draws[stream_id] = GLDraw(
             stream_id,
             self._num_streams(stream_id),
@@ -448,6 +491,8 @@ class MasterDraw:
             image,
             meta_map,
             self._options[stream_id],
+            self._options[-1],  # window options is stream_id -1
+            layers,
         )
         if _SHOW_BUFFER_STATUS:
             self.set_buffering(stream_id, buf_state)
@@ -456,6 +501,16 @@ class MasterDraw:
 
     def options(self, stream_id: int, options: dict[str, Any]) -> None:
         self._options[stream_id].update(**options)
+
+    def delete(self, msg):
+        if msg.id in self._layers and not self._layers[msg.id].fadeout_start:
+            self._layers[msg.id].fadeout_start = time.time()
+            self._layers[msg.id].fadeout_duration = msg.fadeout
+        else:
+            LOG.trace(f'layer {msg.id} already deleted or fading out')
+
+    def layer(self, msg: display._Text):
+        self._layers[msg.id] = msg
 
     def set_buffering(self, stream_id: int, buf_state: float):
         try:
@@ -481,6 +536,22 @@ class MasterDraw:
             draw.new_label_pool(label_pool)
 
 
+def _gen_title_message(stream_id, options):
+    return display._Text(
+        stream_id,
+        uuid.uuid4(),
+        display.Coords(*options.title_position),
+        options.title_anchor_x,
+        options.title_anchor_y,
+        -1,
+        None,
+        options.title,
+        options.title_color,
+        options.title_bgcolor,
+        options.title_size,
+    )
+
+
 class GLDraw(display.Draw):
     def __init__(
         self,
@@ -493,6 +564,8 @@ class GLDraw(display.Draw):
         image: types.Image,
         meta_map: Mapping[str, meta.AxTaskMeta],
         options: GLOptions,
+        window_options: GLOptions,
+        layers: list[display._Layer],
     ):
         self._stream_id = stream_id
         self._window_size = window_size
@@ -502,7 +575,7 @@ class GLDraw(display.Draw):
         self._shapes = []
         self._canvas = _create_canvas(self._stream_id, num_streams, image.size, window_size)
         self._back = pyglet.graphics.Group(stream_id + 0)
-        self._fore = pyglet.graphics.Group(stream_id + 1)
+        self._fore = pyglet.graphics.Group(stream_id + 100)
         self._speedo0 = pyglet.graphics.Group(100)
         self._speedo1 = pyglet.graphics.Group(101)
         self._sprite = _new_sprite_from_image(
@@ -512,14 +585,53 @@ class GLDraw(display.Draw):
         self._meta_map = meta_map
         self._options = options
         self._render_meta()
+
         if options.title:
-            self.text(
-                (0, 0),
-                options.title,
-                (192, 192, 192),
-                (64, 64, 64),
-                display.Font(size=options.title_size),
-            )
+            layers.append(_gen_title_message(self._stream_id, options))
+        if window_options.title:
+            layers.append(_gen_title_message(-1, window_options))
+
+        now = time.time()
+        for x in layers:
+            if x.fadeout_start is None or x.fadeout_start > now:
+                opacity = 255
+            else:
+                opacity = max(
+                    0, 255 - int((now - x.fadeout_start) / float(x.fadeout_duration) * 255)
+                )
+
+            if x.stream_id == -1:
+                pt_transform = lambda pt: (pt[0], window_size[1] - pt[1])
+                image_size = window_size
+            else:
+                pt_transform = self._canvas.glp
+                image_size = image.size
+            if isinstance(x, display._Text):
+                self._text(
+                    pt_transform(x.position.as_px(image_size)),
+                    x.text,
+                    x.color,
+                    x.bgcolor,
+                    display.Font(size=x.font_size),
+                    x.anchor_x,
+                    x.anchor_y,
+                    opacity,
+                )
+            elif isinstance(x, display._Image):
+                s = _load_sprite_from_file(x.path, x.scale, self._batch, self._fore)
+                s.x, s.y = pt_transform(x.position.as_px(image_size))
+                s.opacity = opacity
+                if x.anchor_x == 'center':
+                    s.x -= s.width / 2
+                elif x.anchor_x == 'right':
+                    s.x -= s.width
+                if x.anchor_y == 'center':
+                    s.y -= s.height / 2
+                elif x.anchor_y == 'top':
+                    s.y -= s.height
+                self._shapes.append(s)
+            else:
+                LOG.debug(f"Unknown layer type {x.__class__.__name__} ignoring...")
 
     @property
     def options(self) -> GLOptions:
@@ -604,10 +716,22 @@ class GLDraw(display.Draw):
         back_color: display.OptionalColor = None,
         font=display.Font(),
     ):
+        self._text(self._canvas.glp(p), text, txt_color, back_color, font)
+
+    def _text(
+        self,
+        p,
+        text,
+        txt_color,
+        back_color: display.OptionalColor = None,
+        font=display.Font(),
+        anchor_x='left',
+        anchor_y='top',
+        opacity=255,
+    ):
         txt_color = _add_alpha(txt_color)
         back_color = _add_alpha(back_color)
         name, size = _determine_font_params(font)
-        x, y = self._canvas.glp(p)
         self._shapes.append(
             self._label_pool.create_label(
                 text,
@@ -617,11 +741,13 @@ class GLDraw(display.Draw):
                 italic=font.italic,
                 color=txt_color,
                 back_color=back_color,
-                x=x,
-                y=y,
-                anchor_y="top",
+                x=p[0],
+                y=p[1],
+                anchor_x=anchor_x,
+                anchor_y=anchor_y,
                 batch=self._batch,
                 group=self._fore,
+                opacity=opacity,
             )
         )
 
@@ -731,6 +857,10 @@ class GLDraw(display.Draw):
         sprite.scale_y = -(self._canvas.height / image.height)
         self._shapes.append(sprite)
 
+    def draw_image(self, image: np.ndarray) -> None:
+        # TODO: Implement the draw_image method. Refer to SDK-5801 ticket for details.
+        pass
+
 
 def _keypoint_image(size, r, g, b, alpha=255):
     if size >= 6:
@@ -812,12 +942,26 @@ class GLOptions(display.Options):
     '''When grayscale is enabled this specifies the area to grayscale.
 
     One of 'all' for the entire image, or 'left', 'right', 'top', 'bottom' for
-    the respective half of the image. This is useful when tiling only part of'
-    the screen for example.'
+    the respective half of the image. This is useful when tiling only part of
+    the screen for example.
     '''
 
     title_size: int = 20
     '''Size of the title text in points'''
+
+    title_position: tuple[str] = ('0%', '0%')  # TODO wrong type annotation
+    '''Position of title. ('0%', '0%') top left. ('100%', '100%') bottom right.'''
+
+    title_color: tuple[int] = (244, 190, 24, 255)  # TODO wrong type annotation
+    '''Text color of title, RGBA (0-255)'''
+
+    title_bgcolor: tuple[int] = (0, 0, 0, 192)  # TODO wrong type annotation
+    '''Background color of title, RGBA (0-255)'''
+
+    title_anchor_x: str = 'left'
+    '''Anchor pos, one of left/center/right'''
+    title_anchor_y: str = 'top'
+    '''Anchor pos, one of top/center/bottom'''
 
 
 class GLWindow(pyglet.window.Window):
@@ -886,6 +1030,10 @@ class GLWindow(pyglet.window.Window):
                         continue  # ignore, just wait for user to close
                     if isinstance(msg, display._SetOptions):
                         self._master.options(msg.stream_id, msg.options)
+                    elif isinstance(msg, display._Delete):
+                        self._master.delete(msg)
+                    elif isinstance(msg, display._Layer):
+                        self._master.layer(msg)
                     elif isinstance(msg, display._Frame):
                         pyglet.clock.unschedule(self._redraw)
                         try:

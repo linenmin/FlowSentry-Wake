@@ -2,15 +2,16 @@
 # Benchmarking and Performance Evaluation
 
 - [Benchmarking and Performance Evaluation](#benchmarking-and-performance-evaluation)
-  - [Compare pipeline accuracy](#compare-pipeline-accuracy)
-  - [Optimize and measure pipeline performance](#optimize-and-measure-pipeline-performance)
+  - [Compare Pipeline Accuracy](#compare-pipeline-accuracy)
+  - [Optimize and Measure Pipeline Performance](#optimize-and-measure-pipeline-performance)
+    - [Determining the Bottleneck](#determining-the-bottleneck)
 
 In this section, we'll discuss in-depth the different ways you can evaluate performance and accuracy
 of each model with Metis. You can compare our performance to competitors, and see how our
 state-of-the-art quantization minimizes accuracy loss when compared to the original FP32 models.
 
 
-## Compare pipeline accuracy
+## Compare Pipeline Accuracy
 
 The Voyager SDK offers three different modes for running each model and its associated pipeline.
 This is specified with the `--pipe` argument to `inference.py`, and there are three options: `gst`,
@@ -53,77 +54,139 @@ Metis device. This option uses the Axelera GStreamer pipeline, including host ha
 and runs the quantized neural network on Metis.
 
 
-## Optimize and measure pipeline performance
+## Optimize and Measure Pipeline Performance
 
-To run an optimized version of a pipeline, for example YOLO5s, whereby execution of each non-neural
-element is allocated to the accelerator most able to efficiently execute it on the Evaluation
-Kit system, run the following command:
+When considering the performance of an optimized vision pipeline, there are two metrics that need
+to be considered :
+
+* Latency. This is the time it takes for a single frame to pass through the pipeline.
+
+* Throughput. This is the number of frames that pass through the pipeline in any given second.
+
+The pipeline created by the pipeline builder and executed in `--pipe=gst` mode for execution on
+Metis consists of many stages. In brief these are :
+
+* per input stream conversion
+  * collection or buffering of compressed data from the source.
+  * decoding of that compressed data into individual frames (usually this is a compressed format such as I420).
+  * color conversion into the format required by the model (e.g. RGB or BGR).
+  * any other image preprocessing such as barrel distortion correction.
+
+* preparation of tensor data from that image for model input
+  * image scaling and letterboxing or cropping.
+  * image normalization.
+  * quantization of the above data into int8 tensor data.
+  * padding of the tensor data (Metis has certain alignment requirements on pixel and row data).
+
+* execution on Metis (this may also include a batching operation if the model has been compiled to execute in batches)
+
+* decoding of the output
+  * depadding of the output tensor data.
+  * dequantization of output tensor data.
+  * any postprocessing in the model.
+  * decoding of the output tensors into meta data objects.
+
+NOTE: postprocessing is any additional operations on a model that are more efficiently executed
+on the host. A typical example is non-maximum suppression.
+
+To determine why a pipeline is performing as it does there are several metrics provided that can be
+enabled or disabled by passing arguments to `inference.py`.
+
+```
+  --show-host-fps, --no-show-host-fps
+                        show host FPS (default on)
+  --show-system-fps, --no-show-system-fps
+                        show system FPS (default on)
+  --show-cpu-usage, --no-show-cpu-usage
+                        show CPU usage (default on)
+  --show-stream-timing, --no-show-stream-timing
+                        show stream timing (latency and jitter) (default off)
+```
+
+**Host FPS**
+This is the throughput of the inference at the point where the frame is dispatched to the Metis
+accelerator. Transfers to and from the device are pipelined, so this gives an indication of the
+maximum throughput of the accelerator for this model. If inference is the limiting factor in the
+pipeline this will be close to the System FPS.
+
+**System (End-to-End) FPS**
+This is the most useful metric as it is the throughput of the pipeline as a whole. This will be
+1 / time taken for a frame to complete the slowest pipeline element.
+
+**CPU Usage**
+This metric shows the overall CPU usage of the host. Note that this is a percentage of the total
+compute available. So if all host cores are occupied all of the time then the usage will be 100%.
+
+**Stream Timing**
+This provides information about the latency, which is the time taken for an individual frame to
+leave the source element until it arrives in the application code. Jitter is also measured,
+this is a measure of the variation in the latency. If high levels of jitter are an issue for
+the application then more buffering would be beneficial (see `--rtsp-latency`).
+
+### Determining the Bottleneck
+
+If the Host FPS is significantly higher than the System FPS, that suggests that another element in
+the pipeline is the bottleneck. To help determine why we can use the `--show-stats` option to
+`inference.py`. When doing so it is usually best to disable one of the optimisations that is
+applied to the pipeline, which is double buffering of OpenCL kernels.
 
 ```bash
-./benchmark.py yolov5s-v7-coco-onnx  media/traffic3_480p.mp4 --aipu-cores=4 \\
-                                       --enable-vaapi --enable-opencl --show-host-fps
+$ AXELERA_USE_CL_DOUBLE_BUFFER=0 ./inference.py yolov5s-v7-coco media/traffic3_720p.mp4 --show-stats --no-display
+========================================================================
+Element                                         Time(𝜇s)   Effective FPS
+========================================================================
+qtdemux0                                              14        68,221.1
+h264parse0                                            22        43,575.6
+capsfilter0                                            8       115,892.2
+decodebin-link0                                       18        53,824.9
+axtransform-colorconvert0                            464         2,154.9
+inference-task0:libtransform_resize_cl_0             441         2,265.7
+inference-task0:libtransform_padding_0               434         2,300.8
+inference-task0:inference                          1,217           821.5
+inference-task0:Inference latency                 28,718             n/a
+inference-task0:libdecode_yolov5_0                   251         3,975.7
+inference-task0:libinplace_nms_0                      21        45,654.3
+inference-task0:Postprocessing latency               642             n/a
+inference-task0:Total latency                     37,057             n/a
+========================================================================
+End-to-end average measurement                                     809.3
+========================================================================
 ```
-
-`benchmark.py` differs from `inference.py` in that it is designed to maximise the performance of the
-end-to-end pipeline. The `--enable-` arguments causes it to offload some of the non-neural elements
-to Intel hardware accelerators (via the VA-API driver) and other elements to the Intel embedded GPU
-(via the OpenCL driver). This command disables the host application rendering by default (use
-`--display` to see the rendering). On completion, a summary is displayed, an example of which is
-shown below.
-
-```
-===========================================================================
-Element                                         Latency(us)   Effective FPS
-===========================================================================
-qtdemux0                                                 23        41,732.2
-typefind                                                 38        25,830.1
-h265parse0                                               79        12,634.5
-capsfilter0                                              30        33,109.4
-vaapidecode0                                          1,536           651.0
-capsfilter1                                              41        23,926.8
-vaapipostproc0                                          138         7,231.3
-axinplace-addstreamid0                                   41        24,063.7
-input_tee                                                46        21,374.4
-convert_in                                              144         6,919.5
-axinplace0                                               27        36,330.3
-axinplace1                                               33        30,060.2
-axtransform-resize0                                     928         1,077.6
-axinplace-normalize0                                    464         2,152.1
-axtransform-padding0                                    282         3,539.5
-inference-task0-yolov5s-v7-coco-onnx                  3,525           283.7
- └─ Metis                                             2,131           469.2
- └─ Host                                              3,085           324.1
-decoder_task0                                         1,040           960.8
-axinplace-nms0                                           69        14,310.1
-===========================================================================
-End-to-end average measurement                                        275.3
-===========================================================================
-```
-
-The stats table contains the following columns:
-
-*   **Element:** The name of each low-level GStreamer pipeline element.
-
-*   **Latency (us):** The measured execution time for each pipeline element (for a single frame).
-
-*   **Effective FPS**: The theoretical highest frame rate for each element (1/latency) assuming all
-other elements could provide it with data at sufficiently high rate.
-
 
 By inspecting this table, it is possible to quickly identify any performance bottlenecks in an
 end-to-end application pipeline. In general, the lowest effective FPS in the table represents the
 fastest frame rate at which the entire pipeline can operate, though in practice some pipeline
 elements share the same hardware resources and the actual measured end-to-end performance will be
-less.
+less. However we need to look into this table in some detail to fully understand the information
+contained within.
 
-The element `inference-task0-yolov5s-v7-coco-onnx` reports the time taken for Metis to perform
-model inference, including the time taken by the host to transfer data to the device via PCIe. The
-AIPU latency in the row below is the Metis execution time only (ignoring host transfer time). While
-this latency is higher than other pipeline elements, the use of 4 AIPU cores per device would ensure
-a high throughput commensurate with the preprocessing capabilities of the host.
+The first 5 elements are GStreamer elements and the timings are measured using the GstTracer
+facility, this measures the time between data arriving and leaving an element.
 
-The frame rate reported by `inference-<<model name>>`-> `(AIPU)` for a given model, is the value
-that you should use to compare Metis device-level performance to other solutions.
+For the elements `qtdmux0`, `h264parse0`, `capsfilter0`, and `decodebin-link0`, these elements do
+not operate exclusively with frame data, as they operate on compressed data, so the timings are not
+generally very useful.
+
+The next element `axtransform-colorconvert0` is an OpenCL kernel. This element is the reason we
+need to disable OpenCL double buffering to get comprehensible numbers, as otherwise the GStreamer 
+tracing facility ignores the time it takes for the transfer of the result back from the GPU. This
+generally results in an underestimate of the cost of this element, and results in an overestimate
+of the cost of the next element (which has to wait for the result to be ready).
+
+With double buffering disabled we can see that the contribution to the pipeline latency is 464𝜇s, 
+and this element is executing at 2154 frames per second, so it is not the bottleneck in the
+pipeline. This may not be the case for larger input media sizes.
+
+The next rows are all prefixed with `inference-task:`. These are a breakdown of the pipelined
+operators implemented in an [AxInferenceNet](/docs/tutorials/axinferencenet.md) element, which includes
+the pre-processing (`resize_cl` and `padding`) of the frame, the execution of the inference itself
+(`inference`) and any post-processing steps such as `libdecode_yolov5` and `libinplace_nms`. You
+can see that none of these are the bottleneck in this case. The performance of these will vary
+depending on the complexity of decoding the output tensors, the number of detections made, and
+other factors such as the confidence threshold in the NMS operator.
+
+`Inference latency` shows that overall the contribution to the system latency from the
+axinferencenet element is 28,718𝜇s.
 
 Note that the reported accuracy of performance-optimized pipelines is usually slightly lower than
 pipelines that utilize the CPU for the non-neural elements. This is because hardware accelerators

@@ -16,7 +16,8 @@ LOG = logging_utils.getLogger(__name__)
 class AxTorchvisionClassifierModel(types.Model):
     """Model methods for Torchvision classifier models"""
 
-    def init_model_deploy(self, model_info: types.ModelInfo, torchvision_args=''):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
+        torchvision_args = kwargs.get('torchvision_args', None)
         if model_info.weight_path:
             if not Path(model_info.weight_path).exists():
                 if model_info.weight_url:

@@ -5,9 +5,7 @@
 
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
-#include "AxMetaBBox.hpp"
 #include "AxMetaClassification.hpp"
-#include "AxMetaObjectDetection.hpp"
 #include "AxOpUtils.hpp"
 #include "AxUtils.hpp"
 
@@ -17,8 +15,8 @@ allowed_properties()
   static const std::unordered_set<std::string> allowed_properties{
     "meta_key",
     "master_meta",
+    "association_meta",
     "classlabels_file",
-    "box_meta",
     "top_k",
     "sorted",
     "largest",
@@ -30,9 +28,9 @@ allowed_properties()
 struct classification_properties {
   std::string meta_key
       = "meta_" + std::to_string(reinterpret_cast<long long unsigned int>(this));
-  std::vector<std::string> classlabels;
-  std::string box_meta{};
   std::string master_meta{};
+  std::string association_meta{};
+  std::vector<std::string> classlabels;
   int top_k;
   int sorted;
   int largest;
@@ -55,11 +53,10 @@ init_and_set_static_properties(
 
   prop->meta_key = Ax::get_property(
       input, "meta_key", "classification_static_properties", prop->meta_key);
-
-  prop->box_meta = Ax::get_property(
-      input, "box_meta", "classification_static_properties", prop->box_meta);
   prop->master_meta = Ax::get_property(input, "master_meta",
       "classification_static_properties", prop->master_meta);
+  prop->association_meta = Ax::get_property(input, "association_meta",
+      "classification_static_properties", prop->association_meta);
   return prop;
 }
 
@@ -145,45 +142,9 @@ decode_to_meta(const AxTensorsInterface &tensors, const classification_propertie
     }
   }
 
-  if (!prop->box_meta.empty()) {
-    auto box_position = map.find(prop->box_meta);
-    if (box_position != map.end()) {
-      auto *meta_ptr = dynamic_cast<AxMetaObjDetection *>(box_position->second.get());
-      if (current_frame < meta_ptr->num_elements()) {
-        meta_ptr->update_detection(current_frame, scores.at(0), indices.at(0));
-      } else {
-        throw std::runtime_error("classification_decode_to_meta: current_frame out of range");
-      }
-    }
-  } else if (!prop->master_meta.empty()) {
-    ax_utils::insert_meta<AxMetaClassification>(map, prop->meta_key, prop->master_meta,
-        current_frame, total_frames, AxMetaClassification::scores_vec{ scores },
-        AxMetaClassification::classes_vec{ indices },
-        AxMetaClassification::labels_vec{ labels });
-  } else {
-    auto position = map.find(prop->meta_key);
-    if (position == map.end()) {
-      AxMetaClassification::scores_vec scores_vec(total_frames);
-      AxMetaClassification::classes_vec indices_vec(total_frames);
-      AxMetaClassification::labels_vec labels_vec(total_frames);
-      scores_vec[current_frame] = std::move(scores);
-      indices_vec[current_frame] = std::move(indices);
-      labels_vec[current_frame] = std::move(labels);
-      auto ptr = std::make_unique<AxMetaClassification>(
-          std::move(scores_vec), std::move(indices_vec), std::move(labels_vec));
-      map[prop->meta_key] = std::move(ptr);
-    } else {
-      auto *meta_ptr = dynamic_cast<AxMetaClassification *>(position->second.get());
-      if (!meta_ptr) {
-        throw std::runtime_error(
-            "classification_decode_to_meta: Meta key already exists but with a different type");
-      }
-      if (meta_ptr->get_number_of_subframes() != total_frames) {
-        throw std::runtime_error(
-            "classification_decode_to_meta: Meta key already exists but with a different number of frames");
-      }
-      meta_ptr->replace(current_frame, std::move(scores), std::move(indices),
-          std::move(labels));
-    }
-  }
+  ax_utils::insert_and_associate_meta<AxMetaClassification>(map, prop->meta_key,
+      prop->master_meta, current_frame, total_frames, prop->association_meta,
+      AxMetaClassification::scores_vec{ scores },
+      AxMetaClassification::classes_vec{ indices },
+      AxMetaClassification::labels_vec{ labels });
 }

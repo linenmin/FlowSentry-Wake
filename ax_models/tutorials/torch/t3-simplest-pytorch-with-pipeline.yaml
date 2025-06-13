@@ -9,7 +9,7 @@ pipeline:
       model_name: model1
       input:
           type: image
-          color_format: rgb
+          color_format: RGB
       preprocess:
         - resize:
             width: 100

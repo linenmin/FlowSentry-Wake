@@ -13,7 +13,6 @@ import torch
 from ax_models import base_torch
 from axelera import types
 from axelera.app import logging_utils, utils
-from axelera.app import yaml as YAML
 from mmseg.apis import init_model
 
 LOG = logging_utils.getLogger(__name__)
@@ -76,8 +75,11 @@ class AxMMSegmentationBase:
         types.Model.__init__(self)
         self.working_dir = str(Path.cwd())
         LOG.debug(f'Current working directory is {self.working_dir}')
-        mmlab_args = YAML.attribute(kwargs, 'mmseg')
-        config_file = YAML.attribute(mmlab_args, 'config_file')
+        try:
+            mmlab_args = kwargs["mmseg"]
+        except KeyError:
+            raise ValueError("mmseg extra_kwargs are required for AxMMSegmentation")
+        config_file = mmlab_args["config_file"]
         self.model_config_path = find_config_file(config_file)
         if self.model_config_path is None:
             raise ValueError(f'Config file {config_file} not found')
@@ -110,7 +112,7 @@ class AxMMSegmentationPytorch(AxMMSegmentationBase, base_torch.TorchModel):
         replace_sync_bn(self.cfg)
         self.torch_model = init_model(self.cfg, device=torch.device('cpu'))
 
-    def init_model_deploy(self, model_info: types.ModelInfo):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         checkpoint = Path(model_info.weight_path)
         if not (checkpoint.exists() and utils.md5_validates(checkpoint, model_info.weight_md5)):
             utils.download(model_info.weight_url, checkpoint, model_info.weight_md5)
@@ -126,7 +128,7 @@ class AxMMSegmentationOnnx(AxMMSegmentationBase, types.ONNXModel):
     def __init__(self, **kwargs):
         AxMMSegmentationBase.__init__(self, **kwargs)
 
-    def init_model_deploy(self, model_info: types.ModelInfo):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         checkpoint = Path(model_info.weight_path)
         if not (checkpoint.exists() and utils.md5_validates(checkpoint, model_info.weight_md5)):
             utils.download(model_info.weight_url, checkpoint, model_info.weight_md5)

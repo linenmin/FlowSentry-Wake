@@ -6,10 +6,6 @@ struct FormatParam {
   int bgra_out;
 };
 
-class ColorFormatFixture : public ::testing::TestWithParam<FormatParam>
-{
-};
-
 class Transformer : public Plugin
 {
 
@@ -22,6 +18,7 @@ class Transformer : public Plugin
     plugin.initialise_function("transform", p_transform);
     plugin.initialise_function("can_passthrough", p_can_passthrough, false);
     plugin.initialise_function("can_use_dmabuf", p_can_use_dmabuf, false);
+    plugin.initialise_function("can_use_vaapi", p_can_use_vaapi, false);
   }
 
   void transform(const AxDataInterface &input, const AxDataInterface &output,
@@ -65,4 +62,6 @@ class Transformer : public Plugin
       = nullptr;
 
   bool (*p_can_use_dmabuf)(const void *subplugin_properties, Ax::Logger &logger) = nullptr;
+
+  bool (*p_can_use_vaapi)(const void *subplugin_properties, Ax::Logger &logger) = nullptr;
 };

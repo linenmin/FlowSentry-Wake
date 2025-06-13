@@ -16,13 +16,18 @@ pipeline:
             nms_class_agnostic: False
             nms_top_k: 300
             use_multi_label: False
-        - filterdetections:
-            min_width: 10
-            min_height: 10
+  - tracking:
+      model_name: tracker
+      input:
+        source: full
+        color_format: RGB
+      cv_process:
         - tracker:
             algorithm: oc-sort
+            bbox_task_name: master_detections
+            min_width: 10
+            min_height: 10
             history_length: 1
-            num_subtask_runs: 1
             algo_params:
               max_age: 50
               min_hits: 1
@@ -31,15 +36,21 @@ pipeline:
               # expected to have no more than max_id objects at a time. For
               # benchmarking, please set max_id=0
               max_id: 0
+            filter_callbacks:
+              classifications:
+                lib: libtrackerfilter_numsubtaskruns.so
+                num_subtask_runs: 10
+            determine_object_attribute_callbacks:
+              classifications:
+                lib: libtrackerattribute_bestscore.so
   - classifications:
       model_name: ResNet50-ImageNet1K
       input:
         type: image
         source: roi
-        where: master_detections
-        which: NONE # AREA, SCORE, CENTER
+        where: tracking
+        which: AREA # SCORE, CENTER
         top_k: 10
-        expand_margin: 0
       preprocess:
         - resize:
             size: 256
@@ -53,15 +64,13 @@ pipeline:
       postprocess:
         - topk:
             k: 1
-        - addclassificationstotracker:
-            where: master_detections
 
 models:
   yolov5m:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: weights/yolov5m-v7.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/weights/yolo/op17/yolov5m-v7.onnx
+    weight_url: https://media.axelera.ai/artifacts/weights/yolo/op17/yolov5m-v7.onnx
     weight_md5: aad63caa41a389d409717a0bbaa17311
     task_category: ObjectDetection
     input_tensor_layout: NCHW
@@ -89,26 +98,25 @@ models:
     extra_kwargs:
       max_compiler_cores: 4
       aipu_cores: 1
-      compilation_config:
-        backend_config:
-          single_op_network_use_ddr: True
-          single_op_network_aicore_start_idx: 3
       torchvision_args:
         block: Bottleneck
         layers: [3, 4, 6, 3]
         torchvision_weights_args:
           object: ResNet50_Weights
           name: IMAGENET1K_V1
+  tracker:
+    model_type: CLASSICAL_CV
+    task_category: ObjectTracking
 
 datasets: # Python dataloader
   CocoDataset-COCO2017:
-    class: ObjDataAdaptor
+    class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
-    download_year: 2017
+    label_type: COCO2017
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa
   ImageNet-1K:
     class: TorchvisionDataAdapter
@@ -116,5 +124,5 @@ datasets: # Python dataloader
     data_dir_name: ImageNet
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/imagenet1000_clsidx_to_labels.txt
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa

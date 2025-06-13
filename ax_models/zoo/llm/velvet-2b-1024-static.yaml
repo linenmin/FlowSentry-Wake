@@ -1,0 +1,18 @@
+axelera-model-format: 1.0.0
+
+name: velvet-2b-1024-static
+
+description: HuggingFace Transformers Velvet-2B model, limiting the sequence length to 1024 tokens
+
+models:
+  velvet-2b-1024-static:
+    precompiled_url: https://llm.axelera.ai/icdf/velvet2b_1024_mc_model_v2.tar.gz
+    precompiled_path: build/velvet-2b-1024-static/velvet2b_1024_mc_model_v2.tar.gz
+    precompiled_md5: 3f1c2c6338eed8f60c7c0ff26a99e7c6
+    task_category: LanguageModel
+    extra_kwargs:
+      llm:
+        max_tokens: 1024
+        embeddings_url: https://llm.axelera.ai/embeddings/Almawave_Velvet-2B_embeddings.npz
+        model_name: Almawave/Velvet-2B
+        tokenizer_url: https://llm.axelera.ai/embeddings/Almawave_Velvet-2B_tokenizer.zip

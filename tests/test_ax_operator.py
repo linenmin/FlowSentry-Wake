@@ -1,6 +1,6 @@
 # Copyright Axelera AI, 2024
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -290,8 +290,13 @@ def test_ax_operator_configure_model_and_context_info():
         def build_gst(self, gst, stream_idx):
             pass
 
+    mock_task_graph = MagicMock()
+    mock_task_graph.get_master.return_value = "mocked_master_value"
+
     op = TestOp()
-    op.configure_model_and_context_info(mi, PipelineContext(), "task_name", 0, '', Path('.'))
+    op.configure_model_and_context_info(
+        mi, PipelineContext(), "task_name", 0, Path('.'), task_graph=mock_task_graph
+    )
     assert op.model_name == 'modelname'
     assert op.task_name == 'task_name'
     assert op.compiled_model_dir == Path('.')

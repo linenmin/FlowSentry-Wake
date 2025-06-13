@@ -60,7 +60,7 @@ class HuggingFaceObjDetDataAdapter(types.DataAdapter):
             dataset_name: wider_face
             labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/face.names
             repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-            repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+            repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
             repr_imgs_md5: b680128512392586e3c86b670886d9fa
     """
 

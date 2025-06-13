@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # functions for deploying pipeline and base object for building pipeline
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
+
+from axelera import types
 
 from . import base, graph, io
 from .. import (
@@ -44,11 +46,9 @@ def _deploy_one_model_via_subprocess(
         cap_argv = ' ' + cap_argv
     if pipe_type == 'torch':
         cores = ''
-        mode = ''
     else:
         s = 's' if aipu_cores > 1 else ''
         cores = f' for {aipu_cores} core{s}. This may take a while...'
-        mode = ' --mode quantize_debug' if pipe_type == 'quantized' else ''
     LOG.info(f"Deploying model {model}{cores}")
     run_dir = config.env.framework
     try:
@@ -57,7 +57,7 @@ def _deploy_one_model_via_subprocess(
                 f'{run_dir}/deploy.py --model {model} --num-cal-images {num_cal_images} '
                 f'--calibration-batch {batch}{cap_argv} '
                 f'--data-root {data_root} --pipe {pipe_type} --build-root {build_root} {nn_name} '
-                f'--aipu-cores {aipu_cores} --metis {metis.name}{mode}',
+                f'--aipu-cores {aipu_cores} --metis {metis.name}',
             )
 
     except subprocess.CalledProcessError as e:
@@ -90,6 +90,10 @@ def _get_or_deploy_models(
         for model in model_infos.missing():
             exec_cores = model_infos.determine_execution_cores(model, requested_aipu_cores, metis)
             deploy_cores = model_infos.determine_deploy_cores(model, exec_cores, metis)
+            if deploy_cores == 0 and not model_infos.is_classical_cv_model(model):
+                raise ValueError(
+                    f"Model {model} is not a deep learning model, but aipu_cores is set to 0"
+                )
             if deploy_cores < exec_cores and deploy_cores > 1:
                 LOG.info(f"{model} is restricted to deploy and run for up to {deploy_cores} cores")
             elif deploy_cores < exec_cores and deploy_cores == 1:
@@ -132,19 +136,19 @@ def run(cmd, shell=True, check=True, verbose=False, capture_output=True):
                 print(result.stderr)
         return result
     except subprocess.CalledProcessError as e:
-        raise
+        raise e
 
 
 def _parse_dataset_source(source: str) -> Optional[str]:
     dataset_split = None
     if source.lower() == "dataset":
         dataset_split = "val"
-        LOG.info("Using default val dataset")
+        LOG.debug("Using default val dataset")
     elif source.lower().startswith('dataset:'):
         dataset_split = source[8:].lower()
         if not dataset_split:
             raise ValueError("Dataset input requires a set name")
-        LOG.info(f"Using dataset {dataset_split}")
+        LOG.debug(f"Using dataset {dataset_split}")
     return dataset_split
 
 
@@ -188,6 +192,7 @@ class PipeManager:
         rtsp_latency: int = 500,
         device_selector: str = '',
         specified_frame_rate: int = 0,
+        tile: dict[str, any] | None = None,
     ):
         network_path = _get_real_path_if_path_is_model_name(network_path)
         self.pipe_type = pipe_type
@@ -196,8 +201,6 @@ class PipeManager:
         if not server_loader and self.server_mode:
             raise ValueError("Server mode requires a loader")
         self.server_loader = server_loader
-
-        self.agg_pads = None
         self.specified_frame_rate = specified_frame_rate
         data_root = data_root or config.default_data_root()
         build_root = build_root or config.default_build_root()
@@ -270,10 +273,15 @@ class PipeManager:
             )
             self._evaluator = None
         elif self.eval_mode:
-            if task_graph.network_type in {
-                graph.NetworkType.SINGLE_MODEL,
-                graph.NetworkType.CASCADE_NETWORK,
-            }:
+            eval_tracking_task = False
+            if (
+                task_graph.network_type
+                in {
+                    graph.NetworkType.SINGLE_MODEL,
+                    graph.NetworkType.CASCADE_NETWORK,
+                }
+                and not tile
+            ):
                 root_task, leaf_task = task_graph.get_root_and_leaf_tasks()
                 if task_graph.network_type == graph.NetworkType.CASCADE_NETWORK:
                     LOG.info(
@@ -292,9 +300,22 @@ class PipeManager:
                     )
                 else:
                     model_name = mi.name
+
+                task_categories = {
+                    task_graph.get_task(task).model_info.task_category
+                    for task in task_graph.task_names
+                }
+                if types.TaskCategory.ObjectTracking in task_categories:
+                    eval_tracking_task = True
+                    LOG.info(
+                        "Tracker task detected for accuracy measurement. "
+                        "To evaluate object detection accuracy instead, "
+                        "please remove the tracker task from the pipeline"
+                    )
+
             else:
                 raise ValueError(
-                    f"For accuracy measurement, only single model and cascade networks are supported"
+                    f"For accuracy measurement, only single model and cascade networks are supported with no tiling"
                 )
 
             val_components = io.get_validation_components(
@@ -323,69 +344,45 @@ class PipeManager:
                 evaluator=val_components.evaluator,
             )
         else:
-            if len(sources) > 1:
-                self.pipein = io.MultiplexPipeInput(
-                    pipe_type,
-                    sources,
-                    hardware_caps=self.hardware_caps,
-                    allow_hardware_codec=self.allow_hardware_codec,
-                    color_format=task.input.color_format,
-                    rtsp_latency=self.rtsp_latency,
-                    specified_frame_rate=self.specified_frame_rate,
-                )
-            else:
-                self.pipein = io.PipeInput(
-                    pipe_type,
-                    sources[0],
-                    hardware_caps=self.hardware_caps,
-                    allow_hardware_codec=self.allow_hardware_codec,
-                    color_format=task.input.color_format,
-                    rtsp_latency=self.rtsp_latency,
-                    specified_frame_rate=self.specified_frame_rate,
-                )
+            root_task = tile and task_graph.get_root_and_leaf_tasks()[0]
+            mi = root_task and nn.find_model_info_from_task(root_task)
+            self.pipein = io.MultiplexPipeInput(
+                pipe_type,
+                sources,
+                hardware_caps=self.hardware_caps,
+                allow_hardware_codec=self.allow_hardware_codec,
+                color_format=task.input.color_format,
+                rtsp_latency=self.rtsp_latency,
+                specified_frame_rate=self.specified_frame_rate,
+                model_info=mi,
+            )
             self._evaluator = None
         self.sources = {n: src for n, src in enumerate(sources)}
         self.pipeout = io.PipeOutput(save_output=save_output, tracers=tracers)
-        self._pipeline.gen_end2end_pipe(self.pipein, self.pipeout)
+        self._pipeline.gen_end2end_pipe(self.pipein, self.pipeout, tile=tile)
 
-    def add_source_with_id(self, source, next_id):
-        if next_id in self.sources:
-            LOG.warning(f"Unable to add source on slot {next_id} already taken")
+    def add_source(self, source, source_id: int = -1):
+        if source_id == -1:
+            source_id = max(self.sources.keys()) + 1
+        if source_id in self.sources:
+            LOG.warning(f"Unable to add source on slot {source_id} already taken")
             return
 
-        if self.agg_pads == None:
-            self.agg_pads = self._pipeline.get_agg_pads()
-        pipe_newinput = io.PipeInput(
-            self.pipe_type,
-            source,
-            hardware_caps=self.hardware_caps,
-            allow_hardware_codec=self.allow_hardware_codec,
-        )
-        self.agg_pads[next_id] = self._pipeline.gen_newinput_gst(pipe_newinput, next_id)
-        self.sources[next_id] = source
+        pipe_newinput = self.pipein.add_source(source)
+        self._pipeline.add_source(pipe_newinput, source_id)
+        self.sources[source_id] = source
+        return source_id
 
-    def stream_select(self, streams):
+    def remove_source(self, source_id):
+        self.pipein.remove_source(self.sources[source_id])
+        self._pipeline.remove_source(source_id)
+        del self.sources[source_id]
+
+    def stream_select(self, streams: Iterable[int] | str) -> None:
         self._pipeline.stream_select(streams)
 
-    def add_source(self, source):
-        if self.agg_pads == None:
-            self.agg_pads = self._pipeline.get_agg_pads()
-        next_id = max(self.sources.keys()) + 1
-        self.add_source_with_id(source, next_id)
-        return next_id
-
-    def remove_source(self, idx):
-        if self.agg_pads == None:
-            self.agg_pads = self._pipeline.get_agg_pads()
-        if idx not in self.agg_pads:
-            LOG.warning(f"Source slot {idx} not occupied")
-            return
-        if len(self.agg_pads) == 1:
-            LOG.warning(f"Can't remove last stream, stop pipeline insted")
-            return
-        self._pipeline.remove_source(self.agg_pads[idx])
-        del self.agg_pads[idx]
-        del self.sources[idx]
+    def get_stream_select(self) -> list[int]:
+        return self._pipeline.get_stream_select()
 
     @property
     def pipe(self):
@@ -402,9 +399,6 @@ class PipeManager:
 
     def init_pipe(self):
         self._pipeline.init()
-
-    def get_pipe(self):
-        return self._pipeline.get_pipe()
 
     def run_pipe(self):
         for tracer in self.tracers:
@@ -444,10 +438,8 @@ class PipeManager:
         return bool(self._dataset_split)
 
     def build_dependency_graph(self, nn_tasks):
-        import io
-
         task_graph = graph.DependencyGraph(nn_tasks)
-        output = io.StringIO()
-        task_graph.print_graph(output)
-        LOG.info(f"Network type: {task_graph.network_type}\n{output.getvalue()}")
+        if LOG.isEnabledFor(logging_utils.DEBUG):
+            task_graph.print_all_views(LOG.debug)
+            LOG.debug(f"Network type: {task_graph.network_type}")
         return task_graph

@@ -8,7 +8,6 @@
 # TODO: install apt packages together rather than one after another
 # TODO: system libs better named system packages
 # TODO: some installer requirements could be installed by the installer itself
-# TODO: STATUS_installed_cuda_runtime may be duplicate of VAR_installed_cuda_runtime
 # TODO: some packages should be migrated (no attempt by installer) e.g.
 # TODO:   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/migrating-from-1.0.html#migration-1-0
 # TODO: dpkg-query can error in broken systems e.g. if ctrl+c on apt update (should catch)
@@ -31,7 +30,7 @@ STR_system="System"
 STR_docker="Docker"
 STR_needed="Needed"
 STR_reinstall_needed="Reinstall Needed"
-STR_upgrade_needed="Upgrade Needed"
+STR_upgrade_needed="Replace Needed"
 STR_docker_needed="Docker"
 STR_install="Install"
 STR_unsupported="Unsupported"
@@ -56,7 +55,6 @@ ARG_driver=false
 ARG_no_driver=false
 ARG_gen_requirements=false
 ARG_gen_pipfile=false
-ARG_patch_activation=false
 ARG_dry_run=false
 ARG_docker=false
 ARG_docker_system=false
@@ -70,6 +68,8 @@ ARG_activate_env=false
 ARG_quiet=false
 ARG_allow_as_sudo=false
 ARG_verbose=false
+ARG_llm=false
+ARG_debug=false
 
 STATUS_container=$STR_unset
 STATUS_pyenv_root=$STR_unset
@@ -82,7 +82,6 @@ STATUS_penv_pip=$STR_unset
 STATUS_penv_setuptools=$STR_unset
 STATUS_penv_wheel=$STR_unset
 STATUS_penv_requirements=$STR_unset
-STATUS_installed_cuda_runtime=$STR_unset
 
 AX_development_component=$STR_unset
 AX_development_where=
@@ -133,8 +132,8 @@ AX_gen_requirements_component=$STR_unset
 AX_gen_requirements_tasks="0"
 AX_gen_pipfile_component=$STR_unset
 AX_gen_pipfile_tasks="0"
-AX_patch_activation_component=$STR_unset
-AX_patch_activation_tasks="0"
+
+AX_prerequisite_tasks="0"
 
 VAR_deferred_warnings=
 VAR_any_errors=false
@@ -161,8 +160,6 @@ VAR_need_separator=true
 VAR_post_table=false
 VAR_i="1"
 
-VAR_installed_cuda_runtime=
-VAR_used_cuda_runtime=
 VAR_used_container=
 VAR_target_container=
 VAR_target_container_tag="${ARG_tag}"
@@ -176,12 +173,14 @@ VENV=${VENV:-"venv"}
 ACTIVATE="$VENV/bin/activate"
 AX_HOME="${HOME}/.cache/axelera"
 
-SYS_OS_name=$(lsb_release -is 2>/dev/null)
-SYS_OS_version=$(lsb_release -rs 2>/dev/null)
-SYS_OS_version=${SYS_OS_version//_/-}
-SYS_OS_version=${SYS_OS_version//./}
-SYS_arch=$(dpkg --print-architecture 2>/dev/null)
-SYS_config=${SYS_config:-"cfg/config-${SYS_OS_name,,}-$SYS_OS_version-$SYS_arch.yaml"}
+determine_system_and_cfg_file() {
+  SYS_OS_name=$(lsb_release -is 2>/dev/null)
+  SYS_OS_version=$(lsb_release -rs 2>/dev/null)
+  SYS_OS_version=${SYS_OS_version//_/-}
+  SYS_OS_version=${SYS_OS_version//./}
+  SYS_arch=$(dpkg --print-architecture 2>/dev/null)
+  SYS_config=${SYS_config:-"cfg/config-${SYS_OS_name,,}-$SYS_OS_version-$SYS_arch.yaml"}
+}
 
 trace() {
   # Print trace of function calls for debugging
@@ -382,7 +381,6 @@ spaces() {
 }
 
 progress_num() {
-  local bar=
   local t=${#VAR_tasks}
   local v=${#VAR_i}
   local pad=$((t-v))
@@ -390,11 +388,11 @@ progress_num() {
   # If 10 or more tasks, make 0..9 indent prettier
   if $VAR_tasks_unknown_requirements; then
     n="${VAR_tasks}+"
-    printf " "
-  elif [[ "$VAR_tasks" -ge "10" ]] && [[ "$VAR_i" -lt "10" ]]; then
-    printf " "
+    pad=0
+  elif (( $pad <= 0 )); then
+    pad=0
   fi
-  printf '[%s/%s]' "$VAR_i" "$n"
+  printf '%*s[%s/%s]' $pad '' "$VAR_i" "$n"
 }
 
 progress() {
@@ -403,7 +401,7 @@ progress() {
 }
 
 progress_info() {
-  $ARG_dry_run || progress "$@"
+  ($ARG_dry_run && ! $ARG_verbose && ! $ARG_debug) || progress "$@"
 }
 
 error_print() {
@@ -448,6 +446,11 @@ first_word() {
   echo "${1%%[[:space:]]*}"
 }
 
+hide_token() {
+  # Hide token in URL
+  echo "$*" | sed -e 's|\(https\?://.\+:\)\(.\+\)@|\1****@|g'
+}
+
 cmd() {
   # Run command and put return code in $1
   # Return true for 0, false otherwise
@@ -457,7 +460,7 @@ cmd() {
     CMD_return=0
     return
   elif $ARG_verbose; then
-    progress "$*"
+    progress $(hide_token "$*")
   fi
   if $ARG_verbose; then
     eval "$*" 2>&1 | grep --line-buffered -v '^\s*$' | sed -e "s|^|$(progress_num) |;";
@@ -483,7 +486,9 @@ cmd() {
 cmd_rm() {
   # Remove file or directory even if owned by another user
   if [ -e "$1" ] && [ ! -O "$1" ]; then
-    echo "File or directory '$1' owned by another user (using sudo to remove)"
+    if $ARG_verbose; then
+      echo "File or directory '$1' owned by another user (using sudo to remove)"
+    fi
     if cmd sudo rm -rf "$1"; then
       true
     else
@@ -573,7 +578,7 @@ apt_install_with_dep_check() {
 check_installer_requirements_met() {
   local ok=true
   # use system pip at this stage as not in virtual env here
-  local pip_install="pip install"
+  local pip_install="python3 -m pip install"
   if ! is_set "$VIRTUAL_ENV" && [[ $(id -u) -ne 0 ]]; then
     # If not in a venv, and not root, install required
     # packages with --user flag (no sudo/systemwide effect)
@@ -610,7 +615,7 @@ check_installer_requirements_met() {
     VAR_installer_pip_upgrades=""
   fi
   if [ "${#installs[@]}" -ne "0" ]; then
-    if response_is_yes "Install/update prerequisite packages required by the installer itself"; then
+    if response_is_yes "Install/update prerequisite $1 packages required by the installer itself"; then
       for install in "${installs[@]}"; do
         if [[ "$install" =~ "apt-get" ]]; then
           local sep="install -y"
@@ -661,7 +666,7 @@ installer_pip_requirement() {
   if ! is_pippkg_installed "$1"; then
     VAR_installer_pip_deps="$VAR_installer_pip_deps $1"
   elif [[ $# -eq 3 ]]; then
-    ver=$(python3 -m pip show pipenv | grep "Version:")
+    ver=$(python3 -m pip show "$1" | grep "Version:")
     ver=$(echo "${ver##Version:}" | xargs)
     if ! dpkg --compare-versions "$ver" "$2" "$3"; then
       echo "$1: Required version $2 $3 (version $ver installed)"
@@ -710,30 +715,6 @@ get_tag_from_yaml() {
   echo "$result"
 }
 
-installed_cuda_runtime() {
-  echo "$STR_not_detected"
-  # TODO: decide what to do about CUDA support
-  #local cuda=
-  #local maj=
-  #local min=
-  #if is_set "$CUDA_VERSION"; then
-  #  if streq "$CUDA_VERSION" "cpu"; then
-  #    cuda=
-  #  else
-  #    cuda=$CUDA_VERSION
-  #  fi
-  #elif [[ -n "$(which nvidia-smi)" ]]; then
-  #  cuda=$(nvidia-smi | grep -Eo "CUDA Version: ([0-9]{1,}\.)*[0-9]{1,}" | sed -e 's/CUDA Version: //')
-  #fi
-  #if is_set "$cuda"; then
-  #  maj=$(echo "$cuda" | cut -f1,1 -d'.')
-  #  min=$(echo "$cuda" | cut -f2,2 -d'.')
-  #  echo "$maj.$min"
-  #else
-  #  echo "$STR_not_detected"
-  #fi
-}
-
 get_arg() {
   local arg="ARG_${1//-/_}"
   echo "$arg"
@@ -779,7 +760,6 @@ only_one() {
 check_no_filegen_arg() {
   $ARG_gen_requirements && only_one "$1" "gen-requirements"
   $ARG_gen_pipfile && only_one "$1" "gen-pipfile"
-  $ARG_patch_activation && only_one "$1" "patch-activation"
 }
 
 check_no_component_install() {
@@ -812,7 +792,7 @@ update_repo_list() {
   if streq "$2" "$STR_system"; then
     if [[ ! "$VAR_system_repositories" == *${1}* ]]; then
       VAR_system_repositories="$VAR_system_repositories ${1}"
-      inc_tasks VAR_tasks
+      inc_tasks VAR_tasks 1 "$1: $2"
     fi
   elif streq "$2" "$STR_docker"; then
     VAR_docker_repositories="$VAR_docker_repositories ${1}"
@@ -858,7 +838,7 @@ resolve_option() {
   if $is_yes; then
     eval "$component"=\"$STR_install\"
     VAR_install=true
-    inc_tasks VAR_tasks "${!tasks}"
+    inc_tasks VAR_tasks "${!tasks}" "$1: $tasks"
     if ${!packages}; then
       streq "${!where}" "$STR_system" && VAR_any_system_packages=true
     fi
@@ -1042,6 +1022,14 @@ signcomp() {
   esac
 }
 
+escape() {
+  # Escape string for grep match
+  # 1: string to escape
+  local str="$1"
+  str=$(echo "$str" | sed -e 's/[]\/$*.+^|[]/\\&/g')
+  echo "$str"
+}
+
 is_dpkg_installed() {
   # Is package installed with optional version requirement met
   # 1: package name
@@ -1061,7 +1049,7 @@ is_dpkg_installed() {
     cmp=$(echo "${cmp##Version:}" | xargs)
   fi
   is_set "$dpkg_info" || dpkg_info=`dpkg -l | grep -E "^.i" | awk ' {print $2} '`
-  if grep -E "^$name(:|$)" <<< $dpkg_info > /dev/null; then
+  if grep -E "^$(escape "$name")(:|$)" <<< $dpkg_info > /dev/null; then
     if is_set "$op" && is_set "$cmp"; then
       ver=$(dpkg-query --show --showformat '${Version}' "$name")
       if dpkg --compare-versions "$ver" "$(signcomp "$op")" "$cmp"; then
@@ -1127,26 +1115,6 @@ print_config_needed_repos() {
   fi
 }
 
-get_cuda_str() {
-  local cuda=
-  local runtime=
-  if streq "$VAR_installed_cuda_runtime" "$STR_not_detected"; then
-    cuda="$STR_not_detected (using libs for cpu)"
-  elif streq "$VAR_installed_cuda_runtime" "$VAR_used_cuda_runtime"; then
-    cuda="$VAR_installed_cuda_runtime"
-  elif is_set "$VAR_used_cuda_runtime"; then
-    if streq "$VAR_used_cuda_runtime" "cpu"; then
-      runtime="cpu"
-    else
-      runtime="runtime $VAR_used_cuda_runtime"
-    fi
-    cuda="$VAR_installed_cuda_runtime (using libs for $runtime)"
-  else
-    cuda="$VAR_installed_cuda_runtime"
-  fi
-  echo "$cuda"
-}
-
 get_base_docker_str() {
   local base=
   if is_set "$VAR_used_container"; then
@@ -1158,16 +1126,13 @@ get_base_docker_str() {
 }
 
 print_config() {
-  local name="Python libs"
   local name="Axelera AI - Voyager SDK"
-  local cuda_docker_deps=
   local repo_status=
   local var=
   print_config_header
   print_config_title "$name"
   print_config_header
   print_os
-  print_config_setting "CUDA" "$(get_cuda_str)" "$STATUS_installed_cuda_runtime"
   if ! $ARG_status; then
     if arg_docker_or_file; then
       print_new_component
@@ -1294,15 +1259,8 @@ print_envs_to_source() {
   done
 }
 
-reload_python_requirements() {
-  VAR_requirements=$(awk NF 2>/dev/null < "$AX_penv_requirements")
-}
-
 load_python_requirements() {
-  if ! streq "$VAR_used_cuda_runtime" "cpu"; then
-    AX_penv_requirements="${AX_penv_requirements%".txt"}-cuda-$VAR_used_cuda_runtime.txt"
-  fi
-  reload_python_requirements
+  VAR_requirements=$(awk NF 2>/dev/null < "$AX_penv_requirements")
 }
 
 write_to_dockerfile() {
@@ -1383,55 +1341,6 @@ set_status_pyenv() {
   fi
 }
 
-selected_cuda_runtime() {
-  # Determine compatible cuda libs are available for runtime $1
-  # 1: installed CUDA
-  # 2: attribute to return
-  local installed="$1"
-  local attribute="$2"
-  local cuda=$(list_of_dict "AX_penv_cuda")
-  local cuda_versions=
-  local found=false
-  local var=
-  for var in $cuda; do
-    cuda_versions="${var}_version"
-    IFS=", " read -r -a cuda_versions <<< "${!cuda_versions}"
-    if in_array "$installed" "${cuda_versions[@]}"; then
-      found=true
-      attribute="${var}_$attribute"
-      echo "${!attribute}"
-      break
-    fi
-  done
-}
-
-revise_pipfile_for_compat_cuda() {
-  # Update requirements for specified CUDA version
-  local lib="$1"
-  local compat="$2"
-  local cuda=$(list_of_dict "AX_penv_cuda")
-  local cuda_compat=
-  local replace=
-  local var=
-  local found=false
-  for var in $cuda; do
-    cuda_compat="${var}_compat"
-    cuda_compat=${!cuda_compat}
-    if streq "$compat" "$cuda_compat"; then
-      replace="${var}_${lib}"
-      replace=${!replace}
-      is_set "$replace" && found=true
-      break
-    fi
-  done
-  # Replace CPU lib with CUDA-specific lib
-  if $found; then
-    sed -i "s|^${lib} .*$|${lib} = ${replace}|g" Pipfile
-  else
-    error "$SYS_config: CUDA $cuda_compat not found (compat attribute for '$lib')"
-  fi
-}
-
 set_status_pip() {
   # Check if already-installed pip meets required version
   local venv_pip=$($VENV/bin/pip3 --version 2>/dev/null)
@@ -1472,7 +1381,7 @@ set_status_pip_package() {
   if ! streq $(sanitize_version "$current_version") "$AX_penv_version" || [ -z "$AX_penv_version" ]; then
     eval "STATUS_penv_$1"=$STR_needed
     eval "$2"=\"$STR_needed\"
-    inc_tasks "${2//component/tasks}"
+    inc_tasks "${2//component/tasks}" 1 "$1"
   fi
 }
 
@@ -1521,15 +1430,67 @@ sanitize_version() {
   fi
 }
 
+set_status_python_libs() {
+    # Check if already-installed libs are consistent with requirements
+  local save=
+  local var=
+  local match=
+  local diff=
+  local _installed=
+  local _requested=
+  local _revised=
+  _installed=$("$VENV/bin/pip" freeze 2>/dev/null)
+  if ! is_set "$_installed"; then
+    STATUS_penv_requirements=$STR_needed
+    AX_development_component=$STR_needed
+  else
+    # PEP426 requires comparisions of distribution names to be case
+    # insensitive and consider hyphens and underscores equivalent
+    _installed=${_installed,,}
+    _installed=${_installed//_/-}
+    _requested=${VAR_requirements,,}
+    _requested=${_requested//_/-}
+    # As a special case, pillow-simd is intended to be
+    # interchangeable with pillow
+    if [[ "$_installed" =~ (pillow-simd==)(.*)(.post[^$'\n']) ]]; then
+      match=${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}
+      var="pillow==${BASH_REMATCH[2]}"
+      _installed=${_installed//$match/$var}
+    fi
+    # If a local wheel is followed by comments (with name=version),
+    # replace path with comment for accurate diffing with the
+    # installed version displayed by pip freeze
+    _revised=
+    while IFS="" read -r var || [ -n "$var" ]; do
+      if [[ "${var}" =~ ^[^#]*.whl[[:space:]]*\#.*$ ]] && ! [[ "${var}" =~ ^.*@.*(http(://|s://)|git+ssh://)*$ ]]; then
+        var=$(echo "${var##*\#}" | xargs)
+      else
+        var=$(uncomment_url_pkg "${var}")
+      fi
+      _revised="$_revised"$'\n'"${var}"
+    done <<< "$_requested"
+    _requested=${_revised:1}
+    diff=$(diff --old-line-format='-%L' --new-line-format="+%L" --unchanged-line-format="" <(echo "$_requested" | sort) <(echo "$_installed" | sort))
+    while IFS="" read -r var || [ -n "$var" ]; do
+      # Allow additional files (+) but not removed files (-)
+      # requirements specified with @ cannot be diffed easily
+      # (pip freeze cannot produce '@ git hashes')
+      # so don't consider these also (which can mask issues)
+      if [[ "${var::1}" == "-" ]] && \
+         ! [[ "${var:1}" =~ ^.*@.*(http(://|s://)|git+ssh://)*$ ]] && \
+         ! [[ "${var:1}" =~ ^# ]]; then
+        VAR_diff_requirements="$VAR_diff_requirements"$'\n'"${var:1}"
+        STATUS_penv_requirements=$STR_needed
+        AX_development_component=$STR_needed
+      fi
+    done <<< "$diff"
+    VAR_diff_requirements=${VAR_diff_requirements:1}
+  fi
+}
+
 set_status_development() {
   # Determine status of development environment and subcomponents
   local venv_python=
-  local venv_req=
-  local var_normalized_requirements=
-  local var=
-  local match=
-  local save=
-  local diff=
   AX_development_component=$STR_ok
   STATUS_penv_python=$STR_ok
   STATUS_penv_pip=$STR_ok
@@ -1569,52 +1530,7 @@ set_status_development() {
       STATUS_penv_pip=$STR_needed
       AX_development_component=$STR_needed
     fi
-    # Check if already-installed libs are consistent with requirements
-    venv_req=$("$VENV/bin/pip" freeze 2>/dev/null)
-    if ! is_set "$venv_req"; then
-      STATUS_penv_requirements=$STR_needed
-      AX_development_component=$STR_needed
-    else
-      # PEP426 requires comparisions of distribution names to be case
-      # insensitive and consider hyphens and underscores equivalent
-      save=$VAR_requirements
-      var_normalized_requirements=${VAR_requirements,,}
-      var_normalized_requirements=${var_normalized_requirements//_/-}
-      venv_req=${venv_req,,}
-      venv_req=${venv_req//_/-}
-      # As a special case, pillow-simd is intended to be
-      # interchangeable with pillow
-      if [[ "$venv_req" =~ (pillow-simd==)(.*)(.post[^$'\n']) ]]; then
-        match=${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}
-        var="pillow==${BASH_REMATCH[2]}"
-        venv_req=${venv_req//$match/$var}
-      fi
-      # If a local wheel is followed by comments (with name=version),
-      # replace path with comment for accurate diffing with the
-      # installed version displayed by pip freeze
-      VAR_requirements=
-      while IFS="" read -r var || [ -n "$var" ]; do
-        if [[ "$var" =~ ^.*.whl[[:space:]]*\#.*$ ]]; then
-          var=$(echo "${var##*\#}" | xargs)
-        fi
-        VAR_requirements="$VAR_requirements"$'\n'"${var}"
-      done <<< "$var_normalized_requirements"
-      var_normalized_requirements=${VAR_requirements:1}
-      VAR_requirements=$save
-      diff=$(diff --old-line-format='-%L' --new-line-format="+%L" --unchanged-line-format="" <(echo "$var_normalized_requirements" | sort) <(echo "$venv_req" | sort))
-      while IFS="" read -r var || [ -n "$var" ]; do
-        # Allow additional files (+) but not removed files (-)
-        # requirements specified with @ cannot be diffed easily
-        # (pip freeze cannot produce '@ git hashes')
-        # so don't consider these also (which can mask issues)
-        if [[ "${var::1}" == "-" ]] && ! [[ "${var:1}" =~ ^.*@.*(http(://|s://)|git+ssh://)*$ ]]; then
-          VAR_diff_requirements="$VAR_diff_requirements"$'\n'"${var:1}"
-          STATUS_penv_requirements=$STR_needed
-          AX_development_component=$STR_needed
-        fi
-      done <<< "$diff"
-      VAR_diff_requirements=${VAR_diff_requirements:1}
-    fi
+    set_status_python_libs
     # If a new Python, pip or requirements are required
     # we must install full venv
     if needed $STATUS_penv_python; then
@@ -1630,15 +1546,22 @@ set_status_development() {
       ok "$STATUS_penv_pip" && STATUS_penv_pip=$STR_reinstall_needed
     fi
     # Determine number of install tasks
-    needed "$AX_development_component" && inc_tasks AX_development_tasks # patch venv script
-    needed "$STATUS_pyenv_python" && inc_tasks AX_development_tasks
-    needed "$STATUS_penv_python" && inc_tasks AX_development_tasks
-    needed "$STATUS_penv_pip" && inc_tasks AX_development_tasks
+    needed "$AX_development_component" && inc_tasks AX_development_tasks 1 'patch venv script'
+    needed "$STATUS_pyenv_python" && inc_tasks AX_development_tasks 1 'pyenv_python'
+    needed "$STATUS_penv_python" && inc_tasks AX_development_tasks 1 'penv_python'
+    needed "$STATUS_penv_pip" && inc_tasks AX_development_tasks 1 'penv_pip'
     if needed "$STATUS_penv_requirements"; then
       if ! is_set "$VAR_requirements"; then
         # Need to run pipenv to calculate requirements
-        inc_tasks AX_development_tasks "$NUM_pipenv_tasks"
+        inc_tasks AX_development_tasks "$NUM_pipenv_tasks" 'pipenv'
         VAR_tasks_unknown_requirements=true
+      else
+        if ! arg_docker_or_file; then
+          inc_tasks AX_development_tasks "$AX_prerequisite_tasks" "prerequisites"
+          for subset in $(python_subsets_to_install); do
+            inc_tasks AX_development_tasks $(wc -w <<< $(subset_packages "$subset") | awk NF) "Install $subset libraries"
+          done
+        fi
       fi
     fi
     # If there is no requirements file, check if pipenv
@@ -1708,7 +1631,7 @@ add_apt_repositories() {
       progress_info "Add APT repository $apt_list"
       cmd sudo "$m1" || error "Failed to mkdir $(dirname "$key")"
       cmd sudo "$m2" || error "Failed to mkdir $(dirname "$key")"
-      cmd_rm -f "$key" || error "Failed to remove $key"
+      cmd_rm "$key" || error "Failed to remove $key"
       cmd sudo "$c1" || error "Failed to install key at ${url} to ${key}"
       cmd sudo "$c2" || error "Failed to set a+r permission for ${key}"
       cmd sudo "$m3" || error "Failed to mkdir $(dirname "$apt_list")"
@@ -1780,6 +1703,8 @@ install_system_package_with_apt() {
       if ! in_container; then
         cmd='(sudo /lib/systemd/systemd-udevd --daemon && sudo udevadm control --reload && sudo udevadm trigger && sudo udevadm settle)'
         cmd "$cmd" || echo "Warning: failed to reload udev rules"
+        # make sure pci ids are up to date so users see "Axelera" name for lspci
+        cmd "sudo update-pciids &> /dev/null" || true
       fi
     fi
   fi
@@ -1881,7 +1806,7 @@ install_python_prerequisites() {
 
 install_pip_extra(){
   # install unconditionally, but if we also knew we needed it, decrement task counter
-  local status="STATUS_$1"
+  local status="STATUS_penv_$1"
   if needed "${!status}"; then
     complete_task
   fi
@@ -1896,58 +1821,115 @@ get_env_tag() {
   echo "${env_tag}"
 }
 
-construct_auth_url() {
-  # Construct by embedding the authentication details
-  # 1: url
-
+ensure_and_validate_user_token() {
+  if $ARG_debug; then
+    echo "Authentication is required for the package index URL: ${1}" - for the subset "${2}"
+  fi
   if [ -z "$ARG_user" ]; then
     read -p "
     Email address not provided through --user <user>.
-    Please refer to docs/tutorials/install.md for more information.
+    (Please refer to docs/tutorials/install.md for more information.)
     Email address:" ARG_user
   fi
   if [ -z "$ARG_token" ]; then
     read -p "
     Token not provided through --token <token>.
-    Please refer to docs/tutorials/install.md for more information.
+    (Please refer to docs/tutorials/install.md for more information.)
     Token:" -s ARG_token
+    echo
   fi
+  local index_url=$(construct_auth_url "${1}")
+  local pkg=$(subset_packages "${2}" | head -1)
+  local check_cmd="pip install --dry-run --force --no-deps --no-cache-dir --index-url ${index_url} ${pkg}"
+  if $ARG_debug; then
+    echo "Checking credentials with:"  $(hide_token ${check_cmd})
+  fi
+  if ${check_cmd} &> /dev/null; then
+    if $ARG_debug; then
+      echo "Authentication successful"
+    fi
+  else
+    if $ARG_verbose; then 
+      ${check_cmd}
+    fi
+    error_continue "Authentication failed for the supplied email address (${ARG_user}) and token."
+    error_continue "Please check your credentials and try again."
+    error "(Please refer to docs/tutorials/install.md for more information.)"
+  fi
+}
 
+check_authentication() {
+  if install_penv_is_required && ! $ARG_dry_run; then
+    local index_url=
+    for subset in $(python_subsets_to_install); do
+      local auth="AX_penv_${subset}_requires_auth"
+      if [[ "${!auth}" = "True" ]]; then
+        local index_url_var="AX_penv_${subset}_index_url"
+        local _index_url=${!index_url_var}
+        if [[ "${_index_url}" =~ ^https?:// ]] && [[ "${_index_url}" != "${index_url}" ]]; then
+          index_url="${_index_url}"
+          ensure_and_validate_user_token "${index_url}" "${subset}"
+        fi
+      fi
+    done
+  fi
+}
+
+construct_auth_url() {
+  # Construct by embedding the authentication details
+  # 1: url
   echo $1 | sed -E "s#(https?://)(.*)#\1${ARG_user}:${ARG_token}@\2#"
 }
 
-install_python_libs() {
-  # Install the libraries from a given category
-  # 1: category
+subset_packages() {
+  # list the libraries from a given subset
+  # 1: subset
   local prefix="AX_penv_${1}_libs"
   local list=$(list "${prefix}")
+  shopt -s extglob
+  list="${list[@]//${prefix}_+([0-9])_/}"
+  shopt -u extglob
+  echo "${list[@]}"
+}
+
+install_python_libs() {
+  # Install the libraries from a given subset
+  # 1: subset
+  local list=$(subset_packages "$1")
   local index_url_var="AX_penv_${1}_index_url"
   local index_url=${!index_url_var}
   local auth="AX_penv_${1}_requires_auth"
 
-  shopt -s extglob
-  list="${list[@]//${prefix}_+([0-9])_/}"
-  shopt -u extglob
+  local secret_mount=
+  if [[ "${!auth}" = "True" ]]; then
+    local index_url_env_var="AX_index_url_${1}"
+    eval export ${index_url_env_var}=$(construct_auth_url $index_url)
+    index_url="\$${index_url_env_var}"
+    secret_mount="--mount=type=secret,id=${index_url_env_var},env=${index_url_env_var}"
+  fi
 
-  [ "${!auth}" = "True" ] && index_url=$(construct_auth_url $index_url)
-
-  cmd_stem="python3 -m pip --disable-pip-version-check install --index-url ${index_url} --no-deps -c ${AX_penv_requirements}"
-
-  inc_tasks VAR_tasks "$(wc -l <<< "${list}"  | awk NF)"
-  progress_info Installing ${1} libraries
-  for lib in ${list[@]}; do
-    progress_info "Install $lib"
-    if ! cmd ${cmd_stem} "\"$lib\""; then
-      echo
-      warn "Failed to install $lib"
-      echo
-      VAR_any_errors=true
+  if streq "$AX_development_where" "$STR_docker"; then
+    if [[ -n "${list}" ]]; then
+      write_to_dockerfile "RUN ${secret_mount} python3 -m pip install --no-cache-dir --no-deps --index-url ${index_url} -c \"$(basename ${AX_penv_requirements})\"" ${list}
     fi
-    complete_task
-  done
+  else
+    cmd_stem="python3 -m pip --disable-pip-version-check install --index-url ${index_url} --no-deps -c ${AX_penv_requirements}"
+
+    progress_info Installing ${1} libraries
+    for lib in ${list[@]}; do
+      progress_info "Install $lib"
+      if ! cmd ${cmd_stem} "\"$lib\""; then
+        echo
+        warn "Failed to install $lib"
+        echo
+        VAR_any_errors=true
+      fi
+      complete_task
+    done
+  fi
 }
 
-_to_be_stripped=()
+to_be_stripped=()
 
 drop_package() {
   local new_list=()
@@ -1965,65 +1947,118 @@ drop_package() {
   $dropped
 }
 
+uncomment_url_pkg() {
+  local pkg="$1"
+  # uncomment url packages if already commented
+  if [[ "$pkg" =~ ^(.*)\ \#( @ .*)$ ]]; then
+    pkg="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+  fi
+  echo "$pkg"
+}
+
+generate_pkg_matchers() {
+  local matchers=()
+  shopt -s extglob
+  for pkg in $1; do
+    if [[ "$pkg" =~ AX_penv_.+[0-9]+_.* ]]; then
+      pkg="${pkg//AX_penv_*+([0-9])_/}"
+      pkg="${pkg//_/[_-]}"
+      matchers+=("$pkg")
+    fi
+  done
+  shopt -u extglob
+  echo "${matchers[@]}"
+}
+
+with_out() {
+  if $1; then
+    echo "with"
+  else
+    echo "without"
+  fi
+}
+
 revise_requirements() {
   # tidy up requirements file to be a constraints file
   # and generate a trimmed version without AX packages
-  #
-  # if $1 is set, increment task counter
-  local do_tasks=${1:-false}
   rm -rf "$AX_penv_trimmed_requirements"
   local revised=
   local new_line=
   local pkg=
 
-  list="$(list AX_penv_development)"$'\n'"$(list AX_penv_runtime)"$'\n'"$(list AX_penv_axeleracommon)"
+  local llm_used=false
+  if [[ $(tail -1 "$AX_penv_requirements") =~ ^#\ Axelera\ config:.*\ llm_used=(true|false).*$ ]]; then
+    llm_used=${BASH_REMATCH[1]}
+  fi
+  if [[ ${llm_used} != ${ARG_llm} ]]; then
+    error_continue "${AX_penv_requirements} has been generated $(with_out ${llm_used}) '--llm', but you are trying to install $(with_out ${ARG_llm}) '--llm'"
+    error "Please ensure you run './$_self --gen-requirements' $(with_out ${ARG_llm}) '--llm' before installing."
+  fi
 
-  shopt -s extglob
-  for pkg in $list; do
-    pkg="${pkg//AX_penv_*+([0-9])_/}"
-    pkg="${pkg//_/[_-]}"
-    to_be_stripped+=("$pkg")
-  done
-  shopt -u extglob
+  list="$(list AX_penv_development)"$'\n'"$(list AX_penv_runtime)"$'\n'"$(list AX_penv_axeleracommon)"$'\n'"$(list AX_penv_torch)"
+
+  to_be_stripped=($(generate_pkg_matchers "$list"))
 
   while IFS= read -r pkg; do
-    if [[ "$pkg" =~ ^([^#]+)( @ .*)$ ]]; then
-      new_line="${BASH_REMATCH[1]} #${BASH_REMATCH[2]}"
-    else
-      new_line="$pkg"
-    fi
+    # uncomment this if qtools stops pinning torch version
+    #if [[ "$pkg" =~ ^([^#]+)( @ .*)$ ]]; then
+    #  new_line="${BASH_REMATCH[1]} #${BASH_REMATCH[2]}"
+    #else
+    #  new_line="$pkg"
+    #fi
+    new_line="$pkg"
     revised="${revised}"$'\n'"${new_line}"
-    if [[ "$pkg" =~ ^(.*)\ \#( @ .*)$ ]]; then
-      # uncomment url packages if already commented
-      pkg="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-    fi
-    if ! drop_package "$pkg"; then
+    pkg=$(uncomment_url_pkg "$pkg")
+    if [[ ! "$pkg" =~ ^# ]] && ! drop_package "$pkg"; then
       echo "$pkg" >> "$AX_penv_trimmed_requirements"
     fi
   done < "$AX_penv_requirements"
-  if $do_tasks; then
-    inc_tasks VAR_tasks "$(wc -l "$AX_penv_trimmed_requirements" | awk '{print $1}')"
-  fi
+  AX_prerequisite_tasks="$(wc -l "$AX_penv_trimmed_requirements" | awk '{print $1}')"
   echo "${revised:1}" > "$AX_penv_requirements"
 }
 
-install_required_python_libs() {
-  revise_requirements true
-  install_python_prerequisites
-  if [ -z "$(list AX_penv_common)" ]; then
-    install_python_libs "libs"
+python_subsets_to_install() {
+  local subsets="axeleracommon torch"
+
+  if $ARG_gen_requirements; then
+    subsets+=" development runtime"
   else
-    # We won't reach here if no development nor runtime environment are selected
-    install_python_libs "axeleracommon"
-    requested_install "development" && install_python_libs "development"
-    requested_install "runtime" && install_python_libs "runtime"
+    # until envs are properly separated, runtime also needs development
+    ($ARG_no_development && $ARG_no_runtime) || subsets+=" development"
+    $ARG_no_runtime || subsets+=" runtime"
+  fi
+  ${ARG_llm} && subsets+=" llm"
+
+  echo "$subsets"
+}
+
+install_requested_python_libs() {
+  # can be for system or docker
+  local for_system_env=${1:-false}
+
+  if $for_system_env; then
+    install_python_prerequisites
+  else
+    write_to_dockerfile "RUN python3 -m pip install --no-cache-dir --no-deps -r \"$(basename "$AX_penv_trimmed_requirements")\""
+  fi
+
+  for subset in $(python_subsets_to_install); do
+      install_python_libs "$subset"
+  done
+}
+
+install_penv_is_required() {
+  # Any change to pip or requirements requires full generation of environment
+  if needed "$STATUS_penv_pip" || needed "$STATUS_penv_requirements"; then
+    true
+  else
+    false
   fi
 }
 
 install_penv_system() {
   local var=
-  if needed "$STATUS_penv_pip" || needed "$STATUS_penv_requirements"; then
-    # Any change to pip or requirements requires full generation of environment
+  if install_penv_is_required; then
     if ! $VAR_pyenv_set_local; then
       cmd "$VAR_pyenv" local "$AX_penv_python" || error "Failed to switch pyenv to version $AX_penv_python"
       VAR_pyenv_set_local=true
@@ -2046,24 +2081,23 @@ install_penv_system() {
     fi
     complete_task
     progress_info "Install pip ${AX_penv_pip#==}"
-    cmd python3 -m ensurepip --upgrade || echo "Warning: ignoring ensurepip failure"
+    cmd python3 -m ensurepip --upgrade || warn "ignoring ensurepip failure"
     cmd python3 -m pip install --disable-pip-version-check --upgrade \""pip$AX_penv_pip"\" || error "Failed to install \"pip$AX_penv_pip\""
     install_pip_extra "setuptools"
     install_pip_extra "wheel"
     complete_task
-    install_required_python_libs
+    install_requested_python_libs true
     patch_activation_script ${env_tag}
   fi
 }
 
-# TODO remove git/ssh when we remove current dependency on git revisions
 install_penv_docker() {
   write_to_dockerfile "RUN apt-get update && apt-get install -y --no-install-recommends python3-pip git ssh"
-  write_to_dockerfile "COPY $AX_penv_requirements ."
+  write_to_dockerfile "COPY $AX_penv_requirements $AX_penv_trimmed_requirements ."
   write_to_dockerfile "RUN python3 -m pip install --disable-pip-version-check --upgrade \"pip$(sanitize_version "$AX_penv_pip")\""
   write_to_dockerfile "RUN python3 -m pip install --disable-pip-version-check --upgrade \"setuptools$(sanitize_version "$AX_penv_setuptools")\""
   write_to_dockerfile "RUN python3 -m pip install --disable-pip-version-check --upgrade \"wheel$(sanitize_version "$AX_penv_wheel")\""
-  write_to_dockerfile "RUN python3 -m pip install --no-cache-dir --no-deps -r \"$(basename "$AX_penv_requirements")\" $(pip_extra_index_url)"
+  install_requested_python_libs false
 }
 
 install_needed_python_components() {
@@ -2287,14 +2321,14 @@ set_status_system_libs() {
       eval "$status"=\""$STR_upgrade_needed"\"
       eval "$2"=\""$STR_needed"\"
       eval "$packages"=\(true\)
-      inc_tasks "$tasks"
+      inc_tasks "$tasks" 1 "${pkg[0]} out of date"
     else
       # Not installed
       is_set "$recommended_repos" && add_repo=true
       eval "$status"=\""$STR_needed"\"
       eval "$2"=\""$STR_needed"\"
       eval "$packages"=\(true\)
-      inc_tasks "$tasks"
+      inc_tasks "$tasks" 1 "${pkg[0]} not installed"
     fi
     # Warn about possibly missing packages
     if [[ "${pkg[0]}" == *.deb ]]; then
@@ -2316,15 +2350,20 @@ set_status_system_libs() {
 
 set_status_all() {
   # Set status of all components
+  $ARG_gen_requirements || revise_requirements
   for var in "${!AX_@}"; do
     declare -g "${var//AX/STATUS}"="$STR_unset"
   done
   set_status_os
   arg_docker_or_file && set_status_docker
-  $ARG_gen_requirements && set_status_gen_requirements
+  $ARG_gen_requirements && set_status_gen_requirements && set_status_system_libs "AX_penv_pyenv_dependencies" AX_development_component
+
   ($ARG_no_development && $ARG_no_runtime) || set_status_development
   $ARG_no_runtime || set_status_component "AX_runtime"
   $ARG_no_driver || set_status_component "AX_driver"
+  if ! needed "$STATUS_container" && ! $ARG_dry_run && ! $ARG_gen_requirements; then
+    inc_tasks VAR_tasks 1 "operators / refresh"
+  fi
 }
 
 response_is_yes() {
@@ -2367,6 +2406,10 @@ response_is_yes() {
 inc_tasks() {
   # 1: Variable
   # 2: Optional number of tasks
+  # 3: Optional task description for debugging
+  if $ARG_debug; then
+    echo "inc_tasks $1: ${FUNCNAME[2]}:${BASH_LINENO[1]}:${FUNCNAME[1]}:${BASH_LINENO[0]}" "${2:-1}" "${3}"
+  fi
   eval "$1"=\($(($1+${2:-1}))\)
 }
 
@@ -2375,26 +2418,19 @@ complete_task() {
   VAR_i=$((VAR_i+${1:-1}))
 }
 
-pip_extra_index_url() {
-  # Get pip --extra-index-url value
-  local repo=$(list_of_dict "AX_penv_repositories")
-  local extra=
-  local var=
-  local name=
-  local ssl=
-  local url=
-  local pip_extra_args=
-  local default=
-  local requirement=
-  for var in $repo; do
-    default="${var}_default"
-    url="${var}_url"
-    pip_extra_args="${var}_pip_extra_args"
-    if ! streq "${!default}" "True"; then
-      extra="$extra --extra-index-url=\"${!url}\" ${!pip_extra_args}"
-    fi
-  done
-  echo "${extra:1}"
+filter_libs_for_pipfile() {
+  if ! ${ARG_llm}; then
+    # remove llm libs
+    local filtered=()
+    for lib in $1; do
+      if [[ ! "$lib" =~ ^.*_llm_libs_.*$ ]]; then
+        filtered+=("$lib")
+      fi
+    done
+    echo "${filtered[@]}"
+  else
+    echo "${libs}"
+  fi
 }
 
 gen_pipfile() {
@@ -2411,14 +2447,18 @@ gen_pipfile() {
     echo "./$_self --gen-pipfile"
     return
   fi
+  libs=$(filter_libs_for_pipfile "$libs")
   progress_info "Generate Pipfile from YAML requirements"
   echo "# Auto-generated Pipfile" > Pipfile
   echo >> Pipfile
   for var in $repo; do
     name="${var}_name"
     name=${!name}
+    auth="${var}_requires_auth"
+    auth=${!auth}
     url="${var}_url"
     url=${!url}
+    [ "${auth}" = "True" ] && url=$(construct_auth_url $url)
     ssl="${var}_ssl"
     ssl=${!ssl}
     ssl="${ssl,,}"
@@ -2454,10 +2494,6 @@ gen_pipfile() {
     echo "[requires]"
     echo "python_version = \"$AX_penv_python\""
   } >> Pipfile
-  if ! streq "$VAR_used_cuda_runtime" "cpu"; then
-    revise_pipfile_for_compat_cuda "torch" "$VAR_used_cuda_runtime"
-    revise_pipfile_for_compat_cuda "torchvision" "$VAR_used_cuda_runtime"
-  fi
   complete_task
 }
 
@@ -2564,9 +2600,10 @@ pipfile_to_requirements() {
     fi
   done
   echo "$resolved" > "$AX_penv_requirements"
+  echo "# Axelera config: llm_used=${ARG_llm}" >> "$AX_penv_requirements"
   revise_requirements
   complete_task
-  reload_python_requirements
+  load_python_requirements
   inc_tasks VAR_tasks "$(wc -l <<< "$VAR_requirements"  | awk NF)"
   VAR_tasks_unknown_requirements=false
 }
@@ -2577,7 +2614,7 @@ patch_activation_script() {
   local destruct=$(cat .activate_destruct)
   progress_info "Patch ${ACTIVATE} with code to set additional environment variables"
   if $ARG_dry_run; then
-    echo "./$_self --patch-activation > \"${ACTIVATE}\""
+    echo "Patch \"${ACTIVATE}\""
   elif [[ "$script" == *"# Patched"* ]]; then
     error "${ACTIVATE} script has already been patched"
   else
@@ -2628,8 +2665,12 @@ check_home_folder_link() {
   local home_folder="${AX_HOME}/$1"
   local warning=
   if [ -L "$1" ]; then
-    if [ ! "$(readlink "$1")" -ef "$home_folder" ]; then
-      warning="$1: is already a symbolic link to $(readlink "$1")"
+    local destination=$(readlink "$1")
+    if [ ! "${destination}" -ef "$home_folder" ]; then
+      warning="$1: is already a symbolic link to ${destination}"
+      if [ ! -e "${destination}" ]; then
+        warning="$warning: but the target does not exist"
+      fi
     fi
   elif [ -e "$1" ]; then
     warning="$1: exists but is not a symbolic link"
@@ -2717,7 +2758,6 @@ for arg in "$@"; do
     "--no-driver")         set -- "$@" "-P" ;;
     "--gen-requirements")  set -- "$@" "-g" ;;
     "--gen-pipfile")       set -- "$@" "-i" ;;
-    "--patch-activation")  set -- "$@" "-b" ;;
     "--dry-run")           set -- "$@" "-n" ;;
     "--docker")            set -- "$@" "-k" ;;
     "--gen-dockerfile")    set -- "$@" "-K" ;;
@@ -2731,13 +2771,20 @@ for arg in "$@"; do
     "--quiet")             set -- "$@" "-q" ;;
     "--verbose")           set -- "$@" "-v" ;;
     "--allow-as-sudo")     set -- "$@" "-S" ;;
+    "--llm")               set -- "$@" "-l" ;;
+    "--debug")             set -- "$@" "-V" ;;
     "--help")              set -- "$@" "-h" ;;
+    --*)                   echo Invalid option: $arg
+                           echo
+                           set -- "-h"
+                           break
+                           ;;
     *)                     set -- "$@" "$arg"
   esac
 done
 
 # Parse command-line options
-while getopts ":adDrRpPgibnkKcyYsefmqvShu:t:" opt; do
+while getopts ":adDrRpPginkKcyYsefmqvVlShu:t:" opt; do
   case $opt in
     a )
       ARG_all=true
@@ -2787,12 +2834,6 @@ while getopts ":adDrRpPgibnkKcyYsefmqvShu:t:" opt; do
       check_no_component_install "gen-pipfile"
       check_no_sudo "gen-pipfile"
       check_no_docker "gen-pipfile"
-      ;;
-    b )
-      ARG_patch_activation=true
-      check_no_component_install "patch-activation"
-      check_no_sudo "patch-activation"
-      check_no_docker "patch-activation"
       ;;
     n )
       ARG_dry_run=true
@@ -2845,8 +2886,14 @@ while getopts ":adDrRpPgibnkKcyYsefmqvShu:t:" opt; do
       ARG_verbose=true
       check_only_one_of_arg "quiet" "verbose"
       ;;
+    V )
+      ARG_debug=true
+      ;;
     S )
       ARG_allow_as_sudo=true
+      ;;
+    l )
+      ARG_llm=true
       ;;
     h )
       echo "Usage:"
@@ -2860,20 +2907,20 @@ while getopts ":adDrRpPgibnkKcyYsefmqvShu:t:" opt; do
       echo "  -t  --token <token>      token generated using the registered Axelera AI account (see also docs/tutorials/install.md)"
       echo "  -r  --runtime            install runtime libraries (--no-runtime supported)"
       echo "  -p  --driver             install PCIe/dkms driver (--no-driver supported)"
-      echo "      --artifacts          download local artifacts needed by the installer"
+      #echo "      --artifacts          download local artifacts needed by the installer"
       echo "      --media              download local media needed for tests/demos"
       echo "      --dry-run            print installation commands instead of executing"
       echo "      --docker             install into a Docker container"
       echo "      --gen-dockerfile     generate Dockerfile"
       echo "      --gen-pipfile        generate Pipfile from YAML"
       echo "      --gen-requirements   generate Python requirements from YAML"
-      echo "      --patch-activation   patch Pyenv activation script with additional functionality"
       echo "      --print-container    print container name/tag and exit"
       echo "      --status             check install status of components"
       echo "      --yes                answer yes to most installation questions (--YES for all)"
       echo "      --quiet              display less output"
       echo "      --verbose            display more output"
       echo "      --allow-as-sudo      allow installer to be run as sudo - not recommended"
+      echo "      --llm                install LLM components"
       echo "  -h, --help               display this help and exit"
       echo
       exit 0
@@ -2894,6 +2941,15 @@ shift $((OPTIND-1))
 
 exit_if_error
 
+if $ARG_dry_run; then
+  if [[ -z $ARG_user ]]; then
+    ARG_user="dry-run-user"
+  fi
+  if [[ -z $ARG_token ]]; then
+    ARG_token="dry-run-token"
+  fi
+fi
+
 # USER not always set (in containers?)
 if [ -z $USER ]; then
   USER=$(whoami)
@@ -2913,6 +2969,11 @@ elif [[ $USER != "root" ]]; then
   fi
 fi
 
+if $ARG_no_development && ! $ARG_no_runtime; then
+  warn "The development environment will also be installed, as the runtime environment currently requires it."
+  warn "(This will be improved in future releases)"
+fi
+
 if [[ ${SYS_arch} == "arm64" ]] && ! in_container; then
   prepare_arm_platform
 fi
@@ -2929,11 +2990,16 @@ installer_apt_requirement "ca-certificates"
 installer_apt_requirement "gnupg"
 installer_apt_requirement "cmake"
 installer_apt_requirement "xauth"
+installer_apt_requirement "pciutils"
 # ensure required apt packages are installed before attempting any pip packages
-check_installer_requirements_met
+check_installer_requirements_met "apt"
 
+installer_pip_requirement "pip" ">=" 22.2
 installer_pip_requirement "pyYAML"
-check_installer_requirements_met
+
+check_installer_requirements_met "pip"
+
+determine_system_and_cfg_file
 
 if $ARG_all; then
   set_arg_if_not_unset "development"
@@ -2960,6 +3026,18 @@ fi
 get_config_from_yaml "$SYS_config"
 AX_penv_trimmed_requirements=$(dirname "$AX_penv_requirements")/trimmed-$(basename "$AX_penv_requirements")
 
+if ${ARG_llm}; then
+  if [ -z "$(list AX_penv_llm_libs)" ]; then
+    error "Using the --llm option requires a non-empty \"penv:llm:libs:\" section to be present in ${SYS_config}"
+  fi
+  # Display a clear warning about potential issues with LLM packages
+  warn "*** IMPORTANT: Installing LLM packages may affect core SDK functionality ***"
+  warn "If you experience issues with core VISION model tasks after using LLM features,"
+  warn "it is strongly recommended to regenerate the requirements without LLM packages,"
+  warn "using ./${_self} --gen-requirements without the --llm flag."
+  warn "Then rerun the installer without the --llm flag to guarantee a clean environment."
+fi
+
 # DEBUG
 #for var in "${!AX_@}"; do
 # echo $var=${!var}
@@ -2971,42 +3049,25 @@ AX_penv_trimmed_requirements=$(dirname "$AX_penv_requirements")/trimmed-$(basena
 # with runtime or runtime alone (set up here without prompting)
 if arg_docker_or_file; then
   if $ARG_development && $ARG_no_runtime; then
-    echo "Docker development environment must contain runtime"
-    exit 1
+    error "Docker development environment must contain runtime"
   elif ! $ARG_development && $ARG_runtime; then
     # probably wants runtime only
-    warn "Defaulting to --no-development (specify --no-development to disable this warning)"
+    $ARG_no_development || warn "Defaulting to --no-development (specify --no-development to disable this warning)"
     ARG_no_development=true
   elif ! $ARG_no_development; then
     ARG_development=true
     ARG_runtime=true
   elif $ARG_no_runtime; then
-    echo "No docker components selected"
-    exit 1
+    error "No docker components selected"
   else
     ARG_runtime=true
   fi
 fi
 
-# If user wants --runtime-only then use a simple container without CUDA
-# Otherwise select CUDA compatible runtime if availble, or default to CPU
-VAR_installed_cuda_runtime=$(installed_cuda_runtime)
+VAR_used_container=$AX_docker_base
 if arg_docker_or_file && $ARG_no_development; then
-  STATUS_installed_cuda_runtime=$STR_unused
-  VAR_used_container=$AX_docker_base
   VAR_target_container=$AX_docker_target_runtime
 else
-  STATUS_installed_cuda_runtime=$STR_ok
-  VAR_used_cuda_runtime=$(selected_cuda_runtime "$VAR_installed_cuda_runtime" "compat")
-  is_set "$VAR_used_cuda_runtime" || VAR_used_cuda_runtime="cpu"
-  VAR_used_container=$(selected_cuda_runtime "$VAR_installed_cuda_runtime" "docker_base")
-  VAR_target_container=$(selected_cuda_runtime "$VAR_installed_cuda_runtime" "docker_target")
-  add_to_list "AX_docker_system_dependencies" "AX_docker_system_cuda_dependencies"
-fi
-
-# If can't find a container, default to base container
-if ! is_set "$VAR_used_container"; then
-  VAR_used_container=$AX_docker_base
   VAR_target_container=$AX_docker_target_base
 fi
 
@@ -3017,7 +3078,6 @@ else
   STATUS_base_docker=$STR_ok
 fi
 
-# Load Python requirements after selecting a CUDA runtime
 load_python_requirements
 
 # We can only calculate development container tags/hash once the Pyhon
@@ -3112,13 +3172,6 @@ if $ARG_gen_pipfile; then
   exit 0
 fi
 
-# User requested patching activation script
-if $ARG_patch_activation; then
-  VAR_tasks="1"
-  patch_activation_script $(get_env_tag)
-  exit 0
-fi
-
 # Other installation tasks cannot happen within a virtual environment
 if is_set "$VIRTUAL_ENV"; then
   echo "First run 'deactivate' and then re-run the installer"
@@ -3196,6 +3249,8 @@ else
   exit 0
 fi
 
+check_authentication
+
 if is_set $VAR_groups; then
   added=false
   for group in $VAR_groups; do
@@ -3214,12 +3269,11 @@ if is_set $VAR_groups; then
   fi
 fi
 
-# Update task count
 if $VAR_any_system_packages; then
-  inc_tasks VAR_tasks 2 # apt check and update
+  inc_tasks VAR_tasks 2 'apt check and update'
 fi
 if arg_docker; then
-  inc_tasks VAR_tasks 1 # docker build
+  inc_tasks VAR_tasks 1 'docker build'
 fi
 
 # Prompt for sudo password if it will be needed later
@@ -3290,7 +3344,7 @@ requested_install "driver" && install_component "AX_driver"
 # According to the sudo documentation:
 #
 #   sudo will read each file in /etc/sudoers.d, skipping file names that
-#   end in ‘~’ or contain a ‘.’ character to avoid causing problems with
+#   end in '~' or contain a '.' character to avoid causing problems with
 #   package manager or editor temporary/backup files.
 #
 # Hence, in order to make this work, we need to strip the dot from the
@@ -3301,9 +3355,6 @@ superpower="bash -c \"$superpower\""
 
 if ! needed "$STATUS_container"; then
   if ! $ARG_dry_run && ! $ARG_gen_requirements; then
-    # add USER to sudoers
-    cmd "sudo $superpower"
-
     # remaining tasks need active env
     # shellcheck disable=SC1090
     if [ -n "${_OLD_VIRTUAL_PATH:-}" ] ; then
@@ -3314,17 +3365,28 @@ if ! needed "$STATUS_container"; then
     echo building operators
     cmd "make clobber-libs && make operators" || warn "Failed to make operators"
 
-    # rescan pcie and reload firmware
-    if [ -d "/sys/bus/pci" ]; then
-      echo refreshing pcie and firmware
-      # on some platforms this can take a couple of tries
-      (axdevice --refresh &> /dev/null && axdevice --refresh) || warn "Failed to refresh pcie and firmware"
+    if is_dpkg_installed "metis-dkms"; then
+      # rescan pcie and reload firmware if the driver is installed
+      if [ -d "/sys/bus/pci" ]; then
+        echo refreshing pcie and firmware
+        # on some platforms this can take a couple of tries
+        (axdevice --refresh &> /dev/null && axdevice --refresh) || warn "Failed to refresh pcie and firmware"
+      fi
+    else
+      warn "No PCIe driver installed - skipping pcie/firmware refresh"
     fi
   fi
 else
   # Remove unnecessary Docker files and build a container
   DOK="DOCKER_BUILDKIT=1 docker build --compress -f Dockerfile -t \"$VAR_target_container:$VAR_target_container_tag\" ."
   DOK="${DOK} --network=\"host\""
+
+  for var in axeleracommon torch development runtime; do
+    var=AX_index_url_$var
+    if [[ -n "${!var}" ]]; then
+      DOK="${DOK} --secret id=$var"
+    fi
+  done
 
   if $ARG_verbose; then
     DOK="${DOK} --progress=plain"
@@ -3341,9 +3403,17 @@ else
     $ARG_dry_run || echo "Wrote output to Dockerfile"
   elif $ARG_dry_run; then
     docker_postinstall
+    # Add LLM packages to Dockerfile if requested
+    #if $ARG_llm; then
+    #  install_llm_packages
+    #fi
     echo "$DOK"
   else
     docker_postinstall
+    # Add LLM packages to Dockerfile if requested
+    #if $ARG_llm; then
+    #  install_llm_packages
+    #fi
     progress_info "Build container $VAR_target_container:$VAR_target_container_tag "
     IFS=", " read -r -a GROUPS <<< "$(groups)"
     if [[ ! " ${GROUPS[*]} " =~ " docker " ]]; then
@@ -3364,3 +3434,98 @@ fi
 if ! $ARG_dry_run && ! $ARG_gen_dockerfile && ! $ARG_gen_requirements; then
   print_next_steps "Installation complete"
 fi
+
+# Install LLM packages from the config
+install_llm_packages() {
+  if [ -z "$CONFIG_llm" ]; then
+    warn "No LLM configuration found in config file"
+    return 0
+  fi
+
+  # Display a clear warning about potential issues with LLM packages
+  warn "*** IMPORTANT: Installing LLM packages may affect core SDK functionality ***"
+  warn "If you experience issues with core VISION model tasks after using LLM features,"
+  warn "it is strongly recommended to remove the entire '$VENV' directory"
+  warn "and re-run the installer without the --llm flag to guarantee a clean environment."
+  
+  # Extract data from config
+  local llm_index_url=$(get_yaml_value "$CONFIG_llm" "index_url")
+  local llm_requires_auth=$(get_yaml_value "$CONFIG_llm" "requires_auth")
+  
+  # Get the libraries section
+  local llm_libs=$(get_yaml_value "$CONFIG_llm" "libs")
+  if [ -z "$llm_libs" ]; then
+    warn "No libraries defined in LLM configuration"
+    return 1
+  fi
+
+  # Process libraries
+  progress_info "Installing LLM packages from ${llm_index_url}"
+  
+  # For direct installation into venv
+  if ! $ARG_docker; then
+    # Construct the package list with version constraints
+    local llm_packages=()
+    
+    # Read each library from the config
+    while IFS=": " read -r package version; do
+      if [ -n "$package" ] && [ -n "$version" ]; then
+        # Remove quotes around version if present
+        version="${version//\"/}"
+        version="${version//\'/}"
+        
+        if [ "$version" = "*" ]; then
+          llm_packages+=("$package")
+        else
+          llm_packages+=("$package$version")
+        fi
+      fi
+    done < <(get_yaml_values "$llm_libs")
+    
+    # Join the packages into a space-separated string
+    local llm_packages_str="${llm_packages[*]}"
+    
+    if [ -n "$llm_packages_str" ]; then
+      # Install packages into the virtual environment
+      progress_info "Installing LLM packages: $llm_packages_str"
+      
+      # Activate venv if needed
+      if [[ ! "$VIRTUAL_ENV" == *"$VENV"* ]]; then
+        source "$VENV/bin/activate" || error "Failed to activate virtual environment"
+      fi
+      
+      cmd python3 -m pip install --disable-pip-version-check --no-cache-dir --index-url "$llm_index_url" $llm_packages_str || error_continue "Failed to install LLM packages"
+    else
+      warn "No valid LLM packages found in configuration"
+    fi
+  else
+    # For Docker, add to Dockerfile
+    local llm_packages_to_install=()
+    while IFS=": " read -r package version; do
+      if [ -n "$package" ] && [ -n "$version" ]; then
+        # Remove quotes around version if present
+        version="${version//\"/}"
+        version="${version//\'/}"
+        
+        if [ "$version" = "*" ]; then
+          llm_packages_to_install+=("$package")
+        else
+          llm_packages_to_install+=("$package$version")
+        fi
+      fi
+    done < <(get_yaml_values "$llm_libs")
+    
+    # Join the packages into a space-separated string
+    local llm_packages_to_install_str="${llm_packages_to_install[*]}"
+    
+    if [ -n "$llm_packages_to_install_str" ]; then
+      progress_info "Adding LLM packages to Dockerfile: $llm_packages_to_install_str"
+      write_to_dockerfile "RUN python3 -m pip install --no-cache-dir --index-url ${llm_index_url} ${llm_packages_to_install_str}\n"
+    fi
+  fi
+}
+
+# Handle LLM installation
+#if $ARG_llm && ! $ARG_gen_dockerfile && ! $ARG_dry_run; then
+#  install_llm_packages
+#fi

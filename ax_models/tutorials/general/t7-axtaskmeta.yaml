@@ -9,7 +9,7 @@ pipeline:
       model_name: model1
       input:
           type: image
-          color_format: rgb
+          color_format: RGB
       # here we use built-in preprocess AxOperators to achieve the same effect as your own transforms (override_preprocess)
       preprocess:
         - resize:
@@ -52,4 +52,3 @@ datasets:
     val_data: Test
     labels_path: ~/.cache/axelera/weights/tutorials/fruits360.names
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/fruits-360-100x100/repr_imgs/
-    disable_enumeration: True

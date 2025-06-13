@@ -1,5 +1,6 @@
 // Copyright Axelera AI, 2025
 #include "AxOpUtils.hpp"
+#include "AxStreamerUtils.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +11,68 @@
 #include <string_view>
 namespace ax_utils
 {
+std::string
+sizes_to_string(const std::vector<int> &sizes)
+{
+  return "(" + Ax::Internal::join(sizes, ",") + ")";
+}
+bool
+validate_shape(const std::vector<int> &new_shape, const std::vector<int> &original)
+{
+  if (new_shape.empty()) {
+    return true;
+  }
+  auto new_size = std::accumulate(
+      new_shape.begin(), new_shape.end(), 1, std::multiplies<int>());
+  auto original_size
+      = std::accumulate(original.begin(), original.end(), 1, std::multiplies<int>());
+  return new_size == original_size;
+}
+
+transfer_info
+get_transfer_info(const std::vector<int> &sizes, const std::vector<int> &padding)
+{
+  // strip leading ones until the padding is the right length. This is a bit of
+  // a hack to avoid having an explicit reshape. we can implicity do this if
+  // e.g. (0, 0, 0, 24) but shape is(1, 1, 1, 1024)
+  const auto padding_ndims = padding.size() / 2;
+  if (sizes.size() < padding_ndims
+      || !std::all_of(sizes.cbegin(), std::prev(sizes.cend(), padding_ndims),
+          [](int x) { return x == 1; })) {
+    throw std::runtime_error(
+        "transform_padding: " + ax_utils::sizes_to_string(padding) + " too short for input shape "
+        + ax_utils::sizes_to_string(sizes) + " after any implicit squeezing");
+  }
+
+  const auto first_size = std::prev(sizes.cend(), padding_ndims);
+  const auto crop
+      = std::any_of(padding.begin(), padding.end(), [](int x) { return x < 0; });
+  const auto grow
+      = std::any_of(padding.begin(), padding.end(), [](int x) { return x > 0; });
+  if (crop && grow) {
+    throw std::runtime_error("transform_padding: can remove or add padding, but not both in different dimensions:"
+                             + ax_utils::sizes_to_string(padding));
+  }
+
+  transfer_info info;
+  info.is_crop = crop;
+  info.in_sizes.assign(first_size, sizes.end());
+  info.out_sizes.reserve(padding_ndims);
+  info.ranges.reserve(padding_ndims);
+  for (size_t i = 0; i < padding_ndims; ++i) {
+    info.out_sizes.push_back(padding[2 * i] + info.in_sizes[i] + padding[2 * i + 1]);
+    info.ranges.emplace_back(std::abs(padding[2 * i]),
+        std::abs(padding[2 * i]) + std::min(info.in_sizes[i], info.out_sizes[i]));
+    if (info.out_sizes.back() <= 0) {
+      throw std::runtime_error(
+          "transform_padding: negative padding " + ax_utils::sizes_to_string(padding)
+          + " greater than tensor size in dimension " + std::to_string(i)
+          + " with input tensor " + ax_utils::sizes_to_string(sizes));
+    }
+  }
+  return info;
+}
+
 float
 dequantize(int value, float scale, int32_t zero_point)
 {
@@ -223,10 +286,12 @@ determine_scale(int video_width, int video_height, int tensor_width,
   bool scale_to_height = static_cast<double>(tensor_width) / tensor_height
                          > static_cast<double>(video_width) / video_height;
 
-  int adjusted_width
-      = scale_to_height ? video_height * tensor_width / tensor_height : video_width;
-  int adjusted_height
-      = scale_to_height ? video_height : video_width * tensor_height / tensor_width;
+  auto adjusted_width = scale_to_height ? video_height * tensor_width
+                                              / static_cast<float>(tensor_height) :
+                                          video_width;
+  auto adjusted_height = scale_to_height ? video_height :
+                                           video_width * tensor_height
+                                               / static_cast<float>(tensor_width);
 
   auto x_adjust = (adjusted_width - video_width) / 2.0F;
   auto y_adjust = (adjusted_height - video_height) / 2.0F;
@@ -359,7 +424,8 @@ trim(std::string_view s)
 }
 
 std::vector<std::string>
-read_class_labels(const std::string &filename, const std::string &src, Ax::Logger &logger)
+read_class_labels(const std::string &filename, const std::string &src,
+    Ax::Logger &logger, bool trimmed)
 {
   std::vector<std::string> class_labels;
   auto file = std::ifstream(filename);
@@ -369,12 +435,36 @@ read_class_labels(const std::string &filename, const std::string &src, Ax::Logge
     return {};
   }
   std::string s;
+  int line_num = 0;
+  bool bom_checked = false;
   while (getline(file, s)) {
-    s = trim(s);
-    if (!s.empty()) {
+    line_num++;
+
+    // Check for and remove UTF-8 BOM only on the very first line read
+    if (!bom_checked && line_num == 1 && s.length() >= 3
+        && static_cast<unsigned char>(s[0]) == 0xEF
+        && static_cast<unsigned char>(s[1]) == 0xBB
+        && static_cast<unsigned char>(s[2]) == 0xBF) {
+      logger(AX_DEBUG) << src << " : Detected and removed UTF-8 BOM from " << filename;
+      s = s.substr(3);
+    }
+    bom_checked = true; // Don't check again
+
+    if (trimmed == true) {
+      s = trim(s);
+      // Add only if not empty after trimming
+      if (!s.empty()) {
+        class_labels.push_back(s);
+      }
+    } else {
+      // Add the line as is (potentially empty, potentially after BOM removal)
       class_labels.push_back(s);
     }
   }
+
+  // Log only the final count, not every line
+  logger(AX_DEBUG) << src << " : Finished reading file " << filename
+                   << ". Total labels added: " << class_labels.size();
 
   return class_labels;
 }
@@ -411,6 +501,7 @@ get_buffer_details(const AxTensorInterface &input)
   details.format = AxVideoFormat::UNDEFINED;
   details.crop_x = 0;
   details.crop_y = 0;
+  details.actual_height = details.height;
   return details;
 }
 
@@ -434,6 +525,8 @@ get_buffer_details(const AxVideoInterface &input)
   details.stride = input.info.stride;
   if (input.fd != -1) {
     details.data = input.fd;
+  } else if (input.vaapi) {
+    details.data = input.vaapi;
   } else {
     details.data = input.data;
   }
@@ -448,6 +541,8 @@ get_buffer_details(const AxVideoInterface &input)
   }
   details.crop_x = input.info.x_offset;
   details.crop_y = input.info.y_offset;
+  details.actual_height = input.info.actual_height != 0 ? input.info.actual_height :
+                                                          input.info.height;
   return { details };
 }
 
@@ -469,15 +564,17 @@ determine_height(const buffer_details &info, int which_channel)
   switch (info.format) {
     case AxVideoFormat::BGRA:
     case AxVideoFormat::RGBA:
-      return info.height;
+    case AxVideoFormat::RGB:
+    case AxVideoFormat::BGR:
+      return info.actual_height;
     case AxVideoFormat::YUY2:
-      return info.height;
+      return info.actual_height;
     case AxVideoFormat::I420:
     case AxVideoFormat::NV12:
-      return which_channel == 0 ? info.height : info.height / 2;
+      return which_channel == 0 ? info.actual_height : info.actual_height / 2;
     case AxVideoFormat::UNDEFINED:
       if (which_channel == 0) {
-        return info.height;
+        return info.actual_height;
       } else {
         //  TODO: handle multiple channels
         throw std::runtime_error("Tensors should not have multiple channels");
@@ -491,7 +588,7 @@ determine_height(const buffer_details &info, int which_channel)
 int
 determine_size(const buffer_details &info, int which_channel)
 {
-  auto height = determine_height(info, which_channel) + info.crop_y;
+  auto height = determine_height(info, which_channel);
   auto stride = info.strides.empty() ? info.stride : info.strides[which_channel];
   return stride * height;
 }

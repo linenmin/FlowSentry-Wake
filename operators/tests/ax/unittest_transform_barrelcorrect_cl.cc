@@ -23,13 +23,17 @@ bool has_opencl_platform = [] {
   return error == CL_SUCCESS;
 }();
 
-INSTANTIATE_TEST_SUITE_P(BarrelCorrectTestSuite, ColorFormatFixture,
-    ::testing::Values(FormatParam{ AxVideoFormat::RGBA, 0 },
-        FormatParam{ AxVideoFormat::RGBA, 1 }, FormatParam{ AxVideoFormat::BGRA, 1 },
-        FormatParam{ AxVideoFormat::BGRA, 0 }, FormatParam{ AxVideoFormat::NV12, 0 },
+class BCColorFormatFixture : public ::testing::TestWithParam<FormatParam>
+{
+};
+
+INSTANTIATE_TEST_SUITE_P(BarrelCorrectTestSuite, BCColorFormatFixture,
+    ::testing::Values(FormatParam{ AxVideoFormat::RGB, 0 },
+        FormatParam{ AxVideoFormat::RGB, 1 }, FormatParam{ AxVideoFormat::BGR, 1 },
+        FormatParam{ AxVideoFormat::BGR, 0 }, FormatParam{ AxVideoFormat::NV12, 0 },
         FormatParam{ AxVideoFormat::I420, 0 }, FormatParam{ AxVideoFormat::YUY2, 0 }));
 
-TEST_P(ColorFormatFixture, happy_path)
+TEST_P(BCColorFormatFixture, happy_path)
 {
   FormatParam format = GetParam();
   if (!has_opencl_platform) {
@@ -42,8 +46,8 @@ TEST_P(ColorFormatFixture, happy_path)
   };
 
   Transformer barrelcorrect("libtransform_barrelcorrect_cl.so", input);
-  std::vector<int8_t> in_buf(1920 * 1080 * 4);
-  std::vector<int8_t> out_buf(1920 * 1080 * 4);
+  std::vector<int8_t> in_buf(1920 * 1080 * 3);
+  std::vector<int8_t> out_buf(1920 * 1080 * 3);
 
   std::vector<size_t> strides;
   std::vector<size_t> offsets;
@@ -56,6 +60,9 @@ TEST_P(ColorFormatFixture, happy_path)
   } else if (format.format == AxVideoFormat::YUY2) {
     strides = { 1920 * 2 };
     offsets = { 0 };
+  } else if (format.format == AxVideoFormat::RGB || format.format == AxVideoFormat::BGR) {
+    strides = { 1920 * 3 };
+    offsets = { 0 };
   } else {
     strides = { 1920 * 4 };
     offsets = { 0 };
@@ -64,8 +71,8 @@ TEST_P(ColorFormatFixture, happy_path)
     in_buf.data(), strides, offsets, -1 };
 
   auto out = AxVideoInterface{
-    { 1920, 1080, 1920 * 4, 0, format.bgra_out ? AxVideoFormat::BGRA : AxVideoFormat::RGBA },
-    out_buf.data(), { 1920 * 4 }, { 0 }, -1
+    { 1920, 1080, 1920 * 3, 0, format.bgra_out ? AxVideoFormat::BGR : AxVideoFormat::RGB },
+    out_buf.data(), { 1920 * 3 }, { 0 }, -1
   };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
   EXPECT_NO_THROW({ barrelcorrect.transform(in, out, metadata, 0, 1); });

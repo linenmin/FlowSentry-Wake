@@ -36,7 +36,7 @@ class DecodeRTMDet(AxOperator):
 
     def _post_init(self):
         super()._post_init()
-        self.gst_decoder_does_dequantization_and_depadding = True
+        self.cpp_decoder_does_all = True
 
     def configure_model_and_context_info(
         self,
@@ -44,11 +44,11 @@ class DecodeRTMDet(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         if model_info.manifest and model_info.manifest.is_compiled():
             self._deq_scales, self._deq_zeropoints = zip(*model_info.manifest.dequantize_params)

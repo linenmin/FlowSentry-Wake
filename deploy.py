@@ -19,6 +19,11 @@ def main():
     nn_info = network_yaml_info.get_info(args.network)
     nn_name = nn_info.yaml_name
 
+    if args.cal_seed != 0:
+        import torch
+
+        torch.manual_seed(args.cal_seed)
+
     deploy_info = f'{nn_name}: {args.model}' if args.model else nn_name
     verb = (
         'Quantizing'
@@ -40,8 +45,8 @@ def main():
             args.build_root,
             args.export,
             hardware_caps,
-            args.emulate,
             args.metis,
+            args.cal_seed,
         )
     if success:
         if args.mode not in (config.DeployMode.QUANTIZE, config.DeployMode.QUANTIZE_DEBUG):

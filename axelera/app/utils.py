@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from enum import Enum, EnumMeta, IntEnum
+from enum import EnumMeta, IntEnum
+import functools
 import hashlib
 import importlib.util
 import logging
@@ -11,23 +12,24 @@ import os
 from pathlib import Path
 import platform
 import re
+import resource
 import shutil
 import subprocess
 import sys
 import tarfile
 import threading
 import time
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Type, Union
 import zipfile
 
 import psutil
 import requests
+from strictyaml import Map, dirty_load
 from tqdm import tqdm
 import yaml
 
 from . import logging_utils
 from .environ import env
-from .yaml import LINE_LOADER
 
 LOG = logging_utils.getLogger(__name__)
 
@@ -51,20 +53,24 @@ IMAGE_EXTENSIONS = [
 VIDEO_EXTENSIONS = [".flv", ".avi", ".mp4", ".3gp", ".mov", ".webm", ".ogg", ".qt", ".avchd"]
 
 
-def load_yamlfile(path: Union[str, Path]):
-    """Load data from YAML file"""
+def get_yamlstream(path: Union[str, Path]) -> str:
     path = Path(path)
-    data_dict = yaml.load(path.read_text('utf-8'), Loader=LINE_LOADER)
-    return data_dict
+    return path.read_text('utf-8')
 
 
-def load_yaml_by_reference(path: Union[str, Path], refs: dict):
-    """Load a YAML file with variable and expression substitution.
+def load_yamlstream(stream: str, schema: Map = None) -> dict:
+    if schema is not None:
+        return dirty_load(stream, schema, allow_flow_style=True).data
+    return yaml.load(stream, Loader=yaml.FullLoader)
 
-    Replace $?{{keyword}} with value from refs[keyword].
-    Replace ${expr} with str(eval(expr)).
 
-    """
+def load_yamlfile(path: Union[str, Path], schema: Map = None) -> dict:
+    """Load data from YAML file"""
+    stream = get_yamlstream(path)
+    return load_yamlstream(stream, schema)
+
+
+def substitute_vars_and_expr(data, refs: Union[dict, None], path_or_model_name: Union[str, Path]):
     special_values = {"None": "null", "True": "true", "False": "false"}
 
     def subst(m):
@@ -75,31 +81,66 @@ def load_yaml_by_reference(path: Union[str, Path], refs: dict):
         except KeyError:
             if default is not None:
                 return default
-            LOG.error(f"{path}: Variable {key} missing argument from {refs}")
+            LOG.error(f"{path_or_model_name}: Variable {key} missing argument from {refs}")
             return m.group(0)
+        except TypeError:
+            return 'null'
 
     def evalexpr(m):
+        if refs is None:
+            return m.group(0)
         return str(eval(m.group(1), refs))
 
-    out = []
-    path = Path(path)
-    stream = path.read_text('utf-8')
-    for line in stream.splitlines():
-        line = re.sub("^(.*)(?:#.*)$", r"\1", line)
-        line = re.sub(r"\$?{{([^:}]+)(?::([^}]+))?}}", subst, line)
-        line = re.sub(r"\${([^{}][^}]*)}", evalexpr, line)
-        out.append(line)
-    return yaml.load("\n".join(out), Loader=yaml.FullLoader)
+    def try_cast(val):
+        evals = {"null": None, "true": True, "false": False}
+        for cast in [int, float]:
+            try:
+                return cast(val)
+            except ValueError:
+                pass
+        return evals.get(val, val)
+
+    def replace(target):
+        new = target
+        new = re.sub(r"\${{([^:}]+)(?::([^}]+))?}}", subst, new)
+        new = re.sub(r"\${([^{}][^}]*)}", evalexpr, new)
+        if new != target:
+            return try_cast(new)
+        return target
+
+    if isinstance(data, dict):
+        keys = list(data.keys())
+        for k in keys:
+            sub_key = replace(k)
+            data[sub_key] = substitute_vars_and_expr(data[k], refs, path_or_model_name)
+            if k != sub_key:
+                del data[k]
+    elif isinstance(data, list):
+        data = [substitute_vars_and_expr(x, refs, path_or_model_name) for x in data]
+    elif isinstance(data, str):
+        data = replace(data)
+    return data
 
 
-def load_yaml_ignore_braces(path: Union[str, Path]):
+def load_yaml_by_reference(path: Union[str, Path], refs: dict, schema: Map = None) -> dict:
+    """Load a YAML file with variable and expression substitution.
+
+    Replace {{keyword}} with value from refs[keyword].
+    Replace ${expr} with str(eval(expr)).
+
     """
-    Load data from YAML file and all occurrences of "{{" and "}}"
+    stream = get_yamlstream(path)
+    out = load_yamlstream(stream, schema)
+    return substitute_vars_and_expr(out, refs, path)
+
+
+def load_yaml_ignore_braces(path: Union[str, Path], schema: Map = None) -> dict:
     """
-    path = Path(path)
-    stream = path.read_text('utf-8')
-    stream = re.sub(r"\{\{.*?\}\}", "", stream)
-    return yaml.load(stream, Loader=yaml.FullLoader)
+    Load data from YAML file without substituting "${{" and "}}"
+    """
+    stream = get_yamlstream(path)
+    out = load_yamlstream(stream, schema)
+    return substitute_vars_and_expr(out, None, path)
 
 
 def visit_dict(obj, visitor):
@@ -284,7 +325,9 @@ def download(url: str, path: Path, checksum=""):
             raise ValueError("Invalid S3 path format. Path should have a bucket and a key.")
         local_file = download_from_internal_s3(parts[0], parts[1], path.parent)
         if checksum and not md5_validates(local_file, checksum):
-            raise RuntimeError(f"Downloaded file {path} failed CRC check")
+            raise RuntimeError(
+                f"Downloaded file {path} failed CRC check; expected {checksum}, got {generate_md5(local_file)}"
+            )
         shutil.move(local_file, path)
         return True
 
@@ -334,6 +377,18 @@ def dir_needed(path):
         else:
             raise RuntimeError(f"{path}: Not a directory")
     return True
+
+
+def generate_md5_from_url(url: str) -> str:
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+
+    hash_md5 = hashlib.md5()
+
+    for chunk in response.iter_content(4096):
+        hash_md5.update(chunk)
+
+    return hash_md5.hexdigest()
 
 
 def generate_md5(path: str) -> str:
@@ -620,7 +675,7 @@ class ExceptionThread(threading.Thread):
             raise self.exc
 
 
-def load_labels(labels_path: str):
+def load_labels(labels_path: str, trimmed: bool = True):
     '''Load labels from file, if provided.
 
     Supports three formats:
@@ -659,7 +714,8 @@ def load_labels(labels_path: str):
             raise ValueError(f"'names' in {labels_path} must be either a list or dictionary")
 
     # Handle plain text files (one label per line)
-    return [x for x in labels_path.read_text().splitlines() if x]
+    lines = labels_path.read_text().splitlines()
+    return [x for x in lines if not trimmed or x]
 
 
 class LimitedLengthDataLoader:
@@ -777,6 +833,7 @@ def get_backend_opengl_version(backend, default=env.DEFAULTS.opengl_backend):
         return (api.lower(), int(major), int(minor))
 
 
+@functools.lru_cache(maxsize=1)
 def is_opengl_available(backend):
     api, _, _ = get_backend_opengl_version(backend)
     try:
@@ -814,6 +871,27 @@ def is_compiler_available():
             sys.stdout, sys.stderr = _saved_out, _saved_err
 
 
+def run_command_with_progress(cmd: list):
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        universal_newlines=True,
+        env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+    )
+
+    # Print output in real-time with flush
+    while True:
+        line = process.stdout.readline()
+        if not line and process.poll() is not None:
+            break
+        print(line, end='', flush=True)
+
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, cmd)
+
+
 def ensure_dependencies_are_installed(dependencies: list[str], dry_run: bool = False):
     '''Ensure that the dependencies are installed.
 
@@ -827,12 +905,23 @@ def ensure_dependencies_are_installed(dependencies: list[str], dry_run: bool = F
         # convert any space-separated -r to single-token form for passing in list
         return re.sub(r'-r\s+', '-r', os.path.expandvars(dep))
 
-    dependencies = [_sanitize(dep) for dep in dependencies]
+    with_extra = {}
+    for_dry_run = []
+    without_extra = []
+    for dep in dependencies:
+        dep = _sanitize(dep)
+        if ' -' in dep:
+            # handle cases with extra argument(s) after the pkg specifier
+            dep, extra = dep.split(' ', 1)
+            with_extra[dep] = extra
+        else:
+            without_extra.append(dep)
+        for_dry_run.append(dep)
 
     # First check what's missing using dry-run
     try:
         result = subprocess.run(
-            ["pip", "install", "--dry-run"] + dependencies,
+            ["pip", "install", "--dry-run"] + for_dry_run,
             encoding='utf8',
             check=True,
             capture_output=True,
@@ -853,26 +942,15 @@ def ensure_dependencies_are_installed(dependencies: list[str], dry_run: bool = F
         if dry_run:
             return
 
-        # Install missing dependencies with progress
-        cmd = ["pip", "install"] + dependencies
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=1,
-            universal_newlines=True,
-            env={**os.environ, 'PYTHONUNBUFFERED': '1'},
-        )
+        # Install missing straightforward dependencies
+        cmd = ["pip", "install"] + without_extra
+        run_command_with_progress(cmd)
 
-        # Print output in real-time with flush
-        while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            print(line, end='', flush=True)
-
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, cmd)
+        for dep, extra in with_extra.items():
+            # Install dependencies with extra text
+            LOG.info(f"Installing {dep} {extra}'. On some platforms this may take a while...")
+            cmd = ["pip", "install", dep] + extra.split()
+            run_command_with_progress(cmd)
 
     except subprocess.CalledProcessError as e:
         msg = '\n'.join(
@@ -985,3 +1063,17 @@ def create_enumerators(labels):
             else:
                 aliases[alias] = i
     return list(bases.items()) + list(aliases.items())
+
+
+@contextmanager
+def suppress_stdout_stderr():
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr

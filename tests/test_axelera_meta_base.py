@@ -45,14 +45,14 @@ def _make_draw_with_options(**kwargs):
 def test_draw_bounding_box_bad_format(caplog):
     draw = _make_draw_with_options(bbox_label_format='{')
     base.draw_bounding_boxes(JUST_A_BADGER, draw)
-    draw.labelled_box.assert_called_once_with((10, 20), (30, 40), 'badger 0.90', BADGER_COLOR)
+    draw.labelled_box.assert_called_once_with((10, 20), (30, 40), 'badger 90%', BADGER_COLOR)
     assert "Error in bbox_label_format: { (Single '{' encountered" in caplog.text
 
 
 def test_draw_bounding_box_bad_macro(caplog):
     draw = _make_draw_with_options(bbox_label_format='{sroce}')
     base.draw_bounding_boxes(JUST_A_BADGER, draw)
-    draw.labelled_box.assert_called_once_with((10, 20), (30, 40), 'badger 0.90', BADGER_COLOR)
+    draw.labelled_box.assert_called_once_with((10, 20), (30, 40), 'badger 90%', BADGER_COLOR)
     assert (
         "Unknown name 'sroce' in bbox_label_format '{sroce}', valid names are label, score, scorep"
         in caplog.text
@@ -72,8 +72,8 @@ def test_draw_bounding_box_multiple(caplog):
     assert caplog.text == ''
     draw.labelled_box.assert_has_calls(
         [
-            call((10, 20), (30, 40), 'duck 0.90', DUCK_COLOR),
-            call((50, 60), (70, 80), 'goose 0.80', GOOSE_COLOR),
+            call((10, 20), (30, 40), 'duck 90%', DUCK_COLOR),
+            call((50, 60), (70, 80), 'goose 80%', GOOSE_COLOR),
         ]
     )
 
@@ -102,8 +102,8 @@ def test_draw_bounding_box_with_color_override(caplog):
     assert caplog.text == ''
     draw.labelled_box.assert_has_calls(
         [
-            call((10, 20), (30, 40), 'duck 0.90', NEW_DUCK_COLOR),
-            call((50, 60), (70, 80), 'goose 0.80', GOOSE_COLOR),
+            call((10, 20), (30, 40), 'duck 90%', NEW_DUCK_COLOR),
+            call((50, 60), (70, 80), 'goose 80%', GOOSE_COLOR),
         ]
     )
 
@@ -120,7 +120,7 @@ def test_draw_bounding_box_with_color_override_by_name(caplog):
     assert caplog.text == ''
     draw.labelled_box.assert_has_calls(
         [
-            call((10, 20), (30, 40), 'duck 0.90', NEW_DUCK_COLOR),
-            call((50, 60), (70, 80), 'goose 0.80', GOOSE_COLOR),
+            call((10, 20), (30, 40), 'duck 90%', NEW_DUCK_COLOR),
+            call((50, 60), (70, 80), 'goose 80%', GOOSE_COLOR),
         ]
     )

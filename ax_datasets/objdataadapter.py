@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Flexible dataset module for object detection models that use
 # COCO, Darknet/YOLO and PascalVOC label formats
 # Returns VOC, COCO or YOLO-style labels; default as VOC
@@ -36,209 +36,20 @@ from pathlib import Path
 import pickle
 import tempfile
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple, Union
+import xml.etree.ElementTree as ET
 
 from PIL import ExifTags, Image, ImageOps
 import numpy as np
-from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from axelera import types
-from axelera.app import eval_interfaces, logging_utils, utils
+from axelera.app import eval_interfaces, logging_utils
 from axelera.app.model_utils.box import xywh2ltwh, xywh2xyxy, xyxy2xywh
+from axelera.app.torch_utils import data as torch_data
 from axelera.app.torch_utils import torch
-import axelera.app.yaml as YAML
-from axelera.app.yaml import AxYAMLError
 
 LOG = logging_utils.getLogger(__name__)
-
-COCO = {
-    "2014": {
-        # When using COCO dataset, we use COCO-80-classes defaultly.
-        # To return COCO-91-classes, please explicitly set 'format' to coco91
-        # or coco91-with-bg in YAML dataset. Noted that coco80 and coco91 are
-        # both zero-indexing. coco91-with-bg is one-indexing coco91 with background
-        # class at index 0 which is used by COCO annotations by default. coco90-with-bg
-        # is one-indexing coco90 with background class at index 0 which is used by
-        # Tensorflow.
-        "format": "coco80",
-        "train": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/train2014.zip",
-            "filename": Path("images", "train2014.zip"),
-            "md5": "",
-            "base_dir": Path("images", "train2014"),
-            "train": Path("trainvalno5k.part"),
-        },
-        "train_reference": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/trainvalno5k.part",
-            "filename": Path("trainvalno5k.part"),
-            "md5": "914293b6d98f3339f1e2c5491918e7e9",
-        },
-        "val": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/val2014.zip",
-            "filename": Path("images", "val2014.zip"),
-            "md5": "a3d79f5ed8d289b7a7554ce06a5782b3",
-            "base_dir": Path("images", "val2014"),
-            "val": Path("5k.part"),
-        },
-        "val_reference": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/5k.part",
-            "filename": Path("5k.part"),
-            "md5": "853bde28e4a9eec2aa1ad6cd1f22ce2b",
-        },
-        "annotations": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/instances_train-val2014.zip",
-            "filename": Path("instances_train-val2014.zip"),
-            "md5": "59582776b8dd745d649cd249ada5acf7",
-            "base_dir": Path("annotations"),
-            "check_files": [
-                Path("coco", "annotations", "instances_val2014.json"),
-            ],
-        },
-        "labels": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/labels.tgz",
-            "filename": Path("labels.tgz"),
-            "md5": "d4adaab8f1174071b6eb20f85ce24016",
-            "base_dir": Path("labels"),
-            "check_files": [
-                Path("labels", "train2014"),
-                Path("labels", "val2014"),
-            ],
-        },
-    },
-    "2017": {
-        "format": "coco80",
-        "train": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/train2017.zip",
-            "filename": Path("images", "train2017.zip"),
-            "md5": "cced6f7f71b7629ddf16f17bbcfab6b2",
-            "base_dir": Path("images", "train2017"),
-            "train": Path("train2017.txt"),
-        },
-        "val": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/val2017.zip",
-            "filename": Path("images", "val2017.zip"),
-            "md5": "442b8da7639aecaf257c1dceb8ba8c80",
-            "base_dir": Path("images", "val2017"),
-            "val": Path("val2017.txt"),
-        },
-        "annotations": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/annotations_trainval2017.zip",
-            "filename": Path("annotations_trainval2017.zip"),
-            "md5": "f4bbac642086de4f52a3fdda2de5fa2c",
-            "base_dir": Path("annotations"),
-            "check_files": [
-                Path("annotations", "captions_train2017.json"),
-                Path("annotations", "captions_val2017.json"),
-                Path("annotations", "instances_train2017.json"),
-                Path("annotations", "instances_val2017.json"),
-                Path("annotations", "person_keypoints_train2017.json"),
-                Path("annotations", "person_keypoints_val2017.json"),
-            ],
-        },
-        "labels": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017labels.zip",
-            "filename": Path("coco2017labels.zip"),
-            "md5": "db23085d5ebf5d1ca33f304eab7bdd87",
-            "base_dir": Path("labels"),
-            "check_files": [
-                Path("labels", "train2017"),
-                Path("labels", "val2017"),
-            ],
-            "drop_dirs": 1,
-        },
-        "kpts": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017labels-kpts.zip",
-            "filename": Path("coco2017labels-kpts.zip"),
-            "md5": "6df7d8035de2ab34c11afb689c7fa827",
-            "base_dir": Path("labels_kpts"),
-            "check_files": [
-                Path("labels_kpts", "train2017"),
-                Path("labels_kpts", "val2017"),
-                Path("labels_kpts", "train2017.txt"),
-                Path("labels_kpts", "val2017.txt"),
-            ],
-        },
-        "seg": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017labels-seg.zip",
-            "filename": Path("coco2017labels-seg.zip"),
-            "md5": "92ed19be81b08680f5c56df48304d99c",
-            "base_dir": Path("labels_seg"),
-            "check_files": [
-                Path("labels_seg", "train2017"),
-                Path("labels_seg", "val2017"),
-            ],
-        },
-    },
-}
-
-VOC = {
-    "2012": {
-        "trainval": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/pascalvoc/VOCtrainval_11-May-2012.tar",
-            "filename": "VOCtrainval_11-May-2012.tar",
-            "md5": "6cd6e144f989b92b3379bac3b3de84fd",
-            "base_dir": Path("VOCdevkit", "VOC2012"),
-            "val": Path("VOC2012", "ImageSets", "Layout", "val.txt"),
-        },
-    },
-    "2011": {
-        "trainval": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/pascalvoc/VOCtrainval_25-May-2011.tar",
-            "filename": "VOCtrainval_25-May-2011.tar",
-            "md5": "6c3384ef61512963050cb5d687e5bf1e",
-            "base_dir": Path("TrainVal", "VOCdevkit", "VOC2011"),
-        },
-    },
-    "2010": {
-        "trainval": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/pascalvoc/VOCtrainval_03-May-2010.tar",
-            "filename": "VOCtrainval_03-May-2010.tar",
-            "md5": "da459979d0c395079b5c75ee67908abb",
-            "base_dir": Path("VOCdevkit", "VOC2010"),
-        },
-    },
-    "2009": {
-        "trainval": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/pascalvoc/VOCtrainval_11-May-2009.tar",
-            "filename": "VOCtrainval_11-May-2009.tar",
-            "md5": "a3e00b113cfcfebf17e343f59da3caa1",
-            "base_dir": Path("VOCdevkit", "VOC2009"),
-        },
-    },
-    "2008": {
-        "trainval": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/pascalvoc/VOCtrainval_14-Jul-2008.tar",
-            "filename": "VOCtrainval_11-May-2012.tar",
-            "md5": "2629fa636546599198acfcfbfcf1904a",
-            "base_dir": Path("VOCdevkit", "VOC2008"),
-        },
-    },
-    "2007": {
-        "trainval": {
-            "url": "https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/pascalvoc/VOCtrainval_06-Nov-2007.tar",
-            "filename": "VOCtrainval_06-Nov-2007.tar",
-            "md5": "c52e279531787c972589f7e41ab4ae64",
-            "base_dir": Path("VOCdevkit", "VOC2007"),
-            "train": Path("VOCdevkit", "VOC2007", "ImageSets", "Layout", "train.txt"),
-        },
-    },
-    "2007-test": {
-        "trainval": {
-            "url": "http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtest_06-Nov-2007.tar/VOCtest_06-Nov-2007.tar",
-            "filename": "VOCtest_06-Nov-2007.tar",
-            "md5": "b6e924de25625d8de591ea690078ad9f",
-            "base_dir": Path("VOCdevkit", "VOC2007"),
-        },
-    },
-}
-
-# Dictionary for mapping 'data_dir_name' to a set of dataset assets
-DATASETS = {'coco': COCO, 'VOCdevkit': VOC, 'TrainVal': VOC}
-
-# Parameters
-IMG_FORMATS = ["bmp", "jpg", "jpeg", "png", "tif", "tiff", "dng", "webp", "mpo"]
-IMG_FORMATS.extend([f.upper() for f in IMG_FORMATS])
 
 # Get orientation exif tag
 for k, v in ExifTags.TAGS.items():
@@ -246,7 +57,101 @@ for k, v in ExifTags.TAGS.items():
         ORIENTATION = k
         break
 
+# Parameters
+IMG_FORMATS = ["bmp", "jpg", "jpeg", "png", "tif", "tiff", "dng", "webp", "mpo"]
+IMG_FORMATS.extend([f.upper() for f in IMG_FORMATS])
 
+
+# Exception classes
+class InvalidConfigurationError(Exception):
+    """Exception raised for invalid dataset configurations."""
+
+    pass
+
+
+class DataFormatError(Exception):
+    """Exception raised for issues with data formats."""
+
+    pass
+
+
+class DataLoadingError(Exception):
+    """Exception raised for issues with loading data."""
+
+    pass
+
+
+# Enum classes
+class SupportedTaskCategory(enum.Enum):
+    ObjDet = enum.auto()  # object detection
+    Seg = enum.auto()  # instance segmentation
+    Kpts = enum.auto()  # keypoint detection
+
+
+class SupportedLabelType(enum.Enum):
+    YOLOv8 = enum.auto()  # YOLO v8 format
+    YOLOv5 = enum.auto()  # YOLO v5 format
+    PascalVOCXML = enum.auto()  # Pascal VOC XML format
+    COCOJSON = enum.auto()  # COCO JSON format
+
+    # standard datasets
+    COCO2017 = enum.auto()  # COCO 2017 dataset
+    COCO2014 = enum.auto()  # COCO 2014 dataset
+
+    @classmethod
+    def from_string(cls, label_type_str: str) -> 'SupportedLabelType':
+        """Convert a string to a SupportedLabelType enum value."""
+        mapping = {
+            'YOLOv8': cls.YOLOv8,
+            'YOLOv5': cls.YOLOv5,
+            'Pascal VOC XML': cls.PascalVOCXML,
+            'Pascal_VOC_XML': cls.PascalVOCXML,
+            'COCO JSON': cls.COCOJSON,
+            'COCO_JSON': cls.COCOJSON,
+            'COCOJSON': cls.COCOJSON,
+            'COCO2017': cls.COCO2017,
+            'COCO2014': cls.COCO2014,
+            'yolov8': cls.YOLOv8,
+            'yolov5': cls.YOLOv5,
+            'pascal voc xml': cls.PascalVOCXML,
+            'pascal_voc_xml': cls.PascalVOCXML,
+            'coco json': cls.COCOJSON,
+            'coco_json': cls.COCOJSON,
+            'cocojson': cls.COCOJSON,
+            'coco2017': cls.COCO2017,
+            'coco2014': cls.COCO2014,
+        }
+
+        # First check for direct match
+        if label_type_str in mapping:
+            return mapping[label_type_str]
+
+        # If not found, try case-insensitive matching
+        label_type_lower = label_type_str.lower()
+        for key, value in mapping.items():
+            if key.lower() == label_type_lower:
+                return value
+
+        # Also check against enum member names directly
+        # This handles cases like 'PascalVOCXML' that might not be in the mapping
+        for enum_member in cls:
+            if enum_member.name.lower() == label_type_lower:
+                return enum_member
+
+        raise ValueError(f"Unsupported label_type: {label_type_str}")
+
+    @classmethod
+    def parse(cls, label_type: Union[str, 'SupportedLabelType']) -> 'SupportedLabelType':
+        """Ensure a value is a SupportedLabelType enum."""
+        if isinstance(label_type, str):
+            return cls.from_string(label_type)
+        elif isinstance(label_type, SupportedLabelType):
+            return label_type
+        else:
+            raise ValueError(f"Unsupported label_type: {label_type}")
+
+
+# Utility functions
 def usable_cpus():
     """Return number of cpus configured to be used by this process."""
     try:
@@ -257,14 +162,14 @@ def usable_cpus():
 
 
 def coco80_to_coco91_table():
-    # coco has 91-index in their paper but takes 80-index in val2017 dataset
-    # https://tech.amikelive.com/node-718/what-object-categories-labels-are-in-coco-dataset/
+    """Convert COCO-80 classes to COCO-91 classes."""
     coco91 = list(range(1, 92))
     missing_classes = {12, 26, 29, 30, 45, 66, 68, 69, 71, 83, 91}
     return [x for x in coco91 if x not in missing_classes]
 
 
 def coco91_to_coco80_table():
+    """Convert COCO-91 classes to COCO-80 classes."""
     coco80 = coco80_to_coco91_table()
     # Initialize an array of -1's
     coco91_to_coco80 = np.full(91, -1)
@@ -284,7 +189,7 @@ def _filter_valid_image_paths(data_root, annotation_file, img_dir_name, task_enu
         data_root (Path): The root directory of the dataset.
         annotation_file (Path): The path to the annotation file (JSON or XML).
         img_dir_name (str): The name of the directory containing the images.
-        task_enum (SupportedTaskCategory): The task category (e.g., ObjDet, Seg, Kpts).
+        task_enum (SupportedTaskCategory): The task category.
 
     Returns:
         List[Path]: A list of valid image paths.
@@ -306,8 +211,6 @@ def _filter_valid_image_paths(data_root, annotation_file, img_dir_name, task_enu
         else:
             valid_filenames = {img['file_name'] for img in json_data['images']}
     elif annotation_file.suffix == '.xml':
-        import xml.etree.ElementTree as ET
-
         tree = ET.parse(annotation_file)
         root = tree.getroot()
         for image in root.findall('image'):
@@ -316,13 +219,12 @@ def _filter_valid_image_paths(data_root, annotation_file, img_dir_name, task_enu
     else:
         raise ValueError(f"Unsupported annotation file format: {annotation_file.suffix}")
 
-    LOG.trace(f"Number of valid filenames from annotations: {len(valid_filenames)}")
     img_paths = [
         Path(data_root, img_dir_name, p)
         for p in os.listdir(Path(data_root, img_dir_name))
         if p in valid_filenames
     ]
-    LOG.trace(f"Valid image number: {len(img_paths)}")
+
     return img_paths
 
 
@@ -344,22 +246,20 @@ def _segments2polygon(segments):
 
 
 def _segments2boxes(segments):
-    # Convert segment labels to box labels, i.e. (cls, xy1, xy2, ...) to (cls, xywh)
+    """
+    Convert segment labels to box labels, i.e., (cls, xy1, xy2, ...) to (cls, xywh).
+
+    Args:
+        segments (List[np.ndarray]): List of segments where each segment is an array of points.
+
+    Returns:
+        np.ndarray: Array of boxes in xywh format.
+    """
     boxes = []
     for s in segments:
         x, y = s.T  # segment xy
         boxes.append([x.min(), y.min(), x.max(), y.max()])  # cls, xyxy
-    return xyxy2xywh(np.array(boxes))  # cls, xywh
-
-
-def download_custom_dataset(data_root, **kwargs):
-    if 'dataset_url' in kwargs:
-        utils.download_and_extract_asset(
-            kwargs['dataset_url'],
-            data_root / kwargs['dataset_url'].split('/')[-1],
-            md5=kwargs.get('dataset_md5', None),
-            drop_dirs=kwargs.get('dataset_drop_dirs', 0),
-        )
+    return np.array(boxes)  # cls, xywh
 
 
 def _create_image_list_file(input_path, subdir=None):
@@ -409,102 +309,173 @@ def _create_image_list_file(input_path, subdir=None):
     raise FileNotFoundError(f"Path {path} is neither a file nor a directory")
 
 
-class SupportedTaskCategory(enum.Enum):
-    ObjDet = enum.auto()  # object detection
-    Seg = enum.auto()  # instance segmentation
-    Kpts = enum.auto()  # keypoint detection
+# Configuration class
+class DatasetConfig:
+    """Configuration class for the UnifiedDataset."""
 
+    def __init__(
+        self,
+        data_root: Union[str, Path],
+        val_data: Optional[str] = None,
+        cal_data: Optional[str] = None,
+        task: SupportedTaskCategory = SupportedTaskCategory.ObjDet,
+        label_type: Union[str, SupportedLabelType] = SupportedLabelType.YOLOv8,
+        output_format: str = 'xyxy',
+        use_cache: bool = True,
+        mask_size: Optional[Tuple[int, int]] = None,
+        **kwargs,
+    ):
+        """Initialize the dataset configuration.
 
-class SupportedLabelType(enum.Enum):
-    NONE = enum.auto()  # None for default datasets like COCO2017
-    YOLOv8 = enum.auto()
-    YOLOv5 = enum.auto()
-    PascalVOCXML = enum.auto()
-    COCOJSON = enum.auto()
+        Args:
+            data_root: Root directory of the dataset
+            val_data: Path to validation data list file
+            cal_data: Path to calibration data list file
+            task: Task category (ObjDet, Seg, Kpts)
+            label_type: Label format type
+            output_format: Output bbox format ('xyxy', 'xywh', 'ltwh')
+            use_cache: Whether to use cached labels
+            mask_size: Size of masks for segmentation (width, height)
+            **kwargs: Additional configuration parameters
+        """
+        self.data_root = Path(data_root)
+        self.val_data = val_data
+        self.cal_data = cal_data
+        self.task = task
+        self.label_type = SupportedLabelType.parse(label_type)
+        self.output_format = output_format
+        self.use_cache = use_cache
+        self.mask_size = mask_size
 
-    @classmethod
-    def from_string(cls, label_type_str: str) -> 'SupportedLabelType':
-        mapping = {
-            'YOLOv8': cls.YOLOv8,
-            'YOLOv5': cls.YOLOv5,
-            'Pascal VOC XML': cls.PascalVOCXML,
-            'Pascal_VOC_XML': cls.PascalVOCXML,
-            'COCO JSON': cls.COCOJSON,
-            'COCO_JSON': cls.COCOJSON,
-            'yolov8': cls.YOLOv8,
-            'yolov5': cls.YOLOv5,
-            'pascal voc xml': cls.PascalVOCXML,
-            'pascal_voc_xml': cls.PascalVOCXML,
-            'coco json': cls.COCOJSON,
-            'coco_json': cls.COCOJSON,
+        # Store additional kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+        # Validate configuration
+        self._validate_config()
+
+    def _validate_config(self):
+        """Validate the configuration parameters."""
+        valid_output_formats = ['xyxy', 'xywh', 'ltwh']
+        if self.output_format not in valid_output_formats:
+            raise InvalidConfigurationError(
+                f"Invalid output_format: {self.output_format}. Must be one of {valid_output_formats}"
+            )
+
+        if self.task == SupportedTaskCategory.Seg and self.mask_size is not None:
+            if not isinstance(self.mask_size, (tuple, list)) or len(self.mask_size) != 2:
+                raise InvalidConfigurationError(
+                    f"mask_size must be a tuple or list of two integers, got {self.mask_size}"
+                )
+
+    def to_dict(self) -> Dict:
+        """Convert the configuration to a dictionary."""
+        result = {
+            'data_root': str(self.data_root),
+            'val_data': self.val_data,
+            'cal_data': self.cal_data,
+            'task': self.task.value,
+            'label_type': self.label_type.value,
+            'output_format': self.output_format,
+            'use_cache': self.use_cache,
+            'mask_size': self.mask_size,
         }
 
-        if label_type_str not in mapping:
-            raise ValueError(f"Unsupported label_type: {label_type_str}")
+        # Add any additional attributes
+        for key, value in vars(self).items():
+            if key not in result:
+                result[key] = value
 
-        return mapping[label_type_str]
+        return result
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict) -> 'DatasetConfig':
+        """Create a configuration from a dictionary."""
+        # Convert enum values back to enums
+        task_value = config_dict.pop('task', SupportedTaskCategory.ObjDet.value)
+        if isinstance(task_value, int):
+            for task in SupportedTaskCategory:
+                if task.value == task_value:
+                    config_dict['task'] = task
+                    break
+
+        label_type_value = config_dict.pop('label_type', SupportedLabelType.YOLOv8.value)
+        if isinstance(label_type_value, int):
+            for label_type in SupportedLabelType:
+                if label_type.value == label_type_value:
+                    config_dict['label_type'] = label_type
+                    break
+
+        return cls(**config_dict)
 
 
-class CocoAndYoloFormatDataset(Dataset):
+# Main dataset class
+class UnifiedDataset(torch_data.Dataset):
+    """Unified dataset class for object detection, segmentation, and keypoint detection."""
+
     # labels caching version; bump up when changing labeling or caching method
     cache_version = 0.3
 
     def __init__(
         self,
-        data_root: Path,
-        split='val',  # 'val' returns (image, label), 'test' returns image only
+        data_root: Union[str, Path],
+        split: str = 'val',
+        task: SupportedTaskCategory = SupportedTaskCategory.ObjDet,
+        label_type: Union[str, SupportedLabelType] = SupportedLabelType.YOLOv8,
+        output_format: str = 'xyxy',
         transform=None,
-        output_format='xyxy',  # 'xyxy', 'xywh' or 'ltwh'
+        use_cache: bool = True,
         labels_path: str = None,
-        task=SupportedTaskCategory.ObjDet,
-        label_type=SupportedLabelType.YOLOv8,
         **kwargs,
     ):
+        """Initialize the UnifiedDataset.
+
+        Args:
+            data_root: Root directory of the dataset
+            split: Dataset split ('train', 'val', 'test')
+            task: Task category (ObjDet, Seg, Kpts)
+            label_type: Label format type
+            output_format: Output bbox format ('xyxy', 'xywh', 'ltwh')
+            transform: Optional transform to be applied on images
+            use_cache: Whether to use cached labels
+            labels_path: Path to class label names
+            **kwargs: Additional configuration parameters
+        """
         t1 = time.time()
+
+        # Validate inputs
         assert split.lower() in ("train", "val", "test"), f"Unsupported split: {split}"
         assert output_format.lower() in (
             "xyxy",
             "xywh",
             "ltwh",
         ), f"Unsupported output format: {output_format}"
-        self.output_format = output_format
+
+        # Initialize attributes
+        self.data_root = Path(data_root)
+        self.split = split.lower()
         self.task_enum = task
-        self.__dict__.update(locals())
+        self.output_format = output_format.lower()
+        self.transform = transform
+        self.use_cache = use_cache
+        self.label_type = SupportedLabelType.parse(label_type)
+        self.labels_path = labels_path
         self.img_paths = []
         self.labels = []
-        self.transform = transform
+        self.segments = []
+        self.image_ids = []
+        self._groundtruth_json = None
+        self.data_path = None  # Will be set in _configure_data
 
         # Configure dataset
-        data_dir, reference_file, label_format = self._configure_data(data_root, **kwargs)
+        data_dir, reference_file, label_format = self._configure_data(self.data_root, **kwargs)
 
-        # This is specific for pycocotools measurement
-        self._groundtruth_json = None
-        if reference_file.suffix == '.json':
-            self._groundtruth_json = reference_file
-        year = kwargs.get('download_year', None)
-        if (label_format == 'coco80') and year:
-            # find 'instances_<split><year>.json' in data_dir and its subdirectories
-            if self.task_enum == SupportedTaskCategory.Kpts:
-                self._groundtruth_json = next(
-                    data_dir.glob(f'**/person_keypoints_{split}{year}.json'), None
-                )
-                # self._groundtruth_json = None
-            else:  # SupportedTaskCategory.ObjDet or SupportedTaskCategory.Seg
-                self._groundtruth_json = next(
-                    data_dir.glob(f'**/instances_{split}{year}.json'), None
-                )
-        self.label_type = SupportedLabelType.NONE if year else label_type
+        # Get class names from labels if provided
+        class_names = None
+        if self.labels_path:
+            class_names = self._load_class_names(self.labels_path)
 
-        # Get label format
-        if "format" in kwargs:
-            if label_format and label_format != kwargs["format"]:
-                LOG.warn(f"Overriding '{label_format}' format specified for downloaded dataset")
-            label_format = kwargs["format"]
-
-        # Get class names from labels
-        class_names = utils.load_labels(labels_path) if labels_path else None
-
-        # TODO: Implement 'test' path (assume working on 'val' for now)
+        # Get images, labels, and related info
         (
             self.img_paths,
             self.labels,
@@ -512,265 +483,276 @@ class CocoAndYoloFormatDataset(Dataset):
             self.image_ids,
             gt_json,
         ) = self._get_imgs_labels(
-            data_dir, reference_file, label_format, class_names, output_format.lower(), **kwargs
+            data_dir, reference_file, label_format, class_names, self.output_format, **kwargs
         )
-        if not len(self.labels) and self.split == 'val':
-            raise RuntimeError("Validation requested, but no labels available")
 
-        # if self.task_enum == SupportedTaskCategory.Kpts:
-        #     self._groundtruth_json = gt_json
+        if not len(self.labels) and self.split == 'val':
+            raise DataLoadingError("Validation requested, but no labels available")
 
         self.total_frames = len(self.img_paths)
         t2 = time.time()
-        LOG.debug(f"Dataset initialization completed in %.1fs" % (t2 - t1))
+        LOG.debug(f"Dataset initialization completed in {t2 - t1:.1f}s")
 
     def __len__(self):
+        """Return the number of samples in the dataset."""
         return self.total_frames
 
     def __getitem__(self, idx):
-        sample: Dict = {}
+        """Get a sample from the dataset at the given index."""
+        sample = {}
         path = self.img_paths[idx]
         img_id = self.image_ids[idx]
 
-        try:
-            label = self.labels(idx).name
-        except TypeError:
-            label = self.labels[idx]
-        img = Image.open(path)
-        if img is None:
-            raise RuntimeError(f"Image not found {path}, workdir: {Path.cwd().as_posix()}")
-        elif img.mode == "L":
-            img = img.convert("RGB")
-        elif img.mode != "RGB":
-            raise ValueError(f"Unsupported PIL image mode: {img.mode}")
-
+        # Load image
+        img = self._load_image(path)
         raw_w, raw_h = img.size
+
         if self.transform:
             img = self.transform(img)
+
         sample["image"] = img
         sample["image_id"] = img_id
 
+        # Handle labels if in training or validation mode
         if self.split in ["train", "val"]:
-            label = np.array(label, dtype=np.float32)
+            label = np.array(self.labels[idx], dtype=np.float32)
             if len(label) > 0:
                 sample['bboxes'] = torch.from_numpy(label[:, 1:5])
                 sample["category_id"] = torch.from_numpy(label[:, 0])
+
                 if self.task_enum == SupportedTaskCategory.Kpts:
-                    label = label[:, 5:].reshape(label.shape[0], -1, 3)
-                    sample['keypoints'] = torch.from_numpy(label)
+                    label_kpts = label[:, 5:].reshape(label.shape[0], -1, 3)
+                    sample['keypoints'] = torch.from_numpy(label_kpts)
                 elif self.task_enum == SupportedTaskCategory.Seg:
-                    # return unscaled polygons to save memory
-                    # we will convert them to masks if evaluator asks for
                     sample["polygons"] = self.segments[idx]
             else:
                 sample["bboxes"] = torch.as_tensor([])
                 sample["category_id"] = torch.as_tensor([])
+
                 if self.task_enum == SupportedTaskCategory.Kpts:
                     sample['keypoints'] = torch.as_tensor([])
                 elif self.task_enum == SupportedTaskCategory.Seg:
-                    # polygons is a list; it cannot convert as tensor because
-                    # the segments have varying lengths
                     sample['polygons'] = []
+
             sample["raw_w"] = raw_w
             sample["raw_h"] = raw_h
+
         return sample
 
+    def _load_image(self, path):
+        """Load an image from the given path."""
+        try:
+            img = Image.open(path)
+            if img is None:
+                raise DataLoadingError(f"Image not found {path}")
+            elif img.mode == "L":
+                img = img.convert("RGB")
+            elif img.mode != "RGB":
+                raise DataFormatError(f"Unsupported PIL image mode: {img.mode}")
+            return img
+        except Exception as e:
+            raise DataLoadingError(f"Error loading image {path}: {str(e)}")
+
+    def _load_class_names(self, labels_path):
+        """Load class names from a file."""
+        try:
+            with open(labels_path, 'r') as f:
+                class_names = [line.strip() for line in f.readlines()]
+            return class_names
+        except Exception as e:
+            print(f"Warning: Could not load class names from {labels_path}: {str(e)}")
+            return None
+
     def _configure_data(self, data_root, **kwargs):
-        # Configure/download data needed for specified split
-        reference_file = None
-        data_dir = YAML.attribute(kwargs, "data_dir_name")
+        """Configure and prepare data for the specified split."""
+        from axelera.app import data_utils
+
+        # Initialize label_format to None
         label_format = None
-        if data_dir in DATASETS:
-            if "download_year" in kwargs:
-                year = str(kwargs["download_year"])
-                if year in DATASETS[data_dir]:
-                    data = DATASETS[data_dir][year]
-                    label_format = data["format"] if "format" in data else None
-                    if self.split in data:
-                        self.download_and_extract_asset(data_root, data[self.split])
-                        if self.split + '_reference' in data:
-                            self.download_and_extract_asset(
-                                data_root, data[self.split + '_reference']
-                            )
-                    elif 'trainval' in data:
-                        self.download_and_extract_asset(data_root, data['trainval'])
-                    if self.split == 'train' or self.split == 'val':
-                        if 'annotations' in data:
-                            self.download_and_extract_asset(data_root, data['annotations'])
-                        if 'labels' in data:
-                            self.download_and_extract_asset(data_root, data['labels'])
-                    else:
-                        raise RuntimeError(f"Unsupported split '{self.split}'")
-                    # Get settings from data dictionary unless specified by user
-                    if not self.split in kwargs:
-                        if self.split in data and self.split in data[self.split]:
-                            reference_file = data[self.split][self.split]
-                        elif "trainval" in data and self.split in data["trainval"]:
-                            reference_file = data["trainval"][self.split]
 
-                    if self.task_enum == SupportedTaskCategory.Kpts:
-                        self.download_and_extract_asset(data_root, data['kpts'])
-                        if year == '2014':
-                            raise KeyError(f"Unsupported year: {year} for keypoint detection")
-                        reference_file = Path('labels_kpts', f'{self.split}{year}.txt')
-                    else:  # Seg or ObjDet
-                        if self.task_enum == SupportedTaskCategory.Seg:
-                            self.download_and_extract_asset(data_root, data['seg'])
+        # Special handling for standard datasets
+        if self.label_type in (SupportedLabelType.COCO2017, SupportedLabelType.COCO2014):
+            # Determine which dataset and split to download
+            dataset_name = (
+                "COCO2017" if self.label_type == SupportedLabelType.COCO2017 else "COCO2014"
+            )
+            year = "2017" if self.label_type == SupportedLabelType.COCO2017 else "2014"
 
-                        # update the train.txt or val.txt according to the local data
-                        from ax_datasets.tools.gen_image_path_list import list_images_to_a_file
+            # Set label_format for COCO datasets
+            label_format = kwargs.get("format", "coco80")
 
-                        list_images_to_a_file(
-                            data_root / data[self.split]['base_dir'],
-                            data_root / data[self.split][self.split],
-                        )
-                else:
-                    raise AxYAMLError(
-                        f'Dataset {data_dir} has no data available for year {year}',
-                        YAML.key(kwargs, 'download_year'),
-                    )
-            else:
-                LOG.debug(
-                    f"No 'download_year' attribute specified for {data_dir} dataset (data will not be automatically downloaded"
+            # Default reference file names
+            if self.split == 'val':
+                reference_file_name = f"val{year}.txt"
+                download_split = 'val'
+            else:  # train
+                reference_file_name = f"train{year}.txt"
+                download_split = 'train'
+
+            # Store original reference file name for later use
+            self.data_path = reference_file_name
+
+            # Download the dataset if not already available
+            try:
+                # Download the main split
+                data_utils.check_and_download_dataset(
+                    dataset_name=dataset_name,
+                    data_root_dir=data_root,
+                    split=download_split,
+                    is_private=False,
                 )
 
-        if not reference_file:
-            if self.split == 'train':
-                if 'cal_data' not in kwargs:
-                    raise AxYAMLError(
-                        f"Please specify 'cal_data' for {data_dir} dataset if you want to calibrate with your custom data",
-                        YAML.key(kwargs, 'cal_data'),
-                    )
-                if not (data_root / kwargs['cal_data']).is_file():
-                    download_custom_dataset(data_root, **kwargs)
-            elif self.split == 'val':
-                if 'val_data' not in kwargs:
-                    raise AxYAMLError(
-                        f"Please specify 'val_data' for {data_dir} dataset if you want to evaluate with your custom data",
-                        YAML.key(kwargs, 'val_data'),
-                    )
-                if not (data_root / kwargs['val_data']).is_file():
-                    download_custom_dataset(data_root, **kwargs)
-            reference_file = (
-                kwargs.get('cal_data') if self.split == 'train' else kwargs.get('val_data')
-            )
+                # Download labels
+                data_utils.check_and_download_dataset(
+                    dataset_name=dataset_name,
+                    data_root_dir=data_root,
+                    split='labels',
+                    is_private=False,
+                )
 
+                # Download annotations
+                data_utils.check_and_download_dataset(
+                    dataset_name=dataset_name,
+                    data_root_dir=data_root,
+                    split='annotations',
+                    is_private=False,
+                )
+
+                # If needed for specific tasks, download additional data
+                if self.task_enum == SupportedTaskCategory.Kpts:
+                    data_utils.check_and_download_dataset(
+                        dataset_name=dataset_name,
+                        data_root_dir=data_root,
+                        split='pose',
+                        is_private=False,
+                    )
+                elif self.task_enum == SupportedTaskCategory.Seg:
+                    data_utils.check_and_download_dataset(
+                        dataset_name=dataset_name,
+                        data_root_dir=data_root,
+                        split='seg',
+                        is_private=False,
+                    )
+            except Exception as e:
+                LOG.warning(f"Error downloading dataset: {e}")
+
+            # Try to find the reference file in various locations
+            potential_locations = [
+                # Try direct path first
+                Path(data_root, reference_file_name),
+                # Look in labels directory
+                Path(data_root, "labels", reference_file_name),
+                # Look in labels_kpts directory for keypoints task
+                Path(data_root, "labels_kpts", reference_file_name),
+                # Look in annotations directory
+                Path(data_root, "annotations", reference_file_name),
+                # Other possible paths based on directory structure
+                Path(data_root, "images", f"{self.split}{year}", "..", reference_file_name),
+            ]
+
+            reference_file_path = None
+            for potential_path in potential_locations:
+                if potential_path.is_file():
+                    reference_file_path = potential_path
+                    break
+
+            # If not found, try to create from images directory
+            if reference_file_path is None:
+                try:
+                    # First try standard directory structure
+                    img_dir = Path(data_root, "images", f"{self.split}{year}")
+                    if img_dir.is_dir():
+                        reference_file_path = _create_image_list_file(img_dir)
+                        LOG.info(
+                            f"Created reference file from images directory: {reference_file_path}"
+                        )
+                    else:
+                        # Try alternative paths
+                        img_dir = Path(data_root, f"images/{self.split}{year}")
+                        if img_dir.is_dir():
+                            reference_file_path = _create_image_list_file(img_dir)
+                            LOG.info(
+                                f"Created reference file from alternative directory: {reference_file_path}"
+                            )
+                except Exception as e:
+                    LOG.warning(f"Error creating reference file: {e}")
+
+            if reference_file_path is None:
+                raise DataLoadingError(
+                    f"Reference file not found for {self.label_type} dataset. Please ensure the dataset is downloaded correctly."
+                )
+
+            return Path(data_root), reference_file_path, label_format
+
+        # Regular handling for custom datasets
+        if self.split == 'val':
+            if 'val_data' not in kwargs:
+                raise ValueError("Please specify 'val_data' for validation split")
+            reference_file = kwargs['val_data']
+        else:  # train
+            if 'cal_data' not in kwargs:
+                raise ValueError("Please specify 'cal_data' for training split")
+            reference_file = kwargs['cal_data']
+
+        # Store data path for later use
+        self.data_path = reference_file
+
+        # Convert to Path and ensure it exists
         reference_file = Path(data_root, reference_file)
         reference_file = _create_image_list_file(reference_file)
+
         if not reference_file.is_file():
-            raise AxYAMLError(f"{reference_file}: File not found", YAML.key(kwargs, self.split))
+            raise DataLoadingError(f"Reference file not found: {reference_file}")
+
         return Path(data_root), reference_file, label_format
 
     def _get_imgs_labels(
         self, data_root, reference_file, label_format, class_names, output_format, **kwargs
     ):
-        # Return lists of image paths and labels in output_format (coco or yolo)
+        """Get images, labels, and related information."""
         img_paths = []
 
-        # Images and labels are assumed to be stored in separate directories
-        # unless specified otherwise
-        is_label_image_same_dir = False
-        if "is_label_image_same_dir" in kwargs:
-            is_label_image_same_dir = kwargs["is_label_image_same_dir"]
-
-        # Images can be taken from various sources including JSON
-        # annotations (COCO format) or a reference file with .txt
-        # or .part formats, or a directory
-        # TODO check later integration with measurement code
-        self.label_tag = None
-        if reference_file.suffix == '.json':
-            self.label_tag = f'{data_root.stem}_labels_{self.task_enum.name.lower()}'
-            if self.split == 'val':
-                if 'val_img_dir_name' not in kwargs:
-                    raise AxYAMLError(
-                        f"Please specify 'val_img_dir_name' for {data_dir} dataset if you want to evaluate with your custom data",
-                        YAML.key(kwargs, 'val_img_dir_name'),
-                    )
-                img_paths = _filter_valid_image_paths(
-                    data_root, reference_file, kwargs['val_img_dir_name'], self.task_enum
-                )
-            elif self.split == 'train':
-                if 'cal_img_dir_name' not in kwargs:
-                    raise AxYAMLError(
-                        f"Please specify 'cal_img_dir_name' for {data_dir} dataset if you want to calibrate with your custom data",
-                        YAML.key(kwargs, 'cal_img_dir_name'),
-                    )
-                img_paths = _filter_valid_image_paths(
-                    data_root, reference_file, kwargs['cal_img_dir_name'], self.task_enum
-                )
-
-            first_file = CocoAndYoloFormatDataset.replace_last_match_dir(
-                img_paths[0], 'images', self.label_tag
-            )
-            if not first_file.is_file():
-                self.coco2yolo_format_labels(str(reference_file), first_file.parent)
-            label_paths = self.image2label_paths(
-                img_paths, is_label_image_same_dir, self.label_tag
-            )
-        elif reference_file.suffix in (".txt", ".part"):
+        # Get image paths from reference file
+        if reference_file.suffix in (".txt", ".part"):
             with open(reference_file, "r", encoding="UTF-8") as reader:
-                while line := reader.readline().rstrip():
-                    line = Path(line)
-                    if reference_file.suffix == ".part" and line.is_absolute():
-                        img_paths.append(Path(reference_file.parent, *line.parts[1:]))
-                    elif line.is_absolute():
-                        img_paths.append(line)
-                    else:
-                        img_paths.append(reference_file.parent / line)
-            if reference_file.suffix == ".part":
-                img_paths = [Path(data_root, s) for s in img_paths]
+                lines = [line.rstrip() for line in reader.readlines() if line.strip()]
 
-            if self.label_tag is None:
-                self.label_tag = "labels"
-                if self.label_type == SupportedLabelType.NONE:
-                    if self.task_enum == SupportedTaskCategory.Kpts:
-                        self.label_tag = "labels_kpts"
-                    elif self.task_enum == SupportedTaskCategory.Seg:
-                        self.label_tag = "labels_seg"
+            for line in lines:
+                line_path = Path(line)
+                if reference_file.suffix == ".part" and line_path.is_absolute():
+                    img_paths.append(Path(reference_file.parent, *line_path.parts[1:]))
+                elif line_path.is_absolute():
+                    img_paths.append(line_path)
+                else:
+                    img_paths.append(reference_file.parent / line_path)
 
-            # we sort the image paths to make sure the order of images and labels are the same,
-            # this is important for CI test
-            img_paths.sort()
-            label_paths = self.image2label_paths(
-                img_paths, is_label_image_same_dir, self.label_tag
-            )
-
-            if not label_paths[0].is_file() and label_paths[0].with_suffix('.xml').is_file():
-                # Convert VOC to YOLO labels; TODO: verify the implementation
-                if self.split == 'val':
-                    img_paths = _filter_valid_image_paths(
-                        data_root, reference_file, kwargs['val_img_dir_name'], self.task_enum
-                    )
-                elif self.split == 'train':
-                    img_paths = _filter_valid_image_paths(
-                        data_root, reference_file, kwargs['cal_img_dir_name'], self.task_enum
-                    )
-                xml_paths = [lp.with_suffix('.xml') for lp in label_paths]
-                first_file = CocoAndYoloFormatDataset.replace_last_match_dir(
-                    img_paths[0], 'images', self.label_tag
-                )
-                label_paths = self.voc2yolo_format_labels(
-                    xml_paths, first_file.parent, class_names
-                )
-        elif reference_file.is_dir():
-            img_paths = [path for path in reference_file.rglob("*")]
-        else:
-            raise ValueError(f"{reference_file}: Unsupported format")
-
+        # Filter to include only valid image formats
         img_paths = [p for p in img_paths if p.is_file() and p.suffix[1:].lower() in IMG_FORMATS]
         if not img_paths:
-            raise AxYAMLError(
-                f'No supported images found in {reference_file}', YAML.key(kwargs, self.split)
-            )
+            raise DataLoadingError(f"No supported images found in {reference_file}")
 
+        # Sort the image paths to ensure consistent ordering
+        img_paths.sort()
+
+        # Get corresponding label paths
+        is_label_image_same_dir = kwargs.get('is_label_image_same_dir', False)
+        label_tag = kwargs.get('label_tag', 'labels')
+        if self.task_enum == SupportedTaskCategory.Kpts:
+            label_tag = 'labels_kpts'
+        elif self.task_enum == SupportedTaskCategory.Seg:
+            label_tag = 'labels_seg'
+
+        label_paths = self.image2label_paths(img_paths, is_label_image_same_dir, label_tag)
+
+        # Load and process labels from cache or directly
         cache_file = Path(
             label_paths[0].parent,
             f"{self.split}_{data_root.stem}_{self.task_enum.name.lower()}.cache",
         )
-        img_paths, shapes, labels, segments, from_cache = self.__cache_and_verify_dataset(
+
+        img_paths, shapes, labels, segments, from_cache = self._cache_and_verify_dataset(
             cache_file, img_paths, label_paths, output_format
         )
-        image_ids = self._collect_image_ids([p.stem for p in img_paths])
 
         # Convert COCO-80 to COCO-91 classes if required
         if label_format in ["coco91", "coco91-with-bg"]:
@@ -779,35 +761,20 @@ class CocoAndYoloFormatDataset(Dataset):
                 for label in sample_labels:
                     label[0] = coco80_to_coco91_table()[int(label[0])] - shift
             from_cache = False
-        # Generate JSON of the corrected ground truth if not existing
-        # or if the cache was regenerated (required for measurement)
-        gt_json = Path(data_root, f"{data_root.stem}_{self.task_enum.name.lower()}_gt.json")
-        if not gt_json.is_file() or not from_cache:
-            coco_80_to_91 = label_format == "coco80"
-            self.dump_coco_format_json(
-                class_names,
-                img_paths,
-                image_ids,
-                shapes,
-                labels,
-                gt_json,
-                current_format=output_format,
-                coco80_to_coco91=coco_80_to_91,
-            )
+
+        # Generate image IDs
+        image_ids = self._collect_image_ids([p.stem for p in img_paths])
+
+        # No JSON ground truth file by default
+        gt_json = None
+
         return img_paths, labels, segments, image_ids, gt_json
 
-    def __load_cache(self, cache_path, hash):
-        try:
-            cache = pickle.load(open(cache_path, "rb"))
-            if (cache["version"] != self.cache_version) or (cache["hash"] != hash):
-                cache = {}
-        except:
-            cache = {}
-        return cache
+    def _cache_and_verify_dataset(self, cache_path, img_paths, label_paths, output_format):
+        """Load labels from cache or create new cache."""
 
-    def __cache_and_verify_dataset(self, cache_path, img_paths, label_paths, output_format):
         def extract_output(cache):
-            # remove useless items before efficient parsing lists
+            # Remove useless items before parsing lists
             [cache.pop(k) for k in ("hash", "version", "status")]
             labels, shapes, segments = zip(*cache.values())
             labels = list(labels)
@@ -817,35 +784,37 @@ class CocoAndYoloFormatDataset(Dataset):
             return qualified_img_files, shapes, labels, segments
 
         nm, nf, ne, nc = 0, 0, 0, 0
-        data_status = (
-            "{0} labels found, {1} corrupt images\n{2} background images: "
-            "{3} no label files, {4} empty label files"
-        )  # nf, nc, nm+ne, nm, ne
 
+        # Get hash of dataset files
         hash = self._get_hash(img_paths + label_paths, output_format)
 
-        # Load data from cache if present
-        cache = self.__load_cache(cache_path, hash)
+        # Load data from cache if present and valid
+        cache = self._load_cache(cache_path, hash)
         if cache:
-            LOG.debug(f"Load cache from {cache_path}:")
+            LOG.debug(f"Loading labels from cache: {cache_path}")
             nm, nf, ne, nc = cache["status"]
-            status = data_status.format(nf, nc, nm + ne, nm, ne)
-            for line in iter(str(status).splitlines()):
-                LOG.debug('  ' + line)
             return *extract_output(cache), True
 
-        # No cache present; first create
+        # No valid cache present; create new cache
+        print(f"Creating new label cache: {cache_path}")
+        cache = {}
+
+        # Process images and labels in parallel
         nthreads = usable_cpus()
-        LOG.debug(f"Create new label cache file {cache_path}")
-        LOG.trace(f"Spawn {nthreads} threads to speedup cache creation")
         with Pool(nthreads) as pool:
             pbar = pool.imap(
                 self.check_image_label,
                 zip(img_paths, label_paths),
             )
+
             pbar = tqdm(
-                pbar, total=len(label_paths), desc=f"Create label cache", unit='label', leave=False
+                pbar,
+                total=len(label_paths),
+                desc="Creating label cache",
+                unit='label',
+                leave=False,
             )
+
             for (
                 img_path,
                 labels_per_file,
@@ -862,24 +831,39 @@ class CocoAndYoloFormatDataset(Dataset):
                 nm += nm_per_file
                 nf += nf_per_file
                 ne += ne_per_file
-        pbar.close()
-        status = data_status.format(nf, nc, nm + ne, nm, ne)
-        for line in iter(str(status).splitlines()):
-            LOG.debug("  " + line)
+
+        # Report status
+        print(f"Labels found: {nf}, corrupt images: {nc}")
+        print(f"Background images: {nm+ne}, missing label files: {nm}, empty label files: {ne}")
+
         if nf == 0:
-            raise RuntimeError(f"No valid image/label pairs found in dataset")
+            raise DataLoadingError("No valid image/label pairs found in dataset")
 
         # Write cache file
         cache['hash'] = hash
         cache['version'] = self.cache_version
         cache['status'] = nm, nf, ne, nc
         try:
-            pickle.dump(cache, open(cache_path, "wb"))
+            with open(cache_path, 'wb') as f:
+                pickle.dump(cache, f)
         except Exception as e:
-            LOG.warning(f"Failed to write cache file {cache_path}: {e}")
+            print(f"Warning: Failed to write cache file {cache_path}: {e}")
+
         return *extract_output(cache), False
 
+    def _load_cache(self, cache_path, hash):
+        """Load label cache if it exists and is valid."""
+        try:
+            with open(cache_path, 'rb') as f:
+                cache = pickle.load(f)
+            if (cache["version"] != self.cache_version) or (cache["hash"] != hash):
+                return {}
+            return cache
+        except Exception:
+            return {}
+
     def check_image_label(self, args):
+        """Check and process an image and its label file."""
         img_path, lb_path = args
         nc = 0  # number of corrupt image
         nm, nf, ne = 0, 0, 0  # number of labels (missing/found/empty)
@@ -900,8 +884,8 @@ class CocoAndYoloFormatDataset(Dataset):
             img = Image.open(img_path)
             img.verify()
             w, h = exif_size(img)
-            assert (w > 9) and (h > 9), f"image w:{w} or h:{h} <10 pixels"
-            assert img.format.lower() in IMG_FORMATS, f"invalid image format {img.format}"
+            assert (w > 9) and (h > 9), f"Image w:{w} or h:{h} <10 pixels"
+            assert img.format.lower() in IMG_FORMATS, f"Invalid image format {img.format}"
             if img.format.lower() in ("jpg", "jpeg"):
                 with open(img_path, "rb") as f:
                     f.seek(-2, 2)
@@ -909,10 +893,10 @@ class CocoAndYoloFormatDataset(Dataset):
                         ImageOps.exif_transpose(Image.open(img_path)).save(
                             img_path, "JPEG", subsampling=0, quality=100
                         )
-                        LOG.warn(f"{img_path}: corrupt JPEG restored and saved")
+                        print(f"Warning: {img_path}: corrupt JPEG restored and saved")
         except Exception as e:
             nc = 1
-            LOG.warn(f"Ignoring image {img_path}: {e}")
+            print(f"Warning: Ignoring image {img_path}: {e}")
             return img_path, None, None, None, nc, nm, nf, ne
 
         # Validate labels in label file
@@ -934,15 +918,19 @@ class CocoAndYoloFormatDataset(Dataset):
                             1,
                         )  # (cls, xywh)
                     lb = np.array(lb, dtype=np.float32)
+
                 if len(lb):
-                    assert lb.shape[1] >= 5, f"each row required at least 5 values"
-                    assert (lb >= 0).all(), f"all values in label file must > 0"
-                    assert (lb[:, 1:5] <= 1).all(), f"found unnormalized coordinates"
+                    assert lb.shape[1] >= 5, "Each row required at least 5 values"
+                    assert (lb >= 0).all(), "All values in label file must > 0"
+                    assert (lb[:, 1:5] <= 1).all(), "Found unnormalized coordinates"
+
+                    # Remove duplicates
                     _, idx = np.unique(lb, axis=0, return_index=True)
                     if len(idx) < len(lb):  # if duplicate row
                         lb = lb[idx]  # remove duplicates
-                        LOG.warn(f"{lb_path}: {len(lb) - len(idx)} duplicate labels removed")
-                    # lb should be with normalized xywh format now; here we always convert to absolute coordinates
+                        print(f"Warning: {lb_path}: {len(lb) - len(idx)} duplicate labels removed")
+
+                    # Convert to specified output format
                     if self.output_format == "ltwh":
                         lb[:, 1:5] = xywh2ltwh(lb[:, 1:5])
                         lb[:, [1, 3]] *= w
@@ -955,13 +943,15 @@ class CocoAndYoloFormatDataset(Dataset):
                         lb[:, [1, 3]] *= w
                         lb[:, [2, 4]] *= h
 
+                    # Scale keypoints if present
                     if self.task_enum == SupportedTaskCategory.Kpts:
                         lb[:, 5::3] *= w
                         lb[:, 6::3] *= h
-                        # 7::3 is visibility, 0: not labeled, 1: labeled but not visible, and 2: labeled and visible.
+
+                    # Scale segments if present
                     if segments:
-                        # scale segments
                         segments = [seg * [w, h] for seg in segments]
+
                     lb = lb.tolist()
                 else:
                     ne = 1  # label empty
@@ -969,374 +959,119 @@ class CocoAndYoloFormatDataset(Dataset):
             else:
                 nm = 1  # label missing
                 lb = []
+
             return img_path, lb, (w, h), segments, nc, nm, nf, ne
         except Exception as e:
-            LOG.warn(f"{lb_path}: ignoring invalid labels: {e}")
+            print(f"Warning: {lb_path}: ignoring invalid labels: {e}")
             return img_path, None, None, None, nc, nm, nf, ne
 
-    @staticmethod
-    def replace_last_match_dir(path: Path, old, new):
-        parts = path.parts[::-1]
-        index = parts.index(old)
-        index = len(parts) - index - 1
-        return Path(*path.parts[0:index], new, *path.parts[index + 1 :])
-
-    @staticmethod
-    def image2label_paths(img_paths, is_label_image_same_dir, tag="labels"):
-        # the order in the list of label paths must must correspond to image files
-        if is_label_image_same_dir:
-            LOG.info("Please ensure all images and labels are under the same folder")
-            LOG.info("with the same naming rule (only differing in their file extension)")
-            label_files = [p.with_suffix(".txt") for p in img_paths]
-        else:
-            # Replace /images/ with /labels/ (last instance)
-            label_files = []
-            for x in img_paths:
-                label_files.append(
-                    CocoAndYoloFormatDataset.replace_last_match_dir(x, 'images', tag).with_suffix(
-                        '.txt'
-                    )
-                )
-        return label_files
-
-    @staticmethod
-    def evaluate(gt_json, pred_json, img_ids=[], metrics=["mAP", "mAP50"]):
-        from pycocotools.coco import COCO
-        from pycocotools.cocoeval import COCOeval
-
-        # implement this by using COCOeval
-        # return a dict mapping each metric to a value
-        # assert all(m in supported_metrics for m in metrics)
-        results = dict.fromkeys(metrics, 0)
-        try:
-            gt = COCO(gt_json)
-            pred = gt.loadRes(pred_json)
-            eval = COCOeval(gt, pred, iouType="bbox")
-
-            if len(img_ids) > 0:  # image IDs to evaluate
-                eval.params.imgIds = img_ids
-            eval.evaluate()
-            eval.accumulate()
-            eval.summarize()
-            map, map50 = eval.stats[:2]
-            if "mAP" in results:
-                results["mAP"] = map
-            if "mAP50" in results:
-                results["mAP50"] = map50
-        except Exception as e:
-            print("Failed to evaulate by pycocotools")
-        # TODO: print each class ap from pycocotool result
-        # return dictionary by "metrics"
-        # TODO: implement precision and recall of single class
-        # tp, fp, p, r, f1, ap, ap_class = evaluate_per_class(*stats)
-        # ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
-        # mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
-        return results
-
-    @staticmethod
-    def label_to_coco_bbox(format, label, img_w, img_h):
-        # convert label to coco bbox format
-        # input: label in "format" format
-        # output: label in coco bbox format
-        if format == "ltwh":
-            c, x1, y1, w, h = label[:5]
-        elif format == "xyxy":
-            c, x1, y1, x2, y2 = label[:5]
-            w = x2 - x1
-            h = y2 - y1
-        elif format == 'xywh':
-            c, x, y, w, h = label[:5]
-            x1 = (x - w / 2) * img_w
-            y1 = (y - h / 2) * img_h
-            w *= img_w
-            h *= img_h
-        else:
-            raise Exception(f"Unsupported format: {format}")
-        return int(c), x1, y1, w, h
-
-    def dump_coco_format_json(
-        self,
-        class_names,
-        img_paths,
-        image_ids,
-        shapes,
-        images_labels,
-        save_to,
-        current_format,
-        coco80_to_coco91=False,
-    ):
-        # Input is YOLO format
-        assert len(img_paths) == len(shapes) == len(images_labels)
-        ann_id = 0
-        LOG.debug(f"Save labels to JSON file (for future measurements): {save_to}")
-        dataset = {"categories": [], "annotations": [], "images": []}
-        if class_names:
-            for i, class_name in enumerate(class_names):
-                dataset["categories"].append({"id": i, "name": class_name, "supercategory": ""})
-        for img_path, img_id, shape, labels in tqdm(
-            zip(img_paths, image_ids, shapes, images_labels), leave=False
-        ):
-            img_w, img_h = shape.tolist()
-            dataset["images"].append(
-                {
-                    "file_name": img_path.name,
-                    "id": img_id,
-                    "width": img_w,
-                    "height": img_h,
-                }
-            )
-            for label in labels:
-                if self.task_enum == SupportedTaskCategory.Kpts:
-                    keypoints = label[5:]
-                    label = label[:5]
-                elif self.task_enum == SupportedTaskCategory.Seg:
-                    segments = label[5:]
-                    label = label[:5]
-                c, x1, y1, w, h = CocoAndYoloFormatDataset.label_to_coco_bbox(
-                    current_format, label, img_w, img_h
-                )
-                if coco80_to_coco91:
-                    c = coco80_to_coco91_table()[c]
-
-                anno = {
-                    "area": h * w * 0.53,
-                    "bbox": [x1, y1, w, h],
-                    "category_id": c,
-                    "id": ann_id,
-                    "image_id": img_id,
-                    "iscrowd": 0,
-                    # mask
-                    "segmentation": [],
-                }
-                if self.task_enum == SupportedTaskCategory.Kpts:
-                    anno["keypoints"] = keypoints
-                    anno["num_keypoints"] = sum(
-                        1 for i in range(2, len(keypoints), 3) if keypoints[i] > 0
-                    )
-                elif self.task_enum == SupportedTaskCategory.Seg:
-                    anno["segmentation"] = _segments2polygon(segments)
-                dataset["annotations"].append(anno)
-                ann_id += 1
-        with open(save_to, "w") as f:
-            json.dump(dataset, f)
-
-    @staticmethod
-    def voc2yolo_format_labels(xml_paths: List[str], save_base_path: Path, classes: List[str]):
-        import xml.etree.ElementTree as ET
-
-        def convert(size, box):
-            dw = 1.0 / (size[0])
-            dh = 1.0 / (size[1])
-            x = (box[0] + box[1]) / 2.0 - 1
-            y = (box[2] + box[3]) / 2.0 - 1
-            w = box[1] - box[0]
-            h = box[3] - box[2]
-            return (x * dw, y * dh, w * dw, h * dh)
-
-        LOG.debug(f"Label folder is {save_base_path}; write xmls")
-        save_base_path.mkdir(parents=True, exist_ok=True)
-        label_files = []
-        for a_path in tqdm(xml_paths, leave=False):
-            # Read annotation xml
-            ann_tree = ET.parse(a_path)
-            ann_root = ann_tree.getroot()
-            size = ann_root.find("size")
-            w = int(size.find("width").text)
-            h = int(size.find("height").text)
-            out_file = save_base_path / f"{Path(a_path).stem}.txt"
-            with out_file.open(mode="w", encoding="utf-8") as f:
-                for obj in ann_root.iter("object"):
-                    difficult = obj.find("difficult").text
-                    cls = obj.find("name").text
-                    if classes:
-                        if cls not in classes or int(difficult) == 1:
-                            LOG.warning(
-                                f'{cls} is not in label name file or" \
-                                        " difficult={int(difficult)}!'
-                            )
-                            continue
-                        cls_id = classes.index(cls)
-                    else:
-                        cls_id = cls
-                    xmlbox = obj.find('bndbox')
-                    b = (
-                        float(xmlbox.find('xmin').text),
-                        float(xmlbox.find('xmax').text),
-                        float(xmlbox.find('ymin').text),
-                        float(xmlbox.find('ymax').text),
-                    )
-                    bb = convert((w, h), b)
-                    f.write(str(cls_id) + " " + " ".join([str(a) for a in bb]) + '\n')
-            label_files.append(str(out_file))
-        return label_files
-
-    @staticmethod
-    def coco2yolo_format_labels(annotation_path: str, save_base_path: Path):
-        from pycocotools.coco import COCO
-
-        LOG.debug(f"Label folder is {save_base_path}")
-        save_base_path.mkdir(parents=True, exist_ok=True)
-        LOG.debug(f"Load annotations from {annotation_path}")
-        data_source = COCO(annotation_file=annotation_path)
-        catIds = data_source.getCatIds()
-        categories = data_source.loadCats(catIds)
-        categories.sort(key=lambda x: x["id"])
-        classes = {}
-        coco_labels = {}
-        coco_labels_inverse = {}
-        for c in categories:
-            coco_labels[len(classes)] = c["id"]
-            coco_labels_inverse[c["id"]] = len(classes)
-            classes[c["name"]] = len(classes)
-
-        img_ids = data_source.getImgIds()
-        for _, img_id in tqdm(
-            enumerate(img_ids), desc='Convert .json file to .txt files', leave=False
-        ):
-            img_info = data_source.loadImgs(img_id)[0]
-            file_name = img_info["file_name"].split(".")[0]
-            height = img_info["height"]
-            width = img_info["width"]
-
-            save_path = save_base_path / f"{file_name}.txt"
-            with save_path.open(mode="w", encoding="utf-8") as fp:
-                annotation_id = data_source.getAnnIds(img_id)
-                boxes = np.zeros((0, 5))
-                if len(annotation_id) == 0:
-                    fp.write("")
-                    continue
-                annotations = data_source.loadAnns(annotation_id)
-                lines = ""
-                for annotation in annotations:
-                    box = annotation["bbox"]
-                    # some annotations have basically no width / height, skip them
-                    if box[2] < 1 or box[3] < 1:
-                        continue
-                    # top_x,top_y,width,height---->cen_x,cen_y,width,height
-                    box[0] = round((box[0] + box[2] / 2) / width, 6)
-                    box[1] = round((box[1] + box[3] / 2) / height, 6)
-                    box[2] = round(box[2] / width, 6)
-                    box[3] = round(box[3] / height, 6)
-                    label = coco_labels_inverse[annotation["category_id"]]
-                    lines = lines + str(label)
-                    for i in box:
-                        lines += " " + str(i)
-
-                    # Add keypoints if available
-                    if "keypoints" in annotation:
-                        keypoints = np.array(annotation["keypoints"], dtype=np.float32).reshape(
-                            -1, 3
-                        )
-                        keypoints[..., 0] /= width  # normalize x
-                        keypoints[..., 1] /= height  # normalize y
-                        keypoints = keypoints.reshape(-1).tolist()
-                        lines += " " + " ".join(map(str, keypoints))
-                    elif "segmentation" in annotation:
-                        segments = annotation["segmentation"]
-                        yolo_segments = [
-                            f"{(x) / width:.5f} {(y) / height:.5f}"
-                            for x, y in zip(segments[0][::2], segments[0][1::2])
-                        ]
-                        yolo_segments = ' '.join(yolo_segments)
-                        lines += " " + yolo_segments
-                    lines += "\n"
-                fp.writelines(lines)
-
-    def _get_hash(self, paths: List[Path], output_format: str) -> str:
-        """Get the hash value of paths"""
-        size = sum(x.stat().st_size for x in paths if x.exists())
-        h = hashlib.md5(str(size).encode())  # hashing sizes
-        h.update(str(sorted([p.as_posix() for p in paths])).encode())  # hashing sorted paths
-        h.update(output_format.encode())  # hashing output format
+    def _get_hash(self, paths, output_format):
+        """Calculate a hash for a set of paths and configuration."""
+        size = sum(p.stat().st_size for p in paths if p.exists())
+        h = hashlib.md5(str(size).encode())
+        h.update(str(sorted([p.as_posix() for p in paths])).encode())
+        h.update(output_format.encode())
         return h.hexdigest()
 
-    def _collect_image_ids(self, filenames: List[str]) -> List[int]:
+    def _get_image_paths(self):
+        """Get image paths from the data path."""
+        img_paths = []
+        if self.data_path and Path(self.data_path).is_file():
+            with open(self.data_path, 'r') as f:
+                for line in f.readlines():
+                    line = line.strip()
+                    if line:
+                        img_paths.append(Path(line))
+        return img_paths
+
+    def _collect_image_ids(self, filenames):
+        """Collect or generate image IDs from filenames."""
         image_ids = []
         for filename in filenames:
             if filename.isnumeric():
                 image_ids.append(int(filename))
             else:
                 image_id = int(hashlib.sha256(filename.encode("utf-8")).hexdigest(), 16) % 10**8
-                if image_id in image_ids:
-                    # If the image_id is a duplicate, generate a new unique id
-                    new_id = max(image_ids) + 1
-                    image_ids.append(new_id)
-                else:
-                    image_ids.append(image_id)
+                image_ids.append(image_id)
         return image_ids
 
     @staticmethod
-    def download_and_extract_asset(data_root, asset):
-        # Download file and, if archive, extract
-        # Archives are represented with base_dir attributes
-        filename = Path(data_root, asset['filename'])
-        if not 'base_dir' in asset:
-            if not filename.exists():
-                utils.download(asset['url'], filename, asset['md5'])
-        elif utils.dir_needed(
-            Path(data_root, asset['base_dir'])
-        ) or CocoAndYoloFormatDataset.missing_files(data_root, asset):
-            # Download archive (implied by base_dir)
-            drop_dirs = asset["drop_dirs"] if "drop_dirs" in asset else 0
-            utils.download(asset["url"], filename, asset["md5"])
-            utils.extract(filename, drop_dirs)
-            filename.unlink()
+    def image2label_paths(img_paths, is_same_dir=False, tag="labels"):
+        """Convert image paths to corresponding label paths."""
+        if is_same_dir:
+            return [p.with_suffix(".txt") for p in img_paths]
+        else:
+            # Replace /images/ with /labels/ (last instance)
+            return [
+                UnifiedDataset.replace_last_match_dir(p, 'images', tag).with_suffix('.txt')
+                for p in img_paths
+            ]
 
     @staticmethod
-    def missing_files(data_root, asset):
-        # For shared directories, check if any
-        # key files/subdirs are missing
-        if "check_files" in asset:
-            for file in asset["check_files"]:
-                if not Path(data_root, file).exists():
-                    return True
-        return False
+    def replace_last_match_dir(path: Path, old, new):
+        """Replace the last occurrence of a directory name in a path."""
+        parts = path.parts[::-1]
+        try:
+            index = parts.index(old)
+            index = len(parts) - index - 1
+            return Path(*path.parts[0:index], new, *path.parts[index + 1 :])
+        except ValueError:
+            return path
 
     @property
     def groundtruth_json(self):
+        """Get the path to the ground truth JSON file."""
         return str(self._groundtruth_json) if self._groundtruth_json else ''
 
 
-class ObjDataAdaptor(types.DataAdapter):
-    """Data adapter for tasks which follow YOLO format.
-
-    Args:
-        root (str): Root directory of the dataset.utils
-        split (str): Split of the dataset, either 'val' or 'test', for validation
-        transform (callable, optional): A function/transform that  takes in an PIL image
-            and returns a transformed version. E.g, ``transforms.RandomCrop``
-        batch_size (int, optional): How many samples per batch to load.
-    """
+# Data adapter implementations
+class ObjDataAdapter(types.DataAdapter):
+    """Data adapter for object detection tasks."""
 
     def __init__(self, dataset_config, model_info):
-        if 'download_year' not in dataset_config:
+        """Initialize the object detection data adapter."""
+        self.dataset_config = dataset_config
+        self.model_info = model_info
+        self.label_type = self._check_supported_label_type(dataset_config)
+
+        # Additional validation for custom datasets
+        if self.label_type not in (SupportedLabelType.COCO2017, SupportedLabelType.COCO2014):
             if 'cal_data' not in dataset_config and 'repr_imgs_dir_name' not in dataset_config:
                 raise ValueError(
                     f"Please specify either 'repr_imgs_dir_name' or 'cal_data' for {self.__class__.__name__} "
-                    f"if you want to deploy with your custom data, or 'download_year' for COCO dataset"
+                    f"if you want to deploy with your custom data, or use a standard dataset like COCO2017 by setting 'label_type: COCO2017'"
                 )
             if 'val_data' not in dataset_config:
                 raise ValueError(
                     f"Please specify 'val_data' for {self.__class__.__name__} "
-                    f"if you want to evaluate with your custom data, or 'download_year' for using COCO dataset"
+                    f"if you want to evaluate with your custom data, or use a standard dataset like COCO2017"
                 )
-        self.label_type = self._check_supported_label_type(dataset_config)
 
-    def _check_supported_label_type(self, dataset_config: dict) -> SupportedLabelType:
-        label_type = SupportedLabelType.from_string(dataset_config.get('label_type', 'YOLOv8'))
-        if label_type in [
+    def _check_supported_label_type(self, dataset_config):
+        """Check if the label type is supported for object detection."""
+        label_type_str = dataset_config.get('label_type', 'YOLOv8')
+        label_type = SupportedLabelType.from_string(label_type_str)
+
+        supported_types = [
             SupportedLabelType.COCOJSON,
             SupportedLabelType.YOLOv8,
             SupportedLabelType.YOLOv5,
             SupportedLabelType.PascalVOCXML,
-        ]:
+            SupportedLabelType.COCO2017,
+            SupportedLabelType.COCO2014,
+        ]
+
+        if label_type in supported_types:
             LOG.debug(f"Label type is {label_type}")
             return label_type
+
         raise ValueError(f"Unsupported label_type: {label_type}")
 
     def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
+        """Create a data loader for calibration."""
         if repr_dataloader := self.check_representative_images(transform, batch_size, **kwargs):
             return repr_dataloader
+
         return torch.utils.data.DataLoader(
             self._get_dataset_class(transform, root, 'train', kwargs),
             batch_size=batch_size,
@@ -1346,6 +1081,7 @@ class ObjDataAdaptor(types.DataAdapter):
         )
 
     def create_validation_data_loader(self, root, target_split, **kwargs):
+        """Create a data loader for validation."""
         return torch.utils.data.DataLoader(
             self._get_dataset_class(None, root, 'val', kwargs),
             batch_size=1,
@@ -1353,6 +1089,25 @@ class ObjDataAdaptor(types.DataAdapter):
             collate_fn=lambda x: x,
             num_workers=0,
         )
+
+    def _get_dataset_class(self, transform, root, split, kwargs):
+        """Get the dataset class for the adapter."""
+        # For test compatibility - if label_type is default, don't pass it
+        params = {
+            "transform": transform,
+            "data_root": root,
+            "split": split,
+            "task": SupportedTaskCategory.ObjDet,
+        }
+
+        # Remove label_type from kwargs to avoid duplication
+        kwargs.pop('label_type', None)
+
+        # Only add label_type if it's not the default
+        if self.label_type != SupportedLabelType.YOLOv8:
+            params["label_type"] = self.label_type
+
+        return UnifiedDataset(**params, **kwargs)
 
     def reformat_for_calibration(self, batched_data: Any):
         return (
@@ -1363,9 +1118,6 @@ class ObjDataAdaptor(types.DataAdapter):
 
     def reformat_for_validation(self, batched_data: Any):
         return self._format_measurement_data(batched_data)
-
-    def _get_dataset_class(self, transform, root, split, kwargs):
-        return CocoAndYoloFormatDataset(transform=transform, data_root=root, split=split, **kwargs)
 
     def _format_measurement_data(self, batched_data: Any) -> List[types.FrameInput]:
         def as_ground_truth(d):
@@ -1387,95 +1139,60 @@ class ObjDataAdaptor(types.DataAdapter):
     def evaluator(
         self, dataset_root, dataset_config, model_info, custom_config, pair_validation=False
     ):
-        from ax_evaluators import yolo_eval
+        from ax_evaluators import obj_eval
 
-        return yolo_eval.YoloEvaluator(yolo_eval.YoloEvalmAPCalculator(model_info.num_classes))
-
-
-class KptDataAdapter(ObjDataAdaptor):
-    def __init__(self, dataset_config, model_info):
-        super().__init__(dataset_config, model_info)
-        self.label_type = self._check_supported_label_type(dataset_config)
-
-    def _get_dataset_class(self, transform, root, split, kwargs):
-        return CocoAndYoloFormatDataset(
-            transform=transform,
-            data_root=root,
-            split=split,
-            task=SupportedTaskCategory.Kpts,
-            **kwargs,
-        )
-
-    def _check_supported_label_type(self, dataset_config: dict) -> SupportedLabelType:
-        # We now default with COCO JSON, and we target to support more label types in the future
-        label_type = SupportedLabelType.from_string(dataset_config.get('label_type', 'COCO JSON'))
-        if label_type == SupportedLabelType.COCOJSON:
-            return label_type
-        raise ValueError(f"Unsupported label_type: {label_type}")
-
-    def _format_measurement_data(self, batched_data: Any) -> List[types.FrameInput]:
-        def as_ground_truth(d):
-            if 'bboxes' in d:
-                return eval_interfaces.KptDetGroundTruthSample.from_torch(
-                    d['bboxes'], d['keypoints'], d['image_id']
-                )
-            return None
-
-        def as_frame_input(d):
-            return types.FrameInput.from_image(
-                img=d['image'],
-                color_format=types.ColorFormat.RGB,
-                ground_truth=as_ground_truth(d),
-                img_id=d['image_id'],
-            )
-
-        return [as_frame_input(d) for d in batched_data]
-
-    def evaluator(
-        self, dataset_root, dataset_config, model_info, custom_config, pair_validation=False
-    ):
-        from ax_evaluators import yolo_eval
-
-        return yolo_eval.YoloEvaluator(
-            yolo_eval.YoloEvalmAPCalculator(model_info.num_classes, is_pose=True)
-        )
+        return obj_eval.ObjEvaluator(obj_eval.YoloEvalmAPCalculator(model_info.num_classes))
 
 
-class SegDataAdapter(ObjDataAdaptor):
-    """
-    Data adapter for YOLO-format instance segmentation models.
-    """
+class SegDataAdapter(ObjDataAdapter):
+    """Data adapter for segmentation tasks."""
 
     def __init__(self, dataset_config, model_info):
+        """Initialize the segmentation data adapter."""
         super().__init__(dataset_config, model_info)
-        self.label_type = self._check_supported_label_type(dataset_config)
+
+        # Set segmentation-specific parameters
         self.is_mask_overlap = dataset_config.get('is_mask_overlap', True)
-        if mask_size := dataset_config.get('mask_size', None):
-            if not (isinstance(mask_size, (tuple, list)) and len(mask_size) == 2):
-                raise ValueError("mask_size must be a tuple or list of two integers")
-            LOG.info(f"mask_size is set to {mask_size}")
-            self.mask_size = tuple(mask_size)
-        else:
-            # Create mask with raw model size, but it will be resized to (160,160)
-            # during evaluation. This follows a trick to aligns with YOLOv8 metrics.
-            self.mask_size = (640, 640)
+        mask_size = dataset_config.get('mask_size', (640, 640))
+        if mask_size and not (isinstance(mask_size, (tuple, list)) and len(mask_size) == 2):
+            raise ValueError("mask_size must be a tuple or list of two integers")
 
-    def _check_supported_label_type(self, dataset_config: dict) -> SupportedLabelType:
-        label_type = SupportedLabelType.from_string(dataset_config.get('label_type', 'COCO JSON'))
-        if label_type == SupportedLabelType.COCOJSON:
+        self.mask_size = tuple(mask_size)
+
+    def _check_supported_label_type(self, dataset_config):
+        """Check if the label type is supported for segmentation."""
+        label_type_str = dataset_config.get('label_type', 'COCO JSON')
+        label_type = SupportedLabelType.from_string(label_type_str)
+
+        supported_types = [
+            SupportedLabelType.COCOJSON,
+            SupportedLabelType.COCO2017,
+            SupportedLabelType.COCO2014,
+        ]
+
+        if label_type in supported_types:
             return label_type
+
         raise ValueError(f"Unsupported label_type: {label_type}")
 
     def _get_dataset_class(self, transform, root, split, kwargs):
-        # We can pass pipeline into kwargs to inspect if letterbox was applied
+        """Get the dataset class for segmentation."""
         self.eval_with_letterbox = kwargs.get('eval_with_letterbox', True)
-        return CocoAndYoloFormatDataset(
-            transform=transform,
-            data_root=root,
-            split=split,
-            task=SupportedTaskCategory.Seg,
-            **kwargs,
-        )
+        kwargs.pop('label_type', None)
+
+        # Create dataset parameters
+        dataset_params = {
+            "transform": transform,
+            "data_root": root,
+            "split": split,
+            "task": SupportedTaskCategory.Seg,
+        }
+
+        # Only include label_type if it's not the default for this adapter (COCOJSON)
+        if self.label_type != SupportedLabelType.COCOJSON:
+            dataset_params["label_type"] = self.label_type
+
+        return UnifiedDataset(**dataset_params, **kwargs)
 
     def _format_measurement_data(self, batched_data: Any) -> List[types.FrameInput]:
         formatted_data = []
@@ -1508,8 +1225,77 @@ class SegDataAdapter(ObjDataAdaptor):
     def evaluator(
         self, dataset_root, dataset_config, model_info, custom_config, pair_validation=False
     ):
-        from ax_evaluators import yolo_eval
+        from ax_evaluators import obj_eval
 
-        return yolo_eval.YoloEvaluator(
-            yolo_eval.YoloEvalmAPCalculator(model_info.num_classes, is_seg=True)
+        return obj_eval.ObjEvaluator(
+            obj_eval.YoloEvalmAPCalculator(model_info.num_classes, is_seg=True)
+        )
+
+
+class KptDataAdapter(ObjDataAdapter):
+    """Data adapter for keypoint detection tasks."""
+
+    def __init__(self, dataset_config, model_info):
+        """Initialize the keypoint detection data adapter."""
+        super().__init__(dataset_config, model_info)
+
+    def _check_supported_label_type(self, dataset_config):
+        """Check if the label type is supported for keypoint detection."""
+        label_type_str = dataset_config.get('label_type', 'COCO JSON')
+        label_type = SupportedLabelType.from_string(label_type_str)
+
+        supported_types = [
+            SupportedLabelType.COCOJSON,
+            SupportedLabelType.COCO2017,
+            SupportedLabelType.COCO2014,
+        ]
+
+        if label_type in supported_types:
+            return label_type
+
+        raise ValueError(f"Unsupported label_type: {label_type}")
+
+    def _get_dataset_class(self, transform, root, split, kwargs):
+        """Get the dataset class for keypoint detection."""
+        kwargs.pop('label_type', None)
+
+        # Create dataset parameters
+        dataset_params = {
+            "transform": transform,
+            "data_root": root,
+            "split": split,
+            "task": SupportedTaskCategory.Kpts,
+        }
+
+        # Only include label_type if it's not the default for this adapter (COCOJSON)
+        if self.label_type != SupportedLabelType.COCOJSON:
+            dataset_params["label_type"] = self.label_type
+
+        return UnifiedDataset(**dataset_params, **kwargs)
+
+    def _format_measurement_data(self, batched_data: Any) -> List[types.FrameInput]:
+        def as_ground_truth(d):
+            if 'bboxes' in d:
+                return eval_interfaces.KptDetGroundTruthSample.from_torch(
+                    d['bboxes'], d['keypoints'], d['image_id']
+                )
+            return None
+
+        def as_frame_input(d):
+            return types.FrameInput.from_image(
+                img=d['image'],
+                color_format=types.ColorFormat.RGB,
+                ground_truth=as_ground_truth(d),
+                img_id=d['image_id'],
+            )
+
+        return [as_frame_input(d) for d in batched_data]
+
+    def evaluator(
+        self, dataset_root, dataset_config, model_info, custom_config, pair_validation=False
+    ):
+        from ax_evaluators import obj_eval
+
+        return obj_eval.ObjEvaluator(
+            obj_eval.YoloEvalmAPCalculator(model_info.num_classes, is_pose=True)
         )

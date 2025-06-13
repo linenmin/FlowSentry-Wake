@@ -1,5 +1,6 @@
 // Copyright Axelera AI, 2024
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <glib.h>
 #include <gst/gst.h>
 #include "unittest_ax_common.h"
@@ -30,7 +31,7 @@ class AxInferenceFixture : public ::testing::TestWithParam<bool>
   {
     auto *current_path = getenv("GST_PLUGIN_PATH");
     std::string plugin_path = g_get_current_dir();
-    plugin_path = plugin_path + ":" + plugin_path + "/axstreamer";
+    plugin_path = plugin_path + ":" + plugin_path + "/gstaxstreamer";
     if (current_path == NULL) {
       setenv("GST_PLUGIN_PATH", plugin_path.c_str(), 1);
       std::cerr << "GST_PLUGIN_PATH not set, setting to current directory: " << plugin_path
@@ -78,14 +79,15 @@ TEST_P(AxInferenceFixture, HappyPathTest)
   if (not has_dma_heap()) {
     GTEST_SKIP() << "Skipping test as dma heap is not available";
   }
+  const auto model = std::filesystem::path(__FILE__).parent_path() / "squeezenet_model.json";
   const auto use_dmabuf_param = GetParam();
   const auto use_dmabuf = use_dmabuf_param ? "true" : "false";
   const auto pipeline = "videotestsrc num-buffers=1 "
                         "! video/x-raw,format=RGBA,width=480,height=640 "
                         "! axtransform lib=libtransform_resize.so options=to_tensor:1 "
                         "! axinference dmabuf_inputs="s
-                        + use_dmabuf + " model="s + __FILE__
-                        + " options=mock-load:1;mock-shapes:1x640x480x4,1x640x480x4 "
+                        + use_dmabuf + " model="s + model.string()
+                        + " options=mock-load:1;mock-shapes:1x640x480x4,1x224x224x64 "
                           "! appsink name=sink"s;
   gstpipe = gst_parse_launch(pipeline.c_str(), nullptr);
   EXPECT_NE(gstpipe, nullptr);

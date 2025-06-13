@@ -16,7 +16,7 @@ pipeline:
       model_name: model1   # References model defined in models section
       input:
           type: image
-          color_format: rgb # Must match repr_imgs_dataloader_color_format
+          color_format: RGB # Must match repr_imgs_dataloader_color_format
       postprocess:
         - my_topk_decoder:
             k: 3

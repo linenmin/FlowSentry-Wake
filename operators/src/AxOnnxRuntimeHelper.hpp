@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "AxDataInterface.h"
+#include "AxLog.hpp"
 
 namespace ax_onnxruntime
 {
@@ -12,8 +14,13 @@ namespace ax_onnxruntime
 class OnnxRuntimeInference
 {
   public:
-  explicit OnnxRuntimeInference(const std::string &model_path);
+  explicit OnnxRuntimeInference(const std::string &model_path, Ax::Logger &logger);
+  // Old operator() kept for potential compatibility, but new method is preferred
   std::vector<Ort::Value> operator()(const std::vector<Ort::Value> &input_tensors);
+
+  // New method using I/O Binding
+  void run_with_io_binding(const std::vector<Ort::Value> &input_tensors,
+      const std::vector<AxTensorInterface *> &output_tensors);
 
   std::vector<std::vector<int64_t>> get_input_node_dims() const
   {
@@ -23,7 +30,17 @@ class OnnxRuntimeInference
   {
     return output_node_dims;
   }
+  const std::vector<std::string> &get_input_node_names() const
+  {
+    return input_node_names;
+  }
+  const std::vector<std::string> &get_output_node_names() const
+  {
+    return output_node_names;
+  }
 
+  std::vector<ONNXTensorElementDataType> get_input_node_types() const;
+  std::vector<ONNXTensorElementDataType> get_output_node_types() const;
 
   private:
   Ort::Env env;
@@ -35,6 +52,11 @@ class OnnxRuntimeInference
   std::vector<const char *> output_node_names_c;
   std::vector<std::vector<int64_t>> output_node_dims;
   bool first_call = true;
+  Ax::Logger &logger_;
+
+  // Helper to create Ort::Value from AxTensorInterface for binding output
+  Ort::Value create_output_ort_value(
+      AxTensorInterface *ax_tensor, const std::vector<int64_t> &expected_dims);
 
   std::string inspect_format(const std::vector<int64_t> &providedDims,
       const std::vector<int64_t> &expectedDims, size_t inputIndex);

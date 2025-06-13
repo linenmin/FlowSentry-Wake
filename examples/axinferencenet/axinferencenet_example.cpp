@@ -13,27 +13,24 @@
 
 #include "AxInferenceNet.hpp"
 #include "AxMetaObjectDetection.hpp"
+#include "AxOpenCVRender.hpp"
 #include "AxStreamerUtils.hpp"
+#include "AxUtils.hpp"
 #include "axruntime/axruntime.hpp"
 #include "opencv2/opencv.hpp"
 
 using namespace std::string_literals;
-
+using std::chrono::high_resolution_clock;
+using std::chrono::microseconds;
 constexpr auto DEFAULT_LABELS = "ax_datasets/labels/coco.names";
 
 namespace
 {
-
 auto
-read_model_properties(const std::string &filename)
+micro_duration(high_resolution_clock::time_point start, high_resolution_clock::time_point now)
 {
-  auto size = std::filesystem::file_size(filename);
-  std::string content(size, '\0');
-  std::ifstream in(filename);
-  in.read(&content[0], size);
-  return content;
+  return std::chrono::duration_cast<std::chrono::microseconds>(now - start);
 }
-
 
 auto
 read_labels(const std::string &path)
@@ -55,7 +52,7 @@ parse_args(int argc, char **argv)
   for (auto arg = 1; arg != argc; ++arg) {
     auto s = std::string(argv[arg]);
     if (s.ends_with(".axnet")) {
-      model_properties = read_model_properties(s);
+      model_properties = s;
     } else if (s.ends_with(".txt") || s.ends_with(".names")) {
       labels = read_labels(s);
     } else if (!std::filesystem::exists(s)) {
@@ -91,7 +88,7 @@ parse_args(int argc, char **argv)
         << "\n"
         << "This will create a file yolov8s-coco-onnx.axnet in the build directory:\n"
         << "\n"
-        << "  examples/bin/axinferencenet_example build/yolov8s-coco-onnx/yolov8s-coco-onnx.axnet\n"
+        << "  examples/bin/axinferencenet_example build/yolov8s-coco-onnx/yolov8s-coco-onnx.axnet media/traffic3_480p.mp4\n"
         << std::endl;
     std::exit(1);
   }
@@ -105,7 +102,6 @@ parse_args(int argc, char **argv)
 
 struct Frame {
   cv::Mat bgr;
-  cv::Mat rgba;
   Ax::MetaMap meta;
 };
 
@@ -120,19 +116,7 @@ reader_thread(cv::VideoCapture &input, Ax::InferenceNet &net)
       net.end_of_input();
       break;
     }
-    // Convert the frame to RGBA format, retaining the original image in the
-    // frame in case we want to render it with opencv later.  Ideally this would
-    // be done in the preprocessing stage of the AxInferenceNet, but at the
-    // moment the rezize_cl operator does not support BGR or RGB input. This
-    // will be added in a future release.
-    cv::cvtColor(frame->bgr, frame->rgba, cv::COLOR_BGR2RGBA);
-    AxVideoInterface video;
-    video.info.width = frame->rgba.cols;
-    video.info.height = frame->rgba.rows;
-    video.info.format = AxVideoFormat::RGBA;
-    const auto pixel_width = AxVideoFormatNumChannels(video.info.format);
-    video.info.stride = frame->rgba.cols * pixel_width;
-    video.data = frame->rgba.data;
+    auto video = Ax::video_from_cvmat(frame->bgr, AxVideoFormat::BGR);
     net.push_new_frame(frame, video, frame->meta);
   }
 }
@@ -140,6 +124,8 @@ reader_thread(cv::VideoCapture &input, Ax::InferenceNet &net)
 
 // This simple render function shows how to access the inference results from object detection.
 // It uses opencv to draw the bounding boxes and labels on the frame
+// Note that AxOpenCVRender.hpp has a more advanced set of renderers for more meta types,
+// but this version is left here to show how to access the results directly
 void
 render(AxMetaObjDetection &detections, cv::Mat &buffer, const std::vector<std::string> &labels)
 {
@@ -160,6 +146,7 @@ render(AxMetaObjDetection &detections, cv::Mat &buffer, const std::vector<std::s
 int
 main(int argc, char **argv)
 {
+  Ax::Logger logger;
   const auto [model_properties, labels, input] = parse_args(argc, argv);
   cv::VideoCapture cap(input);
   if (!cap.isOpened()) {
@@ -169,23 +156,8 @@ main(int argc, char **argv)
 
   // We use BlockingQueue to communicate between the frame_completed callback and the main loop
   Ax::BlockingQueue<std::shared_ptr<Frame>> ready;
-
-  auto frame_completed = [&ready](auto &completed) {
-    // This function is called whenever an inference result is ready.
-    // We first check to see if inference is complete and in which case stop
-    // the ready queue to indicate to the main loop to exit.
-    if (completed.end_of_input) {
-      ready.stop();
-    }
-    // If we have a valid inference result, we cast the buffer handle to our own
-    // Frame type and push it to the ready queue
-    auto frame = std::exchange(completed.buffer_handle, {});
-    ready.push(std::static_pointer_cast<Frame>(frame));
-  };
-
-  Ax::Logger logger(Ax::Severity::warning, nullptr, nullptr);
-  const auto props = Ax::properties_from_string(model_properties, logger);
-  auto net = Ax::create_inference_net(props, logger, frame_completed);
+  auto props = Ax::read_inferencenet_properties(model_properties, logger);
+  auto net = Ax::create_inference_net(props, logger, Ax::forward_to(ready));
 
   // Start the reader thread which reads frames from the video source and pushes
   // them to the inference network
@@ -196,7 +168,7 @@ main(int argc, char **argv)
   cv::namedWindow(wndname, cv::WINDOW_AUTOSIZE);
   cv::setWindowProperty(wndname, cv::WND_PROP_ASPECT_RATIO, cv::WINDOW_KEEPRATIO);
 
-  const auto start = std::chrono::high_resolution_clock::now();
+  const auto start = high_resolution_clock::now();
   int num_frames = 0;
   while (1) {
     auto frame = ready.wait_one();
@@ -212,14 +184,14 @@ main(int argc, char **argv)
     }
     ++num_frames;
   }
-  const auto end = std::chrono::high_resolution_clock::now();
+  const auto end = high_resolution_clock::now();
 
   // Wait for AxInferenceNet to complete and join its threads, before joining the reader thread
   net->stop();
   reader.join();
 
   // Output some statistics
-  const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+  const auto duration = micro_duration(start, end);
   const auto taken = static_cast<float>(duration.count()) / 1e6;
   std::cout << "Executed " << num_frames << " frames in " << taken
             << "s : " << num_frames / taken << "fps" << std::endl;

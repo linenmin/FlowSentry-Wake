@@ -27,6 +27,33 @@ class GeneralSample(types.BaseEvalSample):
 
 
 @dataclasses.dataclass
+class ImageSample(types.BaseEvalSample):
+    img: ndarray
+
+    @property
+    def data(self) -> Any:
+        return self.img
+
+
+@dataclasses.dataclass
+class LabelGroundTruthSample(types.BaseEvalSample):
+    label: str
+
+    @property
+    def data(self) -> Union[Any, Dict[str, Any]]:
+        return self.label
+
+
+@dataclasses.dataclass
+class LabelEvalSample(types.BaseEvalSample):
+    label: str
+
+    @property
+    def data(self):
+        return self.label
+
+
+@dataclasses.dataclass
 class ClassificationGroundTruthSample(types.BaseEvalSample):
     class_id: int
 
@@ -52,6 +79,39 @@ class ClassificationEvalSample(types.BaseEvalSample):
         else:
             empty_tensor = torch.as_tensor([])
             return empty_tensor
+
+
+@dataclasses.dataclass
+class PoseInsSegGroundTruthSample(types.BaseEvalSample):
+    boxes: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    scores: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    keypoints: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    masks: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    labels: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    area: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+
+    @classmethod
+    def from_numpy(
+        cls,
+        boxes: np.ndarray,
+        scores: np.ndarray,
+        keypoints: np.ndarray,
+        masks: np.ndarray,
+        labels: np.array,
+        area: np.array = None,
+    ) -> Self:
+        return cls(boxes, scores, keypoints, masks, labels, area)
+
+    @property
+    def data(self) -> Union[Any, Dict[str, Any]]:
+        return {
+            'boxes': self.boxes,
+            'scores': self.scores,
+            'keypoints': self.keypoints,
+            'masks': self.masks,
+            'labels': self.labels,
+            'area': self.area,
+        }
 
 
 @dataclasses.dataclass

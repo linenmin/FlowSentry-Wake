@@ -7,10 +7,11 @@
   - [Development environment](#development-environment)
   - [Runtime environment](#runtime-environment)
     - [Define an ``InferenceStream`` object in your application](#define-an-inferencestream-object-in-your-application)
-    - [Launch an inference server](#launch-an-inference-server)
     - [Build a GStreamer pipeline](#build-a-gstreamer-pipeline)
     - [Use the AxRuntime API to inteface with Metis directly](#use-the-axruntime-api-to-inteface-with-metis-directly)
   - [Setup](#setup)
+    - [Linux Installation](#linux-installation)
+    - [Windows Installation](#windows-installation)
   - [Run a Metis-accelerated pipeline](#run-a-metis-accelerated-pipeline)
     - [Measure model accuracy](#measure-model-accuracy)
   - [Next steps](#next-steps)
@@ -22,7 +23,7 @@ The Voyager SDK makes it easy to build high-performance applications for Axelera
 processing unit (AIPU).
 
 <p align="center">
-  <img src="/docs/images/voyager-overview.png"
+  <img src="/docs/images/voyager-overview_3927x1943_02.png"
   alt="Axelera Optimized Deployment"/>
 </p>
 
@@ -74,20 +75,6 @@ The sample file [``application.py``](/examples/application.py) and
 [associated tutorial](/docs/tutorials/application.md) gives a minimal working
 example of how to create an InferenceStream and integrate it within your own application.
 
-### Launch an inference server
-
-The Axelera inference server makes it easy to offload inferencing from an application
-to a seprarate Metis-based host, which the client application can then interface with using
-standard protocols such as gRPC.
-
-A [tutorial](/docs/reference/inference_server.md) is provided based on the sample files
-[``inference_server.py``](/inference_server.py) and
-[``inference_cilent.py``](/inference_client.py), which provide a minimal working
-example of setting up a client-server solution.
-
-Note that the inference server is currently available as an early proof-of-concept and
-will be productised in future releases.
-
 ### Build a GStreamer pipeline
 
 Users working with GStreamer pipelines can directly utilize Axelera plugins
@@ -109,10 +96,17 @@ perform inference with AxRuntime will be provided in a later release.
 
 ## Setup
 
-The Voyager SDK is released as a GitHub repository. The
-[installation guide](/docs/tutorials/install.md) covers the steps
-needed to download, install and activate a development environment on your
-system.
+The Voyager SDK is released as a GitHub repository. Installation instructions vary by operating system:
+
+### Linux Installation
+The [installation guide](/docs/tutorials/install.md) provides comprehensive instructions for downloading the SDK, installing dependencies, setting up your development environment, and activating the SDK on Linux systems.
+
+### Windows Installation
+For Windows-based development environments, comprehensive setup instructions and platform-specific requirements are available in our [Windows Getting Started Guide](/docs/tutorials/windows/windows_getting_started.md).
+
+> [!NOTE]  
+> This Quick Start Guide's remaining sections are currently only for Linux systems. Windows users should refer to the [Windows Getting Started Guide](/docs/tutorials/windows/windows_getting_started.md) for the next steps using functionality available in Voyager SDK release 1.3.
+
 
 ## Run a Metis-accelerated pipeline
 
@@ -184,4 +178,3 @@ Beta support is also provided for deploying your own [custom model](/docs/tutori
 API reference material:
 - [YAML pipeline operators](/docs/reference/yaml_operators.md)
 - [Axelera GStreamer pipeline elements](/docs/reference/pipeline_operators.md)
-- [Inference Server](/docs/reference/inference_server.md)

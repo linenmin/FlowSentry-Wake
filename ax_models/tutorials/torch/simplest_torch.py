@@ -17,7 +17,7 @@ LOG = logging_utils.getLogger(__name__)
 class CustomPytorchModel(base_torch.TorchModel):
 
     # the key is to initialize your model and load the weights to assign to self.torch_model
-    def init_model_deploy(self, model_info: types.ModelInfo):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         from ax_models.tutorials.resnet34_fruit360 import ResNet34Model
 
         # In this case, load_state_dict(torch.load(model_info.weight_path, weights_only=True))

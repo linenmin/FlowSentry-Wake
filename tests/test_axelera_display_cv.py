@@ -63,31 +63,3 @@ def test_window_creation_with_data():
         call("test", ANY),
     ]
     np.testing.assert_equal(mcv.imshow.call_args_list[1].args[1], exp)
-
-
-def test_window_creation_no_display_env_visible_diagnostic(caplog):
-    import sys
-
-    sys.modules['climage'] = None
-    with patch.dict(os.environ, DISPLAY=''):
-        with patch.object(display_cv, "cv2") as mcv:
-            with display.App(visible=True, opengl=OPENGL) as app:
-                wnd = app.create_window("test", (640, 480))
-                app.start_thread(wnd.close)
-                app.run()
-                assert wnd.is_closed == True
-    assert mcv.namedWindow.call_args_list == []
-    assert 'WARNING' in caplog.text
-    assert '--no-display' in caplog.text
-
-
-def test_window_creation_no_display_env_no_visible_no_diagnostic(caplog):
-    with patch.dict(os.environ, DISPLAY=''):
-        with patch.object(display_cv, "cv2") as mcv:
-            with display.App(visible=False, opengl=OPENGL) as app:
-                wnd = app.create_window("test", (640, 480))
-                app.start_thread(wnd.close)
-                app.run()
-                assert wnd.is_closed == True
-    assert mcv.namedWindow.call_args_list == []
-    assert '' == caplog.text

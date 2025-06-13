@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Dict, List, Sequence
 
 import numpy as np
 
-from . import logging_utils
+from . import config, device_manager, logging_utils, torch_utils, utils
 
 if TYPE_CHECKING:
     from . import config, display
@@ -77,25 +77,75 @@ def _add_to_environ(environ, key, value):
 
 
 class Tracer(abc.ABC):
+    '''Abstract base class for all tracers.
+
+    Tracers can be used to monitor the inference pipeline, and collect metrics
+    about how it is performing.
+
+    For example the following tracer collects metrics about the number of detections. Adding
+    this to the list of tracers passed to create_inference_stream will result in a speedometer
+    showing the number of detections per frame.
+
+      class DetectionsTracer(inf_tracers.Tracer):
+          key = '__detections__'
+          title = 'Detections'
+          def __init__(self):
+              self._v, self._max = 0, 0
+          def update(self, frame_result):
+              self._v = len(frame_result.detections)
+              self._max = max(self._max, self._v)
+          def get_metrics(self):
+              return [inf_tracers.TraceMetric(self.key, self.title, self._v, self._max, ' dets')]
+    '''
+
     key = '__dummy_tracer__'
+    '''A unique key for this tracer, used to identify it in the application.
+
+    It should begin and end with double underline (_), and should not contain
+    spaces or special characters.
+    '''
+
     title = 'Dummy'
+    '''A title for this tracer, used to display it in the application.'''
 
     def start_monitoring(self):
+        '''This is called just before inference starts.
+
+        This is used in some tracers to start a subprocess, thread, or similar.
+        '''
         pass
 
     def stop_monitoring(self):
+        '''This is called just after inference ends.
+
+        This is used to close any resources, threads, or subprocesses that were
+        started in start_monitoring.
+        '''
         pass
 
     @abc.abstractmethod
     def get_metrics(self) -> Sequence[TraceMetric]:
+        '''Return a list of TraceMetric objects to be shown in speedometers.
+
+        This is not called on every inference, but rather on a periodic basis when the metrics
+        should be drawn, so it is important not to do any time based calculations in this function.
+        '''
         return []
 
     def update(self, frame_result):
+        '''Called whenever an inference result is returned from the inference stream.
+
+        frame_result is an instance of FrameResult.
+        '''
         pass
 
     def initialize_models(
         self, model_infos: network.ModelInfos, metis: config.Metis, core_clocks: dict[int, int]
     ) -> None:
+        '''Called before inference with information about the loaded models, and connected devices.
+
+        This might be useful to determine what sort of metrics to collect.
+        '''
         del model_infos
         del metis
         del core_clocks
@@ -641,46 +691,112 @@ class StreamTiming(Tracer):
 
 _key = lambda x: x.strip('_')
 
+has_aipu = False
+
+try:
+    saved = utils.LOG.level
+    utils.LOG.setLevel(logging_utils.logging.ERROR)
+    has_aipu = device_manager.detect_metis_type() != config.Metis.none
+finally:
+    utils.LOG.setLevel(saved)
+
 supported_tracers = {
-    _key(AipuTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
-        AipuTracer(aipu_cores), period=0.3
-    ),
-    _key(CoreTempTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
-        CoreTempTracer(), period=1.0
-    ),
-    _key(HostTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
-        HostTracer(aipu_cores), period=0.3
-    ),
     _key(CpuTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(CpuTracer(), period=3.0),
     _key(End2EndTracer.key): lambda aipu_cores: End2EndTracer(),
     _key(StreamTiming.key): lambda aipu_cores: StreamTiming(),
 }
 
+if has_aipu and not config.env.inference_mock:
+    supported_tracers.update(
+        {
+            _key(AipuTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
+                AipuTracer(aipu_cores), period=0.3
+            ),
+            _key(CoreTempTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
+                CoreTempTracer(), period=1.0
+            ),
+            _key(HostTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
+                HostTracer(aipu_cores), period=0.3
+            ),
+        }
+    )
+
 
 def create_tracers(*requested: tuple[str, ...], _aipu_cores: int = 4) -> List[Tracer]:
+    '''Create a list of tracers based on the requested tracer keys.
+
+    Tracers provide real-time metrics that help you better understand device resource utilization,
+    performance and thermal characteristics.
+
+    This function takes a list of metrics as its arguments and returns an object to provide the
+    `tracers` argument in the function `create_inference_stream`.  The available tracers are:
+
+    * `end_to_end_fps` - collects end-to-end fps metric
+    * `core_temp` - collects the temperature of the metis core
+    * `cpu_usage` - collects information about the host CPU usage
+    * `stream_timing`  - collects metrics about stream latency and jitter
+
+    Tracers passed to `create_inference_stream` will be started automatically when the stream is
+    started, and periodically queried for their current value which will be shown in the
+    application UI as a speedometer.
+
+    Alternatively the application can also access these tracers through the stream object ::
+
+      for frame_result in stream:
+          metrics = stream.get_all_metrics()
+          core_temp = metrics['core_temp']
+          print(f"Core temperature: {core_temp.value} {core_temp.unit}")
+
+    '''
     tracers = []
+    unsupported = []
     # disable tracing by default, tracers below will enable it if necessary
     os.environ.setdefault('AXE_PROFILING_CONFIG', '')
     for tracer in requested:
         try:
             ctor = supported_tracers[tracer]
         except KeyError:
-            LOG.warning(
-                f"Unsupported tracer: {tracer}, valid tracers are: {' '.join(supported_tracers.keys())}"
-            )
+            unsupported.append(tracer)
         else:
             tracers.append(ctor(_aipu_cores))
+
+    if unsupported:
+        s = 's' if len(unsupported) > 1 else ''
+        LOG.warning(
+            f"Unsupported tracer{s}: {', '.join(unsupported)}: valid tracers are: {', '.join(supported_tracers.keys())}"
+        )
     return tracers
 
 
 def create_tracers_from_args(args: argparse.Namespace) -> List[Tracer]:
+    '''Create a list of tracers based on the parsed command line arguments.
+
+    This is a convenience function to create tracers based on the command line arguments in a
+    similar way to how inference.py does so.
+
+    If you are using `config.create_inference_argparser` to create the command line parser,
+    then this function provides a simple way to create the tracers based on the
+    command line arguments ::
+
+        from axelera.app import config, inf_tracers
+        parser = config.create_inference_argparser(description='My app description')
+        args = parser.parse_args()
+        tracers = inf_tracers.create_tracers_from_args(args)
+        stream = create_inference_stream(
+            network="yolov5m-v7-coco-tracker",
+            sources=args.sources,
+            pipe_type=args.pipe,
+            tracers=tracers,
+        )
+
+    '''
     requested = []
     # disable tracing by default, tracers below will enable it if necessary
     if args.show_temp:
         requested.append(_key(CoreTempTracer.key))
-    if args.show_stats or args.show_device_fps:
+    if args.show_device_fps:
         requested.append(_key(AipuTracer.key))
-    if args.show_stats or args.show_host_fps:
+    if args.show_host_fps:
         requested.append(_key(HostTracer.key))
     if args.show_cpu_usage:
         requested.append(_key(CpuTracer.key))

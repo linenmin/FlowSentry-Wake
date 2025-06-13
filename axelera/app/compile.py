@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 from pathlib import Path
+import resource
 import shutil
 import tempfile
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
@@ -265,8 +266,31 @@ def _write_manifest(manifest, output_path):
     manifest_json.write_text(j)
 
 
-def _log_config(compilation_cfg):
-    LOG.debug(f"Compilation config: {json.dumps(compilation_cfg.as_dict(), indent=2)}")
+def _save_compilation_config(
+    compilation_cfg,  # axelera.compiler.config.CompilerConfig
+    output_path: Path,
+    model_info: types.ModelInfo,
+):
+    """Save the compilation config to a JSON file in the output directory."""
+    config_json = output_path.parent / constants.K_COMPILE_CONFIG_FILE_NAME
+
+    # Log compilation config at debug level
+    LOG.debug(f"Compilation config: {compilation_cfg.model_dump_json(indent=2)}")
+
+    if not config_json.parent.exists():
+        config_json.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        json_content = compilation_cfg.model_dump_json(indent=2)
+        config_json.write_text(json_content)
+        if config_json.stat().st_size == 0:
+            raise IOError(f"Config file was created but is empty: {config_json}")
+
+        LOG.debug(
+            f"Saved compilation config to '{config_json}'\n"
+            f"\033[1;33mIf reporting issues, please include this file as an attachment.\033[0m"
+        )
+    except Exception as e:
+        raise IOError(f"Failed to save compilation config to {config_json}: {str(e)}") from e
 
 
 # This is a slightly brittle way to get some progress out of the compiler. It relies on the
@@ -344,6 +368,7 @@ def _compile_quantized(
     # after top_level.compile, output_path will be cleared and filled by the compiler
     with capture_progress():
         try:
+            compilation_cfg.compiler_mode = "lower_only"
             the_manifest = top_level.compile(quant_model, compilation_cfg, output_path)
         except Exception as e:
             import traceback
@@ -391,7 +416,7 @@ def _delete_tvm_codegen_files(output_path: Path):
 def compile(
     model: types.Model,
     model_info: types.ModelInfo,
-    compilation_cfg,  # axelera.compiler.Configuration
+    compilation_cfg,  # axelera.compiler.config.CompilerConfig
     model_dir: Path,
     is_export: bool,
     deploy_mode: config.DeployMode,
@@ -406,6 +431,7 @@ def compile(
         output_path = model_dir / decoration_flags
     else:
         output_path = model_dir / constants.K_MODEL_QUANTIZED_DIR
+        compilation_cfg.compiler_mode = "quantize_only"
 
     LOG.debug(f"output path: {output_path}\ndeploy mode: {deploy_mode}")
 
@@ -419,11 +445,12 @@ def compile(
         config.DeployMode.QUANTCOMPILE,
     }:
         prepare_build_directory(output_path, deploy_mode)
-        if compilation_cfg.quantization_config.get("quantization_debug"):
-            compilation_cfg.quantization_config["quantized_model_debug_save_dir"] = str(
-                output_path
-            )
-        _log_config(compilation_cfg)
+        compilation_cfg.quantized_model_debug_save_dir = Path(output_path)
+        _save_compilation_config(
+            compilation_cfg,
+            output_path,
+            model_info,
+        )
         # with capture_progress():  TODO make the spinner interact with tqdm nicely
         try:
             the_manifest = top_level.compile(model, compilation_cfg, output_path)
@@ -442,7 +469,16 @@ def compile(
             _backup_and_load_quantized(tmp_dir, _preloaded_manifest)
 
     elif deploy_mode == config.DeployMode.PREQUANTIZED:
+        if model_info.extra_kwargs.get("unlimited_stack_for_compilation", False):
+            if resource.getrlimit(resource.RLIMIT_STACK)[0] != resource.RLIM_INFINITY:
+                raise RuntimeError("Please run `ulimit -s unlimited` before deploying.")
+
         # TODO: probably should check if the config is different from the quantized one
+        _save_compilation_config(
+            compilation_cfg,
+            output_path,
+            model_info,
+        )
         found_prequant, preloaded_manifest, the_manifest = _check_and_use_local_prequant(
             tmp_dir,
             quantized_dir,
@@ -473,12 +509,6 @@ def compile(
     _delete_tvm_codegen_files(output_path)
     _write_manifest(the_manifest, output_path)
     shutil.rmtree(tmp_dir)
-
-    # save config to the build folder, we need to know
-    # how the model is compiled when building the pipeline
-    config_json = output_path / constants.K_COMPILE_CONFIG_FILE_NAME
-    j = json.dumps(compilation_cfg.as_dict(), indent=2)
-    config_json.write_text(j)
 
     if is_export:
         # package the build folder into a zip file

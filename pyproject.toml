@@ -26,13 +26,16 @@ src_paths = ["axelera", "ax_models", "ax_datasets", "ax_models/yolo/models"]
 skip_gitignore = true
 # If you need to skip/exclude folders, consider using skip_glob as that will allow the
 # isort defaults for skip to remain without the need to duplicate them.
-skip_glob = ["data/*", "axelera/app/fmzoo/*"]
+skip_glob = ["data/*"]
 known_third_party = ["torch", "torchvision", "numpy", "PIL", "onnx", "onnxruntime"]
 
 [tool.pytest.ini_options]
 testpaths = [
     "tests",
+    "internal_tools_tests",
+    "llm_tests",
 ]
+pythonpath = [".", "internal_tools"]
 filterwarnings = """\
     ignore:.*call to `pkg_resources.declare_namespace.*:DeprecationWarning
     ignore:.*pkg_resources is deprecated as an API.*:DeprecationWarning

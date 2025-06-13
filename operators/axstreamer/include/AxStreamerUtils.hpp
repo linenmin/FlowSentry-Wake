@@ -111,9 +111,6 @@ join(const Range &range, const std::string &delim)
   return join(std::begin(range), std::end(range), delim);
 }
 
-std::unordered_map<std::string, std::string> extract_options(
-    Ax::Logger &logger, const std::string &opts);
-
 template <typename Iterator> class Enumerator
 {
   public:
@@ -220,6 +217,13 @@ std::string to_string(const AxTensorInterface &tensor);
 std::string to_string(const AxTensorsInterface &tensors);
 std::string to_string(const AxDataInterface &data);
 
+
+std::unordered_map<std::string, std::string> extract_options(
+    Ax::Logger &logger, const std::string &opts);
+
+std::unordered_map<std::string, std::string> extract_secondary_options(
+    Ax::Logger &logger, const std::string &opts);
+
 std::unordered_map<std::string, std::string> parse_and_validate_plugin_options(
     Ax::Logger &logger, const std::string &options,
     const std::unordered_set<std::string> &allowed_properties);
@@ -269,9 +273,7 @@ class ManagedDataInterface
     buffers_.clear();
     fds_.clear();
     if (auto *video = std::get_if<AxVideoInterface>(&data_)) {
-
-      auto *p = allocator(video->info.stride * video->info.height
-                          * AxVideoFormatNumChannels(video->info.format));
+      auto *p = allocator(video->info.stride * video->info.height);
       video->data = p;
       buffers_.emplace_back(p, std::free);
     } else if (auto *tensors = std::get_if<AxTensorsInterface>(&data_)) {
@@ -288,8 +290,7 @@ class ManagedDataInterface
     buffers_.clear();
     fds_.clear();
     if (auto *video = std::get_if<AxVideoInterface>(&data_)) {
-      auto fd = allocator(video->info.stride * video->info.height
-                          * AxVideoFormatNumChannels(video->info.format));
+      auto fd = allocator(video->info.stride * video->info.height);
       video->data = nullptr;
       fds_.push_back(std::move(fd));
     } else if (auto *tensors = std::get_if<AxTensorsInterface>(&data_)) {
@@ -493,17 +494,15 @@ are_equivalent(const AxDataInterface &a, const AxDataInterface &b)
     auto &va = std::get<AxVideoInterface>(a);
     auto &tb = std::get<AxTensorsInterface>(b);
     return tb.size() == 1 && va.strides.size() == 1
-           && tb[0].total_bytes()
-                  == va.info.stride * va.info.height
-                         * AxVideoFormatNumChannels(va.info.format);
+           && tb[0].total_bytes() == va.info.stride * va.info.height
+           && va.strides[0] == va.info.width * AxVideoFormatNumChannels(va.info.format);
   } else if (std::holds_alternative<AxTensorsInterface>(a)
              && std::holds_alternative<AxVideoInterface>(b)) {
     auto &ta = std::get<AxTensorsInterface>(a);
     auto &vb = std::get<AxVideoInterface>(b);
     return ta.size() == 1 && vb.strides.size() == 1
-           && ta[0].total_bytes()
-                  == vb.info.stride * vb.info.height
-                         * AxVideoFormatNumChannels(vb.info.format);
+           && ta[0].total_bytes() == vb.info.width * vb.info.height
+           && vb.strides[0] == vb.info.width * AxVideoFormatNumChannels(vb.info.format);
   }
 
   return false;
@@ -623,14 +622,21 @@ class SharedLib
   SharedLib &operator=(const SharedLib &) = delete;
   SharedLib &operator=(SharedLib &&) = delete;
 
-  SharedLib(Ax::Logger &logger, const std::string &libname)
+  SharedLib(Ax::Logger &logger, const std::string &libname, bool close_on_destruct = false)
       : logger_(logger), module_(dlopen(libname.c_str(), RTLD_LOCAL | RTLD_NOW)),
-        libname_(libname)
+        libname_(libname), close_on_destruct_(close_on_destruct)
   {
     if (!module_) {
       logger_(AX_ERROR) << "Failed to open shared library " << libname_ << std::endl;
       throw std::runtime_error("Shared library " + libname_ + " could not be opened. "
                                + std::string(dlerror()));
+    }
+  }
+
+  ~SharedLib()
+  {
+    if (close_on_destruct_) {
+      dlclose(module_);
     }
   }
 
@@ -667,11 +673,11 @@ class SharedLib
   private:
   Ax::Logger &logger_;
   void *module_;
-  std::string libname_;
+  const std::string libname_;
+  const bool close_on_destruct_;
 };
 
 std::string to_string(const std::set<int> &s);
-std::set<int> create_stream_set(std::string &input);
 
 inline std::string
 get_env(const std::string &name, const std::string &default_value)
@@ -680,8 +686,17 @@ get_env(const std::string &name, const std::string &default_value)
   return env ? env : default_value;
 }
 
+struct slice_overlap {
+  size_t num_slices; //  Number of slices required in this dimension
+  size_t overlap; //  Amount that they will actually overlap
+};
+
+slice_overlap determine_overlap(size_t image_size, size_t slice_size, size_t overlap);
+
 void load_v1_plugin(SharedLib &lib, V1Plugin::InPlace &plugin);
 void load_v1_plugin(SharedLib &lib, V1Plugin::Transform &plugin);
 void load_v1_plugin(SharedLib &lib, V1Plugin::Decoder &plugin);
+void load_v1_plugin(SharedLib &lib, V1Plugin::DetermineObjectAttribute &plugin);
+void load_v1_plugin(SharedLib &lib, V1Plugin::TrackerFilter &plugin);
 
 } // namespace Ax

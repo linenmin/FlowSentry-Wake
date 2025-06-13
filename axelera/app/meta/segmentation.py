@@ -97,6 +97,9 @@ class SemanticSegmentationMeta(AxTaskMeta):
             raise ValueError(f"Missing segment data")
 
 
+Wh = tuple[int, int]
+
+
 @dataclass(frozen=True)
 class InstanceSegmentationMeta(AxTaskMeta):
     """Metadata for instance segmentation task"""
@@ -105,6 +108,7 @@ class InstanceSegmentationMeta(AxTaskMeta):
     _boxes: list = field(default_factory=list, init=False)
     _class_ids: list = field(default_factory=list, init=False)
     _scores: list = field(default_factory=list, init=False)
+    seg_shape: Optional[Wh] = None
     labels: Optional[tuple] = None
     # offsets (x, y) for the masks
     _masks_base_box: list = field(default_factory=list, init=False)
@@ -112,16 +116,22 @@ class InstanceSegmentationMeta(AxTaskMeta):
 
     def add_result(
         self,
-        mask: np.ndarray,
+        mask_data: SegmentationMask,
         box: np.ndarray,
         class_id: int,
         score: float,
-        masks_base_box: XyXy | None = None,
     ):
-        if not isinstance(mask, np.ndarray):
-            raise ValueError("mask must be a numpy array")
+
+        if (
+            not isinstance(mask_data, tuple)
+            or len(mask_data) != 9
+            or not isinstance(mask_data[-1], np.ndarray)
+        ):
+            raise ValueError("mask must be a SegmentationMask tuple")
+
         if not isinstance(box, np.ndarray):
             raise ValueError("box must be a numpy array")
+        mask = mask_data[-1]
         if mask.shape[0] == 0:
             return  # no detection
         if mask.ndim != 2:
@@ -133,12 +143,10 @@ class InstanceSegmentationMeta(AxTaskMeta):
         if not np.isscalar(score):
             raise ValueError("score must be a single scalar value")
 
-        self._masks.append(mask)
+        self._masks.append(mask_data)
         self._boxes.append(box)
         self._class_ids.append(class_id)
         self._scores.append(score)
-        if masks_base_box is not None:
-            self._masks_base_box.append(masks_base_box)
 
     def get_result(self, index: int = 0):
         if index >= len(self._masks):
@@ -148,6 +156,8 @@ class InstanceSegmentationMeta(AxTaskMeta):
     def transfer_data(self, other: InstanceSegmentationMeta):
         if not isinstance(other, InstanceSegmentationMeta):
             raise TypeError("other must be an instance of InstanceSegmentationMeta")
+
+        object.__setattr__(self, 'seg_shape', other.seg_shape)
         self._masks.extend(other._masks)
         self._boxes.extend(other._boxes)
         self._class_ids.extend(other._class_ids)
@@ -156,25 +166,33 @@ class InstanceSegmentationMeta(AxTaskMeta):
 
     def add_results(
         self,
-        masks: list[np.ndarray],
+        masks_data: list[SegmentationMask],
         boxes: np.ndarray,
         class_ids: np.ndarray,
         scores: np.ndarray,
-        masks_base_box: tuple[int, int, int, int] | None = None,
     ):
+        if len(masks_data) == 0:
+            return
+        if not isinstance(masks_data, list):
+            raise ValueError("mask must be a list of SegmentationMask tuple")
         if boxes.ndim != 2 or boxes.shape[1] != 4:
             raise ValueError("boxes must be a 2D numpy array with shape (N, 4)")
         if class_ids.ndim != 1:
             raise ValueError("class_ids must be a 1D numpy array")
         if scores.ndim != 1:
             raise ValueError("scores must be a 1D numpy array")
-
-        self._masks.extend(masks)
+        if (
+            class_ids.size != boxes.shape[0]
+            or class_ids.size != len(masks_data)
+            or class_ids.size != scores.size
+        ):
+            raise ValueError(
+                f"Inconsistend data: class_ids={class_ids.size} scores={scores.size} boxes={boxes.shape[0]} masks={len(masks_data)}"
+            )
+        self._masks.extend(masks_data)
         self._boxes.extend(boxes)
         self._class_ids.extend(class_ids)
         self._scores.extend(scores)
-        if masks_base_box is not None:
-            self._masks_base_box.extend(masks_base_box)
 
     @property
     def masks(self) -> list:
@@ -211,8 +229,7 @@ class InstanceSegmentationMeta(AxTaskMeta):
             raise ValueError("Ground truth is not set")
         if isinstance(ground_truth, InstSegGroundTruthSample):
             if len(self.masks) > 0:
-
-                masks = np.zeros((len(self.masks), 160, 160), dtype=np.uint8)
+                masks = np.zeros((len(self.masks), *self.seg_shape), dtype=np.uint8)
                 for i, mask_data in enumerate(self.masks):
                     mask, bbox = mask_data[-1], mask_data[:4]
                     x0, y0, x1, y1 = bbox
@@ -245,6 +262,9 @@ class InstanceSegmentationMeta(AxTaskMeta):
     def decode(cls, data: Dict[str, Union[bytes, bytearray]]) -> InstanceSegmentationMeta:
         boxes = decode_bbox(data)
         segment_shape = np.frombuffer(data.get('segment_shape'), dtype=np.uint64)
+        segment_count = segment_shape[0]
+        segment_shape = segment_shape[2:0:-1]
+
         if scores := data.get('scores', b''):
             scores = np.frombuffer(scores, dtype=np.float32)
         else:
@@ -267,7 +287,7 @@ class InstanceSegmentationMeta(AxTaskMeta):
             offset = 0
             segments = []
             for idx, bbox in enumerate(struct.iter_unpack('4i', segment_bboxs)):
-                if idx == segment_shape[0]:
+                if idx == segment_count:
                     break
 
                 x0, y0, x1, y1 = bbox
@@ -275,9 +295,7 @@ class InstanceSegmentationMeta(AxTaskMeta):
                 height = y1 - y0
                 size = width * height
 
-                image_coords = _translate_image_space_rect(
-                    bbox, masks_base_box, segment_shape[2:0:-1]
-                )
+                image_coords = _translate_image_space_rect(bbox, masks_base_box, segment_shape)
 
                 segments.append(
                     (
@@ -288,13 +306,12 @@ class InstanceSegmentationMeta(AxTaskMeta):
                         ).reshape(height, width),
                     )
                 )
-
                 # Update the offset
                 offset += size
 
         else:
             raise ValueError("Missing mask data")
 
-        meta = cls()
+        meta = cls(seg_shape=segment_shape)
         meta.add_results(segments, boxes, classes, scores)
         return meta

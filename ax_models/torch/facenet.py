@@ -5,6 +5,7 @@ import torch
 
 from axelera import types
 from axelera.app import logging_utils, utils
+from axelera.app.torch_utils import safe_torch_load
 import axelera.app.yaml as YAML
 
 LOG = logging_utils.getLogger(__name__)
@@ -275,7 +276,7 @@ class AxFaceNet(InceptionResnetV1, types.Model):
     def __init__(self):
         super().__init__()
 
-    def init_model_deploy(self, model_info: types.ModelInfo):
+    def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         weights = Path(model_info.weight_path)
         if not weights.exists() or (
             model_info.weight_md5 and not utils.md5_validates(weights, model_info.weight_md5)
@@ -293,7 +294,7 @@ class AxFaceNet(InceptionResnetV1, types.Model):
         LOG.debug(f'Load model with weights {weights}')
 
         device = next(self.parameters()).device
-        weights_tensor = torch.load(weights, map_location=device)
+        weights_tensor = safe_torch_load(weights, map_location=device)
         self.load_state_dict(weights_tensor)
 
     def to_device(self, device: Optional[torch.device] = None):

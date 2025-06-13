@@ -10,6 +10,9 @@
 #include "AxMeta.hpp"
 #include "AxStreamerUtils.hpp"
 
+struct axrContext;
+struct axrModel;
+
 namespace Ax
 {
 
@@ -23,7 +26,7 @@ inline int
 pipeline_pre_fill(const InferenceProperties &props)
 {
   const auto ndevices = num_devices(props);
-  const auto num_children = std::max(1, props.num_children * ndevices);
+  const auto num_children = std::max(1, props.num_children) * ndevices;
   return (1 + props.dmabuf_outputs) * num_children;
 }
 
@@ -31,7 +34,7 @@ inline int
 output_drop(const InferenceProperties &props)
 {
   const auto ndevices = num_devices(props);
-  const auto num_children = std::max(1, props.num_children * ndevices);
+  const auto num_children = std::max(1, props.num_children) * ndevices;
   return 2 * num_children * props.double_buffer;
 }
 
@@ -86,7 +89,7 @@ InferenceParams zero_params(const Inference &tvm, bool input_dmabuf, bool output
 
 std::unique_ptr<Inference> create_inference(Logger &logger, const InferenceProperties &props);
 
-std::unique_ptr<Inference> create_axruntime_inference(
-    Logger &logger, const InferenceProperties &props);
+std::unique_ptr<Inference> create_axruntime_inference(Logger &logger,
+    axrContext *ctx, axrModel *model, const InferenceProperties &props);
 
 } // namespace Ax

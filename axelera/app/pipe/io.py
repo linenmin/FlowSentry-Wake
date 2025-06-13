@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Optional, Tuple
 import urllib
 
 import cv2
@@ -27,15 +27,16 @@ if TYPE_CHECKING:
 LOG = logging_utils.getLogger(__name__)
 
 UnifyDataFormat = Callable[[Any], List[Dict[str, Any]]]
+FrameInputGenerator = Generator[types.FrameInput, None, None]
 
 
-class BaseInput(abc.ABC):
+class PipeInput(abc.ABC):
     def __init__(self) -> None:
         self.location: str = ''
         '''Source of input. One of (device path|image path|video path|url|url|"measurement")'''
 
         self.format: str = ''
-        '''Type of input.  One of (usb|csi|image|images|video|rtsp|hls|"dataset")'''
+        '''Type of input.  One of (usb|image|images|video|rtsp|hls|"dataset")'''
 
         self.number_of_frames: int = 0
         '''Number of frames in the input, or 0 if unbounded.'''
@@ -44,8 +45,12 @@ class BaseInput(abc.ABC):
         '''For a dataset input this determines how to unify the data format.'''
 
     @abc.abstractmethod
-    def create_generator(self):
-        """frame generator for a BaseInput subclass"""
+    def frame_generator(self) -> FrameInputGenerator:
+        """Generates input data to a torch/torch-aipu pipe or dataset pipes in gst.
+
+        This function should yield FrameInputs with the stream_id set.  It is only called
+        from torch/torch-aipu pipe, or gst pipe when performing dataset evaluation.
+        """
 
     @abc.abstractmethod
     def build_input_gst(self, gst: gst_builder.Builder, stream_idx: str):
@@ -54,6 +59,15 @@ class BaseInput(abc.ABC):
     @abc.abstractmethod
     def stream_count(self) -> int:
         """Number of input streams, 1 for most, N for MultiplexPipeInput."""
+
+    def add_source(
+        self, source: str, rtsp_latency: int | None = None, specified_frame_rate: int | None = None
+    ) -> PipeInput:
+        """Add a new source to the input.  This is used for multiplex input."""
+        del source
+        del rtsp_latency
+        del specified_frame_rate
+        raise NotImplementedError(f"{type(self).__name__} does not support add_source()")
 
 
 @dataclasses.dataclass
@@ -133,7 +147,7 @@ def get_validation_components(
     return ValidationComponents(dataloader, reformatter, evaluator)
 
 
-class DatasetInput(BaseInput):
+class DatasetInput(PipeInput):
     def __init__(
         self,
         data_loader: types.DataLoader,
@@ -156,7 +170,7 @@ class DatasetInput(BaseInput):
         self.number_of_frames = len(self.dataloader)
         self.color_format = color_format
 
-    def create_generator(self):
+    def frame_generator(self) -> FrameInputGenerator:
         return self.dataloader
 
     def stream_count(self):
@@ -181,14 +195,14 @@ class DatasetInput(BaseInput):
         )
         vaapi = gst.getconfig() is not None and gst.getconfig().vaapi
         opencl = gst.getconfig() is not None and gst.getconfig().opencl
-        insert_color_convert(gst, vaapi, opencl, format=f'{self.color_format.name.lower()}a')
+        insert_color_convert(gst, vaapi, opencl, format=f'{self.color_format.name.lower()}')
 
 
 def server_reformatter(data):
     return [data]
 
 
-class ServerInput(BaseInput):
+class ServerInput(PipeInput):
     def __init__(
         self,
         limit_frames: int = 0,
@@ -202,7 +216,7 @@ class ServerInput(BaseInput):
         self.dataloader = server_loader
         self.number_of_frames = limit_frames
 
-    def create_generator(self):
+    def frame_generator(self) -> FrameInputGenerator:
         return self.dataloader
 
     def stream_count(self):
@@ -290,9 +304,7 @@ def _determine_max_camera_resolution(cap: cv2.VideoCapture):
     return max_resolution
 
 
-def build_decodebin(
-    gst: gst_builder.Builder, allow_hardware_codec, vaapi_enabled, stream_idx, downstream=None
-):
+def build_decodebin(gst: gst_builder.Builder, allow_hardware_codec, stream_idx):
     props = {}
     hw_decoder = allow_hardware_codec
     props = {
@@ -300,15 +312,8 @@ def build_decodebin(
         'caps': 'video/x-raw(ANY)',
         'expose-all-streams': False,
     }
-    downstream_name = downstream or f'queue_after_decodebin{stream_idx}'
-    if gst.new_inference:
-        props['name'] = f'queue_in{stream_idx}'
-        props['connections'] = {'src_%u': f'axinplace-addstreamid{stream_idx or 0}.sink'}
-    else:
-        props['connections'] = {'src_%u': f'{downstream_name}.sink'}
+    props['connections'] = {'src_%u': f'decodebin-link{stream_idx or 0}.sink'}
     gst.decodebin(props)
-    if downstream is None and not gst.new_inference:
-        gst.queue(name=downstream_name)
 
 
 def build_gst_repr_by_usb_cam(
@@ -325,9 +330,7 @@ def build_gst_repr_by_usb_cam(
     if codec not in ('yuyv', 'mjpg'):
         raise NotImplementedError(f"codec {codec} not supported in usb cam")
 
-    gst.v4l2src(
-        device=location,
-    )
+    gst.v4l2src(device=location)
     dimensions = f'width={width},height={height}' if width and height else ''
     framerate = f'framerate={fps}/1' if fps else ''
     extras = ''.join(f',{x}' for x in [dimensions, framerate] if x)
@@ -335,7 +338,7 @@ def build_gst_repr_by_usb_cam(
         gst.capsfilter(caps=f'video/x-raw,format=YUY2{extras}')
     else:  # codec == 'mjpg':
         gst.capsfilter(caps=f'image/jpeg{extras}')
-        build_decodebin(gst, allow_hardware_codec, vaapi_enabled, stream_idx)
+        build_decodebin(gst, allow_hardware_codec, stream_idx)
 
 
 def build_gst_repr_by_rtsp(gst: gst_builder.Builder, location: str, stream_idx: str, latency=500):
@@ -352,8 +355,6 @@ def build_gst_repr_by_rtsp(gst: gst_builder.Builder, location: str, stream_idx: 
         }
     )
     gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
-    if not gst.new_inference:
-        gst.queue(name=f'queue_in{stream_idx}')
 
 
 @dataclasses.dataclass
@@ -380,8 +381,6 @@ def parse_source(source: str) -> SourceInfo:
         height = int(m_usb.group(4)) if m_usb.group(4) else 0
         fps = int(m_usb.group(5)) if m_usb.group(5) else 0
         return SourceInfo('usb', location, width, height, usb_device=usb_device, fps=fps)
-    elif source.startswith("csi:") and len(source) > 4:
-        return SourceInfo('csi', source[4:])
     elif source.startswith(('http://', 'https://')):
         if _is_youtube_url(source):
             stream_url = _get_youtube_stream_url(source)
@@ -423,31 +422,41 @@ def is_placeholder(format: str, location: str) -> bool:
     return format == 'rtsp' and location == 'rtsp://placeholder'
 
 
-class PipeInput(BaseInput):
+def build_tile_options(gst, input_shape):
+    options = (
+        f'meta_key:axelera-tiles-internal;'
+        f'tile_size:{gst.tile.get("tile", "default")};'
+        f'tile_overlap:{gst.tile.get("tile_overlap", 0)};'
+        f'tile_position:{gst.tile.get("tile_position", "none")};'
+        f'model_width: {input_shape[3]};'
+        f'model_height: {input_shape[2]}'
+    )
+    return options
+
+
+class SinglePipeInput(PipeInput):
     def __init__(
         self,
         pipe_type: str,
         source: str,
-        codec: str = 'mjpg',
         hardware_caps: config.HardwareCaps = config.HardwareCaps.NONE,
         allow_hardware_codec=True,
         color_format: types.ColorFormat = types.ColorFormat.RGB,
         rtsp_latency=500,
         specified_frame_rate=0,
+        model_info=None,
     ):
         """
         Input arguments:
         pipe_type:    pipe route  (gst|torch|torch-aipu)
-        source:  input argument      (usb|csi|file|rtsp|hls)
+        source:  input argument      (usb|file|rtsp|hls)
 
         Member variables:
         fps:      int  (frames per second)
-        codec:    str  (h264|h265|mjpg)
         """
         super().__init__()
         self.hardware_caps = hardware_caps
         self.fps = 0
-        self.codec = codec.lower()
         self.allow_hardware_codec = allow_hardware_codec
         self.color_format = color_format
         self.rtsp_latency = rtsp_latency
@@ -455,6 +464,8 @@ class PipeInput(BaseInput):
         self.format = info.format
         self.location = info.location
         self.width, self.height = 0, 0
+        self.model_info = model_info
+        self.codec = 'mjpg' if self.format == 'usb' else 'unknown'
         if (self.format == 'video' and self.location == 'fake') or self.format == 'usb':
             self.width, self.height = info.width, info.height
         elif self.format in ('image', 'images'):
@@ -524,7 +535,7 @@ class PipeInput(BaseInput):
             LOG.error(f"Failed to get video capabilities: {e}")
             raise RuntimeError(f"Failed to get video capabilities: {e}") from None
 
-    def create_generator(self):
+    def frame_generator(self) -> FrameInputGenerator:
         if hasattr(self, 'images'):
             LOG.debug("Create image generator from a series of images")
             for image in self.images:
@@ -560,6 +571,8 @@ class PipeInput(BaseInput):
 
     def build_input_gst(self, gst: gst_builder.Builder, stream_idx: str):
         if self.format == 'usb':
+            if not os.access(self.location, os.F_OK | os.R_OK | os.W_OK):
+                raise RuntimeError(f"Cannot access device at {self.location}")
             build_gst_repr_by_usb_cam(
                 gst,
                 self.location,
@@ -597,49 +610,63 @@ class PipeInput(BaseInput):
             )
 
         if self.format == 'image':
-            build_decodebin(gst, None, None, stream_idx)
+            build_decodebin(gst, False, stream_idx)
             gst.axinplace(
-                name=f'axinplace-addstreamid{stream_idx or 0}',
+                name=f'decodebin-link{stream_idx or 0}',
                 lib='libinplace_addstreamid.so',
                 mode='meta',
                 options=f'stream_id:{stream_idx or 0}',
             )
-            if gst.new_inference:
-                insert_color_convert(
-                    gst,
-                    self.hardware_caps.vaapi,
-                    self.hardware_caps.opencl,
-                    f'{self.color_format.name.lower()}a',
-                )
-            return
-        if self.format == 'video' and self.location != 'fake':
-            if not gst.new_inference:
-                gst.queue(name=f'queue_in{stream_idx}')
-
-        if self.format not in ['usb', 'hls']:
-            build_decodebin(
-                gst, self.allow_hardware_codec, bool(self.hardware_caps.vaapi), stream_idx
-            )
-
-        gst.axinplace(
-            name=f'axinplace-addstreamid{stream_idx or 0}',
-            lib='libinplace_addstreamid.so',
-            mode='meta',
-            options=f'stream_id:{stream_idx or 0}',
-        )
-        if self.specified_frame_rate:
-            gst.videorate()
-            gst.capsfilter(caps=f'video/x-raw,framerate={self.specified_frame_rate}/1')
-
-        if method := config.env.videoflip:
-            gst.videoflip(method=method)
-
-        if gst.new_inference:
             insert_color_convert(
                 gst,
                 self.hardware_caps.vaapi,
                 self.hardware_caps.opencl,
-                f'{self.color_format.name.lower()}a',
+                f'{self.color_format.name.lower()}',
+            )
+            if gst.tile:
+                input_shape = self.model_info.input_tensor_shape
+                gst.axinplace(
+                    lib="libinplace_addtiles.so", options=build_tile_options(gst, input_shape)
+                )
+            return
+
+        if self.format not in ['usb', 'hls']:
+            build_decodebin(gst, self.allow_hardware_codec, stream_idx)
+
+        # Ensure elements are named so that the upstream connects with the correct one
+        decodebin_link = f'decodebin-link{stream_idx or 0}'
+        axinplace_name = decodebin_link
+        if self.specified_frame_rate:
+            gst.videorate(name=decodebin_link)
+            gst.capsfilter(caps=f'video/x-raw,framerate={self.specified_frame_rate}/1')
+            axinplace_name = f'axinplace-addstreamid{stream_idx or 0}'
+
+        gst.axinplace(
+            name=axinplace_name,
+            lib='libinplace_addstreamid.so',
+            mode='meta',
+            options=f'stream_id:{stream_idx or 0}',
+        )
+
+        if method := self.hardware_caps.opencl and config.env.videoflip:
+            gst.axtransform(
+                lib="libtransform_colorconvert.so",
+                options=f'format:{self.color_format.name.lower()}a;flip_method:{method}',
+            )
+        else:
+            insert_color_convert(
+                gst,
+                self.hardware_caps.vaapi,
+                self.hardware_caps.opencl,
+                f'{self.color_format.name.lower()}',
+            )
+            if method:
+                gst.videoflip(method=method)
+
+        if gst.tile:
+            input_shape = self.model_info.input_tensor_shape
+            gst.axinplace(
+                lib="libinplace_addtiles.so", options=build_tile_options(gst, input_shape)
             )
 
 
@@ -647,47 +674,75 @@ def _all_same(things):
     return len(things) == 1 or all(x == things[0] for x in things[1:])
 
 
-class MultiplexPipeInput(BaseInput):
+class MultiplexPipeInput(PipeInput):
     def __init__(
         self,
         pipe_type: str,
         sources: List[str],
-        codecs: List[str] = [],
         hardware_caps: config.HardwareCaps = config.HardwareCaps(),
         allow_hardware_codec=True,
         color_format: types.ColorFormat = types.ColorFormat.RGB,
         rtsp_latency=500,
         specified_frame_rate=0,
+        model_info=None,
     ):
         super().__init__()
-        if len(codecs) < len(sources):
-            codecs = codecs + ['mjpg'] * (len(sources) - len(codecs))
+        self._pipe_type = pipe_type
+        self._hwcaps = hardware_caps
+        self._allow_hardware_codec = allow_hardware_codec
+        self._color_format = color_format
+        self._rtsp_latency = rtsp_latency
+        self._specified_frame_rate = specified_frame_rate
         self.inputs = [
-            PipeInput(
+            SinglePipeInput(
                 pipe_type,
                 source,
-                codec,
                 hardware_caps,
                 allow_hardware_codec,
                 color_format=color_format,
                 rtsp_latency=rtsp_latency,
                 specified_frame_rate=specified_frame_rate,
+                model_info=model_info,
             )
-            for source, codec in zip(sources, codecs)
+            for source in sources
         ]
-
         formats = [input.format for input in self.inputs]
         if not _all_same(formats):
             LOG.warning(f'Not all input sources have the same format: {formats}')
-        codecs = [input.codec for input in self.inputs]
-        if not _all_same(codecs):
-            raise ValueError(f'All codecs must be the same : {codecs}')
         self.format = formats[0]
-        self.codec = codecs[0]
+        self.codec = 'mjpg' if self.format == 'usb' else 'unknown'
         # TODO we currently and maybe always restrict to the shortest stream,
         num_frames = [i.number_of_frames for i in self.inputs]
         self.number_of_frames = 0 if any(n == 0 for n in num_frames) else sum(num_frames)
         self.batched_data_reformatter = None  # we do not support multiplex dataset.
+
+    def add_source(
+        self, source: str, rtsp_latency: int | None = None, specified_frame_rate: int | None = None
+    ) -> PipeInput:
+        if rtsp_latency is None:
+            rtsp_latency = self._rtsp_latency
+        if specified_frame_rate is None:
+            specified_frame_rate = self._specified_frame_rate
+        new_pipe = SinglePipeInput(
+            self._pipe_type,
+            source,
+            self._hwcaps,
+            self._allow_hardware_codec,
+            color_format=self._color_format,
+            rtsp_latency=rtsp_latency,
+            specified_frame_rate=specified_frame_rate,
+        )
+        self.inputs.append(new_pipe)
+        return new_pipe
+
+    def remove_source(self, source: str) -> None:
+        idx = -1
+        for i, input in enumerate(self.inputs):
+            if input.location == source:
+                idx = i
+                break
+        if idx != -1:
+            del self.inputs[idx]
 
     def build_input_gst(self, gst: gst_builder.Builder, stream_idx: str):
         idx = int(stream_idx) if stream_idx else 0
@@ -696,8 +751,15 @@ class MultiplexPipeInput(BaseInput):
     def stream_count(self):
         return len(self.inputs)
 
-    def create_generator(self):
-        active = {sid: input.create_generator() for sid, input in enumerate(self.inputs)}
+    @property
+    def fps(self):
+        fps = [input.fps for input in self.inputs]
+        if not _all_same(fps):
+            LOG.warning(f'Not all input sources have the same fps: {fps}')
+        return min(fps)
+
+    def frame_generator(self) -> FrameInputGenerator:
+        active = {sid: input.frame_generator() for sid, input in enumerate(self.inputs)}
         while 1:
             dead = []
             for stream_id, gen in active.items():
@@ -784,8 +846,10 @@ class _ImageWriter(_NullWriter):
 
 class _VideoWriter:
     def __init__(self, location, input):
-        if isinstance(input, MultiplexPipeInput):
-            self._location = [_resolve_output_index(location, i) for i in range(len(input.inputs))]
+        if input.stream_count() > 1:
+            self._location = [
+                _resolve_output_index(location, i) for i in range(input.stream_count())
+            ]
             self._fps = [i.fps for i in input.inputs]
         else:
             self._location = [location]
@@ -879,7 +943,7 @@ class PipeOutput:
         image = frame_result.image
         if meta and self._mode != _OutputMode.NONE:
             image = image.copy()
-            draw = display_cv.CVDraw(image)
+            draw = display_cv.CVDraw(image, [])
             for m in meta.values():
                 m.visit(lambda m: m.draw(draw))
             draw.draw()

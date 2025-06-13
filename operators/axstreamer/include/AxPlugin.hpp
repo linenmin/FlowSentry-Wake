@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+struct TrackingElement;
+struct TrackingDescriptor;
 
 namespace Ax
 {
@@ -64,6 +66,8 @@ struct Transform : Base {
       = nullptr;
 
   bool (*can_use_dmabuf)(const void *subplugin_properties, Ax::Logger &logger) = nullptr;
+
+  bool (*can_use_vaapi)(const void *subplugin_properties, Ax::Logger &logger) = nullptr;
 };
 
 struct Decoder : Base {
@@ -74,6 +78,20 @@ struct Decoder : Base {
       const AxDataInterface &srcpad_info, Logger &logger)
       = nullptr;
 };
+
+struct DetermineObjectAttribute : Base {
+  std::shared_ptr<AxMetaBase> (*determine_object_attribute)(const void *props,
+      int first_id, int frame_id, uint8_t key,
+      const std::unordered_map<int, TrackingElement> &frame_id_to_element, Logger &logger)
+      = nullptr;
+};
+
+struct TrackerFilter : Base {
+  bool (*filter)(const void *props,
+      const TrackingDescriptor &tracking_descriptor, Logger &logger)
+      = nullptr;
+};
+
 } // namespace V1Plugin
 
 } // namespace Ax

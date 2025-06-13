@@ -13,11 +13,11 @@ operators:
     class_path: tutorial_decoders.py # Look into the tutorial_decoders.py for more details
 
 pipeline:
-  - classifier:
+  - classifications:
       model_name: model1
       input:
           type: image
-          color_format: rgb
+          color_format: RGB
       postprocess:
         - my_topk_decoder:
             k: 3
@@ -45,4 +45,4 @@ datasets:
     class: DataAdapter
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/fruits-360-100x100/repr_imgs/
     labels_path: ~/.cache/axelera/weights/tutorials/fruits360.names
-    disable_enumeration: True
+    # disable_enumeration: True

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from dataclasses import asdict, dataclass, field
 import enum
 import logging
 import os
@@ -12,8 +13,10 @@ import time
 import traceback
 import typing
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
+import uuid
 
 import numpy as np
+import psutil
 
 from axelera import types
 
@@ -30,19 +33,114 @@ FULL_SCREEN = (-1, -1)
 ICONS = {sz: f'{os.path.dirname(__file__)}/axelera-{sz}x{sz}.png' for sz in [32, 128, 192]}
 
 
+class Coords:
+    @classmethod
+    def rel(cls, x: float, y: float) -> Coords:
+        '''Create a Coords object from relative coordinates.'''
+        if type(x) is not float or type(y) is not float:
+            raise TypeError("x and y must be floats")
+        return cls(f'{x * 100}%', f'{y * 100}%')
+
+    @classmethod
+    def px(cls, x: int, y: int) -> Coords:
+        '''Create a Coords object from image pixel coordinates.'''
+        if type(x) is not int or type(y) is not int:
+            raise TypeError("x and y must be ints")
+        return cls(f'{x}px', f'{y}px')
+
+    def _parse_coord(self, coord: str) -> float | int:
+        try:
+            if coord.endswith('%'):
+                return float(coord[:-1]) / 100
+            if coord.endswith('px'):
+                return int(float(coord[:-2]))
+        except ValueError:
+            pass
+        raise ValueError(f"Invalid coordinate: {coord}")
+
+    def __init__(self, x: str, y: str):
+        if not isinstance(x, str) or not isinstance(y, str):
+            raise TypeError("x and y must be strings")
+        self.x = self._parse_coord(x)
+        self.y = self._parse_coord(y)
+
+    def __eq__(self, value):
+        if isinstance(value, Coords):
+            return (
+                self.x == value.x
+                and self.y == value.y
+                and type(self.x) == type(value.x)
+                and type(self.y) == type(value.y)
+            )
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            x, y = value
+            if isinstance(x, str):
+                try:
+                    x = self._parse_coord(x)
+                except ValueError:
+                    return False
+            if isinstance(y, str):
+                try:
+                    y = self._parse_coord(y)
+                except ValueError:
+                    return False
+            return (
+                self.x == x and self.y == y and type(self.x) == type(x) and type(self.y) == type(y)
+            )
+        return False
+
+    @property
+    def format(self) -> str:
+        '''Return the format of the coordinates.'''
+        if isinstance(self.x, float) and isinstance(self.y, float):
+            return 'relative'
+        if isinstance(self.x, int) and isinstance(self.y, int):
+            return 'image_pixels'
+        return 'mixed'
+
+    def as_px(self, image_size: tuple[int, int] = None) -> tuple[int, int]:
+        '''Convert the coordinates to image pixel coordinates.'''
+        if image_size is None and self.format != 'image_pixels':
+            raise ValueError(
+                "image_size must be provided as Coords are not in image_pixels format"
+            )
+        x = self.x
+        y = self.y
+        if isinstance(x, float):
+            x = int(x * image_size[0])
+        if isinstance(y, float):
+            y = int(y * image_size[1])
+        return x, y
+
+    def as_rel(self, image_size: tuple[int, int] = None) -> tuple[float, float]:
+        '''Convert the coordinates to relative coordinates.'''
+        if image_size is None and self.format != 'relative':
+            raise ValueError("image_size must be provided as Coords are not in relative format")
+        x = self.x
+        y = self.y
+        if isinstance(x, int):
+            x = float(x) / image_size[0]
+        if isinstance(y, int):
+            y = float(y) / image_size[1]
+        return x, y
+
+
 class _Message:
     pass
 
 
 @dataclass
-class _SetOptions(_Message):
-    stream_id: int | None
+class _StreamMessage(_Message):
+    stream_id: int
+
+
+@dataclass
+class _SetOptions(_StreamMessage):
     options: dict[str, Any]
 
 
 @dataclass
-class _Frame(_Message):
-    stream_id: int
+class _Frame(_StreamMessage):
     image: types.Image
     meta: AxMeta | None
 
@@ -57,8 +155,118 @@ class _ThreadCompleted(_Message):
     pass
 
 
+@dataclass
+class _Delete(_Message):
+    id: uuid.UUID
+    fadeout: int
+
+
+@dataclass
+class _Layer(_StreamMessage):
+    id: uuid.UUID
+    position: Coords
+    anchor_x: str
+    anchor_y: str
+    fadeout_duration: int
+    fadeout_start: int | None
+
+
+@dataclass
+class _Text(_Layer):
+    text: str
+    color: Color
+    bgcolor: Color
+    font_size: int
+
+
+@dataclass
+class _Image(_Layer):
+    path: str
+    scale: float | None
+
+
+class LayerHandle:
+    def __init__(self, message: _Layer, window: Window):
+        self._fields = asdict(message, dict_factory=OrderedDict)
+        self._id = self._fields.pop('id')
+        self._stream_id = self._fields.pop('stream_id')
+        self._Message = type(message)
+        self._window = window
+        self._visible = True
+
+    @property
+    def id(self) -> uuid.UUID:
+        '''The id of the layer.'''
+        return self._id
+
+    @property
+    def stream_id(self) -> int:
+        '''
+        The id of the stream the layer belongs to.
+
+        stream_id `-1` means the layer is not associated with a stream, and belongs
+        to the window(s).
+        '''
+        return self._stream_id
+
+    @property
+    def visible(self) -> bool:
+        '''True if the layer is visible.'''
+        return self._visible
+
+    def _send_message(self):
+        self._window.layer(
+            self._Message,
+            *self._fields.values(),
+            stream_id=self._stream_id,
+            existing=self,
+        )
+
+    def set(self, **kwargs):
+        changed = False
+        for name, value in kwargs.items():
+            if name in self._fields:
+                self._fields[name] = value
+                changed = True
+            else:
+                LOG.warning(
+                    f"Cannot set attribute '{name}' for LayerHandle."
+                    f" id={self.id}, message_type={self._Message.__name__}"
+                )
+        if self.visible and changed:
+            self._send_message()
+
+    def __setitem__(self, key, value):
+        self.set(**{key: value})
+
+    def __getitem__(self, name):
+        if name in self._fields:
+            return self._fields[name]
+        raise KeyError(
+            f"Cannot get attribute '{name}' from LayerHandle."
+            f" id={self.id}, message_type={self._Message.__name__}"
+        )
+
+    def hide(self, fadeout: Optional[int] = 0):
+        '''Hide the layer from the window.'''
+        self._window.delete(self._id, fadeout)
+        self._visible = False
+
+    def show(self):  # TODO: add fadein
+        '''Show the layer in the window.'''
+        self._send_message()
+        self._visible = True
+
+
 SHUTDOWN = _Shutdown()
 THREAD_COMPLETED = _ThreadCompleted()
+
+
+def _typecheck(v, expected_type):
+    for t in [int, float, str]:
+        if expected_type == tuple[t]:
+            return isinstance(v, tuple) and all(isinstance(x, t) for x in v)
+    return isinstance(v, expected_type)
 
 
 @dataclass
@@ -72,7 +280,7 @@ class Options:
     grayscale.
     '''
 
-    bbox_label_format: str = "{label} {score:.2f}"
+    bbox_label_format: str = "{label} {scorep:.0f}%"
     '''Control how labels on bounding boxes should be shown. Available keywords are:
 
     label: str Label if known, or "cls:%d" if no label for that class id
@@ -115,7 +323,7 @@ class Options:
             except KeyError:
                 unsupported.append(k)
             else:
-                if isinstance(v, expected_type):
+                if _typecheck(v, expected_type):
                     setattr(self, k, v)
                 else:
                     exp = getattr(expected_type, '__name__', str(expected_type))
@@ -128,6 +336,12 @@ class Options:
             LOG.info(f"Unsupported option{s} : {type(self).__name__}.{', '.join(unsupported)}")
 
 
+default_anchor_x = 'left'
+default_anchor_y = 'top'
+default_fadeout_duration = -1
+default_fadeout_start = None
+
+
 class Window:
     '''Created by `App.create_window` to display inference results.'''
 
@@ -135,6 +349,8 @@ class Window:
         self._queue = q
         self._is_closed = is_closed
         self._warned_full = False
+        self._self_proc = psutil.Process(os.getpid())
+        self._last_print = time.time() - 2
 
     def options(self, stream_id: int, **options: dict[str, Any]) -> None:
         '''Set options for the given stream.
@@ -143,6 +359,94 @@ class Window:
         '''
         if self._queue is not None:
             self._queue.put(_SetOptions(stream_id, options))
+
+    def delete(self, id: uuid.UUID, fadeout: int = 0) -> None:
+        '''Delete the given layer from the stream.'''
+        if self._queue is not None:
+            self._queue.put(_Delete(id, fadeout))
+
+    def layer(
+        self,
+        Layer: type[_Layer],
+        position: tuple[str, str] | Coords,
+        anchor_x: str,
+        anchor_y: str,
+        fadeout_duration: int,
+        fadeout_start: int,
+        *args,
+        existing: Optional[LayerHandle] = None,
+        stream_id: int = -1,
+    ) -> LayerHandle | None:
+        if self._queue is not None:
+            _id = existing.id if existing else uuid.uuid4()
+            position = position if isinstance(position, Coords) else Coords(*position)
+            layer = Layer(
+                stream_id,
+                _id,
+                position,
+                anchor_x,
+                anchor_y,
+                fadeout_duration,
+                fadeout_start,
+                *args,
+            )
+            self._queue.put(layer)
+            return existing or LayerHandle(layer, self)
+        return None
+
+    def text(
+        self,
+        position: tuple[str, str] | Coords,
+        text: str,
+        anchor_x: float = default_anchor_x,
+        anchor_y: float = default_anchor_y,
+        fadeout_duration: int = default_fadeout_duration,
+        fadeout_start: Optional[int] = default_fadeout_start,
+        color: Color = (244, 190, 24, 255),  # Orange
+        bgcolor: Color = (0, 0, 0, 192),  # Smoked glass
+        font_size: int = 32,
+        existing: Optional[LayerHandle] = None,
+        stream_id: int = -1,
+    ) -> LayerHandle | None:
+        return self.layer(
+            _Text,
+            position,
+            anchor_x,
+            anchor_y,
+            fadeout_duration,
+            fadeout_start,
+            text,
+            color,
+            bgcolor,
+            font_size,
+            existing=existing,
+            stream_id=stream_id,
+        )
+
+    def image(
+        self,
+        position: tuple[str, str] | Coords,
+        path: str,
+        anchor_x: float = default_anchor_x,
+        anchor_y: float = default_anchor_y,
+        fadeout_duration: int = default_fadeout_duration,
+        fadeout_start: Optional[int] = default_fadeout_start,
+        scale: Optional[float] = None,
+        existing: Optional[LayerHandle] = None,
+        stream_id: int = -1,
+    ) -> LayerHandle | None:
+        return self.layer(
+            _Image,
+            position,
+            anchor_x,
+            anchor_y,
+            fadeout_duration,
+            fadeout_start,
+            path,
+            scale,
+            existing=existing,
+            stream_id=stream_id,
+        )
 
     def show(self, image: types.Image, meta: AxMeta | None = None, stream_id: int = 0) -> None:
         '''Display an image in the window.'''
@@ -155,6 +459,16 @@ class Window:
                 level = LOG.warning if not self._warned_full else LOG.debug
                 level("Display queue is full, dropping frame")
                 self._warned_full = True
+        if LOG.isEnabledFor(logging.DEBUG) and time.time() - self._last_print > 2:
+            minfo = self._self_proc.memory_info()
+            system = psutil.virtual_memory().used
+            qsize = self._queue.qsize() if self._queue is not None else 0
+            LOG.debug(
+                f"System memory: {system / 1024 ** 2:.2f} MB\t"
+                f"axelera: {minfo.rss / 1024 ** 2:.2f} MB, vms = {minfo.vms / 1024 ** 2:.2f} MB\t"
+                f"display queue size: {qsize}"
+            )
+            self._last_print = time.time()
 
     @property
     def is_closed(self) -> bool:
@@ -176,31 +490,46 @@ class Window:
             time.sleep(0.1)
 
 
-def _find_display_class(opengl: config.HardwareEnable):
-    from . import display_console
+def _find_display_class(display: str | bool, opengl: config.HardwareEnable):
+    from . import display_console, display_cv
 
-    if opengl == config.HardwareEnable.detect:
-        opengl = (
-            config.HardwareEnable.enable
-            if utils.is_opengl_available(config.env.opengl_backend)
-            else config.HardwareEnable.disable
-        )
-    if opengl == config.HardwareEnable.enable:
-        try:
-            from .display_gl import GLApp as cls
+    display_env = os.environ.get('DISPLAY')
+    # take care not to import display_gl before checking for the backend availablity
+    display = 'auto' if display is True else display
+    display = 'none' if display is False else display
 
-            return cls
-        except Exception as e:
-            LOG.warning(f"Failed to initialize OpenGL: {e}")
-    if os.environ.get('DISPLAY'):
-        from .display_cv import CVApp as cls
-    elif display_console.image_support_available():
-        from .display_console import ConsoleApp as cls
-    else:
-        LOG.warning('Neither OpenGL nor x11 are available, disabling display')
-        LOG.warning('Use --no-display to avoid this warning')
-        cls = NullApp
-    return cls
+    if display in ('auto', 'opengl'):
+        if display == 'auto' and opengl == config.HardwareEnable.detect:
+            opengl = (
+                config.HardwareEnable.enable
+                if utils.is_opengl_available(config.env.opengl_backend)
+                else config.HardwareEnable.disable
+            )
+        if display != 'auto' or opengl == config.HardwareEnable.enable:
+            try:
+                from . import display_gl
+
+                return display_gl.GLApp
+            except Exception as e:
+                if display_env:
+                    msg = f"DISPLAY environment variable={display_env}"
+                else:
+                    msg = "Please try exporting the environment variable DISPLAY=:0.0"
+                msg = f"Failed to initialize OpenGL: {e!r}\n{msg}"
+                if display == 'opengl':
+                    # if user explicilty requested opengl, we should not fallback to anything
+                    raise RuntimeError(msg)
+                LOG.warning(msg)
+
+        return display_cv.CVApp if display_env else display_console.ConsoleApp
+    elif display == 'opencv':
+        return display_cv.CVApp
+    elif display == 'console':
+        return display_console.ConsoleApp
+    elif display != 'none':
+        expect = "'auto', 'opengl', 'opencv', 'console', 'none' or False"
+        raise ValueError(f"Invalid display option: {display}, expect one of {expect}")
+    return NullApp
 
 
 class App:
@@ -229,12 +558,12 @@ class App:
 
     def __new__(
         cls,
-        visible: bool = False,
+        visible: str | bool = False,
         opengl: config.HardwareEnable = config.HardwareEnable.detect,
         buffering=True,
     ):
         if cls is App:
-            cls = _find_display_class(opengl) if visible else NullApp
+            cls = _find_display_class(visible, opengl)
 
         x = object.__new__(cls)
         x.__init__(buffering=buffering)
@@ -252,7 +581,7 @@ class App:
         Note the title given is the title of the window, not the title of the stream(s).
         '''
         # note that windows must be created in UI thread, so push to create Q
-        self._queues.append(q := queue.Queue(maxsize=300))
+        self._queues.append(q := queue.Queue(maxsize=100))
         self._create_queue.put_nowait((q, title, size))
         cls = type(self)
         return cls.Window(q, self._is_closed)
@@ -451,6 +780,10 @@ class Draw(abc.ABC):
         `class_map` is expected to be a numpy array where each pixel value is the class ID
         of what is detected in that pixel. The mask will be resized to the input size.
         '''
+
+    @abc.abstractmethod
+    def draw_image(self, image: np.ndarray) -> None:
+        '''Draw an image on the canvas.'''
 
     def labelled_box(self, p1: Point, p2: Point, label: str, color: OptionalColor = None) -> None:
         """Draw a labelled bounding box in the best way for the renderer.

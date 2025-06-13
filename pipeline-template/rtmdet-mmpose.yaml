@@ -5,8 +5,8 @@ input:
   color_format: bgr
 preprocess:
   - resize:
-      width: {{input_width}}
-      height: {{input_height}}
+      width: ${{input_width}}
+      height: ${{input_height}}
       interpolation: bilinear
       input_color_format: bgr
   - torch-totensor:

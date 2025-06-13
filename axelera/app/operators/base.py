@@ -278,18 +278,24 @@ class AxOperator(abc.ABC):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         '''Perform any initialisation that requires access to model info or task num,
         and also update model_info properties dynamically. Here we set frequent properties
         that are used in the exec_torch and build_gst methods.'''
-        self._task_category = model_info.task_category
+        # taskn is the index of the task in the pipeline.
         self._taskn = taskn
-        self._where = where
-        self._model_name = model_info.name
+        # where is passed from the input operator; for InputFromROI, it is the task name of its parent task. For the other input operators, where is an empty string, indicating it is a master task.
+        self._where = task_graph.get_master(task_name)
         self.task_name = task_name
         self._compiled_model_dir = compiled_model_dir
+        if model_info:
+            self._task_category = model_info.task_category
+            self._model_name = model_info.name
+        else:
+            self._task_category = None
+            self._model_name = None
 
     def pipeline_stopped(self):
         '''Pipeline stop signal. It can be overridden by subclasses to perform any cleanup.'''
@@ -339,18 +345,71 @@ class AxOperator(abc.ABC):
 
     @property
     @final
-    def gst_decoder_does_dequantization_and_depadding(self):
+    def cpp_decoder_does_dequantization_and_depadding(self):
         '''A special flag to tell inference operator that the decoder does dequantization
         and depadding so inference operator can skip these steps.
         '''
-        return getattr(self, '_gst_decoder_does_dequantization_and_depadding', False)
+        return getattr(self, '_cpp_decoder_does_dequantization_and_depadding', None)
 
-    @gst_decoder_does_dequantization_and_depadding.setter
-    def gst_decoder_does_dequantization_and_depadding(self, value: bool):
+    @cpp_decoder_does_dequantization_and_depadding.setter
+    def cpp_decoder_does_dequantization_and_depadding(self, value: bool):
         '''Set the flag in your decoder's _post_init() method if your decoder has optimized
         with dequantization and depadding.
         '''
-        self._gst_decoder_does_dequantization_and_depadding = value
+        self._cpp_decoder_does_dequantization_and_depadding = value
+
+    @property
+    @final
+    def cpp_decoder_does_postamble(self):
+        '''A special flag to tell inference operator that the decoder does postamble
+        so inference operator can skip these steps.
+        '''
+        return getattr(self, '_cpp_decoder_does_postamble', None)
+
+    @cpp_decoder_does_postamble.setter
+    def cpp_decoder_does_postamble(self, value: bool):
+        '''Set the flag in your decoder's _post_init() method if your decoder has optimized
+        with postamble.
+        '''
+        self._cpp_decoder_does_postamble = value
+
+    @property
+    @final
+    def cpp_decoder_does_transpose(self):
+        '''A special flag to tell inference operator that the decoder does transpose
+        so inference operator can skip this step.
+        '''
+        return getattr(self, '_cpp_decoder_does_transpose', None)
+
+    @cpp_decoder_does_transpose.setter
+    def cpp_decoder_does_transpose(self, value: bool):
+        '''Set the flag in your decoder's _post_init() method if your decoder has optimized
+        with transpose.
+        '''
+        self._cpp_decoder_does_transpose = value
+
+    @property
+    @final
+    def cpp_decoder_does_all(self):
+        '''A special flag to tell inference operator that the decoder handles all the steps,
+        including dequantization, depadding, transpose, and postamble.
+        Returns True if all three flags are True, or if _cpp_decoder_does_all is set.
+        '''
+        return getattr(self, '_cpp_decoder_does_all', None) or (
+            getattr(self, 'cpp_decoder_does_dequantization_and_depadding', None)
+            and getattr(self, 'cpp_decoder_does_transpose', None)
+            and getattr(self, 'cpp_decoder_does_postamble', None)
+        )
+
+    @cpp_decoder_does_all.setter
+    def cpp_decoder_does_all(self, value: bool):
+        '''Set the flag in your decoder's _post_init() method if your decoder has optimized
+        all the steps, including dequantization, depadding, transpose, and postamble.
+        '''
+        self._cpp_decoder_does_all = value
+        self._cpp_decoder_does_dequantization_and_depadding = value
+        self._cpp_decoder_does_postamble = value
+        self._cpp_decoder_does_transpose = value
 
 
 class PreprocessOperator(AxOperator):
@@ -418,6 +477,12 @@ class PreprocessOperator(AxOperator):
             )
 
 
+class BaseClassicalCV(AxOperator):
+    '''Base class for classical CV operators.'''
+
+    pass
+
+
 def builtin(cls: Type[AxOperator]):
     '''Class decorator to mark an operator as builtin.'''
     cls.builtin = True
@@ -428,7 +493,20 @@ def builtin(cls: Type[AxOperator]):
     return cls
 
 
+def builtin_classical_cv(cls: Type[BaseClassicalCV]):
+    '''Class decorator to mark an operator as builtin classical CV operator.'''
+    cls.builtin_classical_cv = True
+    name = cls.name()
+    if name in builtins_classical_cv:
+        LOG.warning(f"{name} already in classical CV Operator list; will be overwritten")
+    builtins_classical_cv[name] = cls
+    return cls
+
+
 builtins: Dict[str, Type[AxOperator]] = {}
+'''Mapping of lower case operator names to operator classes.'''
+
+builtins_classical_cv: Dict[str, Type[BaseClassicalCV]] = {}
 '''Mapping of lower case operator names to operator classes.'''
 
 

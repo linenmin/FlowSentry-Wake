@@ -290,105 +290,47 @@ TEST(no_softmax, test_labels_size_too_large)
   decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
 }
 
-TEST(classification, throws_on_invalid_subframe)
+TEST(classification, throws_on_invalid_number_of_subframes)
 {
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  metadata.emplace("master_meta", std::make_unique<AxMetaBbox>(BboxXyxyVector{}));
   std::vector<float> scores = { 0.5F, 0.4F, 0.0F, 1.0F, 0.1F };
   auto tensors = tensors_from_vector(scores);
   std::string meta_identifier = "top_k";
-  std::unordered_map<std::string, std::string> input
-      = { { "meta_key", meta_identifier }, { "top_k", "3" }, { "softmax", "1" } };
+  std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
+    { "master_meta", "master_meta" }, { "top_k", "3" }, { "softmax", "1" } };
   Decoder decoder("libdecode_classification.so", input);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  ASSERT_THROW(decoder.decode_to_meta(tensors, 2, 2, metadata, video_info), std::runtime_error);
+  ASSERT_THROW(decoder.decode_to_meta(tensors, 0, 1, metadata, video_info), std::runtime_error);
 }
 
-TEST(classification, throws_on_invalid_subframe_stream)
+TEST(classification, throws_on_invalid_subframe_index)
 {
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  metadata.emplace("master_meta",
+      std::make_unique<AxMetaBbox>(BboxXyxyVector{ BboxXyxy{ 0, 0, 1, 1 } }));
   std::vector<float> scores = { 0.5F, 0.4F, 0.0F, 1.0F, 0.1F };
   auto tensors = tensors_from_vector(scores);
   std::string meta_identifier = "top_k";
-  std::unordered_map<std::string, std::string> input
-      = { { "meta_key", meta_identifier }, { "top_k", "3" }, { "softmax", "1" } };
+  std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
+    { "master_meta", "master_meta" }, { "top_k", "3" }, { "softmax", "1" } };
+  Decoder decoder("libdecode_classification.so", input);
+  AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
+  ASSERT_THROW(decoder.decode_to_meta(tensors, 1, 1, metadata, video_info), std::runtime_error);
+}
+
+TEST(classification, throws_on_inconsistent_number_of_subframes)
+{
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  metadata.emplace("master_meta",
+      std::make_unique<AxMetaBbox>(BboxXyxyVector{ BboxXyxy{ 0, 0, 1, 1 } }));
+  std::vector<float> scores = { 0.5F, 0.4F, 0.0F, 1.0F, 0.1F };
+  auto tensors = tensors_from_vector(scores);
+  std::string meta_identifier = "top_k";
+  std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
+    { "master_meta", "master_meta" }, { "top_k", "3" }, { "softmax", "1" } };
   Decoder decoder("libdecode_classification.so", input);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
   decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
   ASSERT_THROW(decoder.decode_to_meta(tensors, 1, 2, metadata, video_info), std::runtime_error);
-}
-
-TEST(softmax, out_of_order_frames)
-{
-  std::vector<float> scores0 = { 0.5F, 0.4F, 0.0F, 1.0F, 0.1F };
-  std::vector<float> scores1 = { 0.1F, 0.5F, 0.4F, 0.0F, 0.2F };
-  std::string meta_identifier = "top_k";
-
-  std::unordered_map<std::string, std::string> input
-      = { { "meta_key", meta_identifier }, { "top_k", "3" }, { "softmax", "1" } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  auto tensors0 = tensors_from_vector(scores0);
-  auto tensors1 = tensors_from_vector(scores1);
-
-  AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors1, 1, 2, metadata, video_info);
-  decoder.decode_to_meta(tensors0, 0, 2, metadata, video_info);
-
-  auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
-
-  std::vector<std::vector<int>> expected_idx = {
-    { 3, 0, 1 },
-    { 1, 2, 4 },
-  };
-  EXPECT_EQ(expected_idx, actual_idx);
-  EXPECT_THAT(actual_score, testing::ElementsAreArray({
-                                testing::ElementsAreArray({
-                                    testing::FloatEq(0.34132123F),
-                                    testing::FloatEq(0.20702179F),
-                                    testing::FloatEq(0.187321F),
-                                }),
-                                testing::ElementsAreArray({
-                                    testing::FloatEq(0.25493905F),
-                                    testing::FloatEq(0.23067838F),
-                                    testing::FloatEq(0.18886349F),
-                                }),
-                            }));
-}
-
-TEST(softmax, in_order_frames)
-{
-  std::vector<float> scores0 = { 0.5F, 0.4F, 0.0F, 1.0F, 0.1F };
-  std::vector<float> scores1 = { 0.1F, 0.5F, 0.4F, 0.0F, 0.2F };
-  std::string meta_identifier = "top_k";
-
-  std::unordered_map<std::string, std::string> input
-      = { { "meta_key", meta_identifier }, { "top_k", "3" }, { "softmax", "1" } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  auto tensors0 = tensors_from_vector(scores0);
-  auto tensors1 = tensors_from_vector(scores1);
-
-  AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors0, 0, 2, metadata, video_info);
-  decoder.decode_to_meta(tensors1, 1, 2, metadata, video_info);
-
-  auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
-
-  std::vector<std::vector<int>> expected_idx = {
-    { 3, 0, 1 },
-    { 1, 2, 4 },
-  };
-  EXPECT_EQ(expected_idx, actual_idx);
-  EXPECT_THAT(actual_score, testing::ElementsAreArray({
-                                testing::ElementsAreArray({
-                                    testing::FloatEq(0.34132123F),
-                                    testing::FloatEq(0.20702179F),
-                                    testing::FloatEq(0.187321F),
-                                }),
-                                testing::ElementsAreArray({
-                                    testing::FloatEq(0.25493905F),
-                                    testing::FloatEq(0.23067838F),
-                                    testing::FloatEq(0.18886349F),
-                                }),
-                            }));
 }

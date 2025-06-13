@@ -2,13 +2,23 @@ axelera-model-format: 1.0.0
 
 name: efficientnet_b0-imagenet-onnx
 
-description: EfficientNet_B0 (ImageNet) trained from torchvision and converted as ONNX
+description: EfficientNet_B0 (ImageNet) trained from torchvision and converted as
+  ONNX
 
 pipeline:
   - efficientnet_b0-imagenet-onnx:
       input:
-          type: image
-      template_path: $AXELERA_FRAMEWORK/pipeline-template/torch-imagenet.yaml
+        type: image
+      preprocess:
+        - resize:
+            size: 256
+        - centercrop:
+            width: ${{input_width}}
+            height: ${{input_height}}
+        - torch-totensor:
+        - normalize:
+            mean: 0.485, 0.456, 0.406
+            std: 0.229, 0.224, 0.225
       postprocess:
         - topk:
             k: 5
@@ -18,7 +28,7 @@ models:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: weights/efficientnet_b0_pretrained.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/model_cards/weights/classification/efficientnet_b0_pretrained.onnx
+    weight_url: https://media.axelera.ai/artifacts/model_cards/weights/classification/efficientnet_b0_pretrained.onnx
     weight_md5: ca62686547f24c9102d2f79216a03f18
     task_category: Classification
     input_tensor_layout: NCHW
@@ -28,11 +38,8 @@ models:
     num_classes: 1000
     extra_kwargs:
       compilation_config:
-        backend_config:
-          in_core_replication: False
-        quantization_config:
-          ptq_scheme: hybrid_per_tensor_per_channel
-
+        enable_icr: False
+        quantization_scheme: hybrid_per_tensor_per_channel
 
 datasets:
   ImageNet-1K:
@@ -44,7 +51,7 @@ datasets:
     # Suggest selecting 100-400 images from the ImageNet training dataset for representative images and
     # replacing the following representative_coco dataset with the selected images.
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa
     # cal_data: /path/to/the/cal/dir
     # val_data: /path/to/the/val/dir

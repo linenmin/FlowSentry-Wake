@@ -1,6 +1,7 @@
 ![image](/docs/images/Ax_Voyager_SDK_Repo_Banner_1600x457_01.png)
 
 # Voyager SDK repository
+v1.3.1 : [Release notes](/RELEASE_NOTES.md)
 
 - [Voyager SDK repository](#voyager-sdk-repository)
   - [Install SDK and get started](#install-sdk-and-get-started)
@@ -22,6 +23,7 @@ The Voyager SDK makes it easy to build high-performance inferencing applications
 | :--------------------- | :---------- |
 | [Installation guide](/docs/tutorials/install.md) | Explains how to setup the Voyager SDK repository and toolchain on your development system |
 | [Quick start guide](/docs/tutorials/quick_start_guide.md) | Explains how to deploy and run your first model |
+| [Windows getting started guide](/docs/tutorials/windows/windows_getting_started.md) | Explains how to install Voyager SDK and run a model in Windows 11|
 | [AxDevice manual](/docs/reference/axdevice.md) | AxDevice is a tool that lists all Metis boards connected to your system and can configure their settings |
 | [Board firmware update guide](/docs/tutorials/firmware_flash_update.md) | Explains how to update your board firmware (for customers with older boards who have received instructions) |
 
@@ -58,9 +60,6 @@ at different levels of abstraction.
 The InferenceStream library is the easiest to use and enables most users to achieve the highest performance. The lower-level APIs enable expert users
 to integrate Metis within existing video streaming frameworks.
 
-An experimental [inference server](/docs/reference/inference_server.md) is also provided, which lets you declare `InferenceStream` objects as part of a
-host application and offload the associated pipeline processing to a networked server.
-
 ## Reference pipelines
 
 The Voyager SDK makes it easy to construct pipelines that combine multiple models in different ways. A number of
@@ -77,8 +76,11 @@ end-to-end reference pipelines are provided, which you can use as templates for 
 
 This section provides links to additional documentation available in the Voyager SDK repository.
 
-| Document | Description |
-| :--------------------- | :---------- |
-| [Advanced deployment tutorials](/ax_models/tutorials/general/tutorials.md) | Advanced deployment options [experimental] |
-| [AxRunmodel manual](/docs/reference/axrunmodel.md) | AxRunModel is a tool that can run deployed models on Metis hardware using different features available in the AxRuntime API (such as DMA buffers, double buffering and multiple cores) |
-| [ONNX operator support](/docs/reference/onnx-opset14-support.md) | List of ONNX operators supported by the Axelera AI compiler
+| Document                                                                   | Description                                                                                                                                                                            |
+|:---------------------------------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| [Advanced deployment tutorials](/ax_models/tutorials/general/tutorials.md) | Advanced deployment options [experimental]                                                                                                                                             |
+| [AxRunmodel manual](/docs/reference/axrunmodel.md)                         | AxRunModel is a tool that can run deployed models on Metis hardware using different features available in the AxRuntime API (such as DMA buffers, double buffering and multiple cores) |
+| [Compiler CLI](/docs/reference/compiler_cli.md)                                                | Compiler Command Line Interface [beta]                                                                                                                                                 |
+| [ONNX operator support](/docs/reference/onnx-opset14-support.md)           | List of ONNX operators supported by the Axelera AI compiler |
+| [Thermal Guide](/docs/reference/thermal_guide.md) | Document detailing the thermal behavior for Metis and instructions to make changes |
+| [SLM/LLM inference tutorial](/docs/tutorials/llm.md)        | Explains how to run Language Models on Metis devices [experimental]                                                                                                      |

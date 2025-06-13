@@ -3,6 +3,8 @@ add_customer_libraries(tutorials
         src/decode_tu6a.cc
         src/decode_tu6b.cc
         src/decode_tu7.cc
+        src/decode_tu9.cc
+        src/inplace_tu9.cc
     INCLUDE_DIRECTORIES
         include
 )

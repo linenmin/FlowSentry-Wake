@@ -170,6 +170,7 @@ def opencl_colorconvert_with_cameraundistort(
                 cx=barrel.cx,
                 cy=barrel.cy,
                 distort_coefs=barrel.distort_coefs,
+                normalized=barrel.normalized,
                 format=convert.format.name.lower(),
             )
         ]

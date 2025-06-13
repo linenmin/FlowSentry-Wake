@@ -39,6 +39,7 @@ def xyxy2xywh(xyxy):
         np.narray or torch.Tensor: xywh, (x,y)=box center, (w,h)=box width & height
     """
     xywh = xyxy.clone() if hasattr(xyxy, 'clone') else np.copy(xyxy)
+
     xywh[..., 0] = (xyxy[..., 0] + xyxy[..., 2]) / 2  # x center
     xywh[..., 1] = (xyxy[..., 1] + xyxy[..., 3]) / 2  # y center
     xywh[..., 2] = xyxy[..., 2] - xyxy[..., 0]  # width

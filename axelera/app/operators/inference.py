@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
 from pathlib import Path
 import re
@@ -24,7 +23,7 @@ if TYPE_CHECKING:
 
     from . import PipelineContext
     from .. import device_manager, gst_builder
-
+    from ..pipe import graph
 
 LOG = logging_utils.getLogger(__name__)
 logging_utils.getLogger('axelera.runtime').setLevel(logging.WARNING)
@@ -366,56 +365,108 @@ def _get_model_path(model_root: Path, model_file) -> Path | None:
 
 @dataclasses.dataclass
 class InferenceConfig:
-    gst_focus_layer_on_host: bool = False
+    """
+    Configuration settings related to inference processing.
+    Initialized from model info and potentially updated by a postprocess operator.
+    """
 
-    def __post_init__(self):
-        self._gst_decoder_does_dequantization_and_depadding = False
+    # Field determined during initial creation from model info
+    cpp_focus_layer_on_host: bool = True
+    # Internal flags updated later by the operator
+    _cpp_decoder_does_dequantization_and_depadding: bool = dataclasses.field(
+        init=False, default=False
+    )
+    _cpp_decoder_does_transpose: bool = dataclasses.field(init=False, default=True)
+    _cpp_decoder_does_postamble: bool = dataclasses.field(init=False, default=False)
+
+    def _validate_and_set_cpp_flags(self, depadding: bool, transpose: bool, postamble: bool):
+        """Validates the gst flags and sets the internal state.
+        If postamble is False, depadding and transpose must also be False (will warn and force).
+        If postamble is True, depadding and transpose can be either True or False.
+        """
+        # TODO: Once manifest_postamble_graph is available, enable this logic.
+        # For classifier models, explicit transposition is unnecessary. Additionally, postamble is set to False but actually there is no postamble graph.
+        # if self._postamble_graph and not postamble:
+        #     if depadding or transpose:
+        #         LOG.warning(
+        #             "Configuration conflict: 'cpp_decoder_does_postamble' is False, "
+        #             "so 'cpp_decoder_does_dequantization_and_depadding' and 'cpp_decoder_does_transpose' "
+        #             "must also be False. Forcing both to False."
+        #         )
+        #     depadding = False
+        #     transpose = False
+
+        self._cpp_decoder_does_dequantization_and_depadding = depadding
+        self._cpp_decoder_does_transpose = transpose
+        self._cpp_decoder_does_postamble = postamble
 
     @classmethod
-    def from_dict(
-        cls,
-        config_dict: dict[str, Any],
-        gst_decoder_does_dequantization_and_depadding: bool = False,
-    ):
-        if not isinstance(config_dict, dict):
-            raise ValueError("Config must be a dictionary")
+    def from_model_info(cls, model_info_kwargs: dict):  # Runtime model info
+        """
+        Creates an InferenceConfig instance based solely on model information.
+        The cpp_* flags related to the operator will be default until updated.
 
-        cls_fields = {f.name: f for f in dataclasses.fields(cls)}
-        instance = cls()
+        TODO: add manifest_postamble_graph; ideally, when we build AxTask, we should know if the model has been deployed or not; if deployed, we should take manifest to determine how we want to configure the inference config
 
-        for key, value in config_dict.items():
-            if key in cls_fields:
-                field_info: dataclasses.Field = cls_fields[key]
-                expected_type = field_info.type
+        Args:
+            model_info_kwargs: Dictionary containing model-specific information.
+        """
+        instance = cls()  # Create an instance with default values for all fields
 
-                # Handle Optional and Union types
-                if get_origin(expected_type) is Union:
-                    valid_types = get_args(expected_type)
-                    if not any(isinstance(value, t) for t in valid_types):
-                        raise TypeError(
-                            f"Expected type {expected_type} for field '{key}', but got {type(value)}"
-                        )
-                else:
-                    # Ensure expected_type is a type object
-                    if isinstance(expected_type, str):
-                        expected_type = eval(expected_type)
-                    if not isinstance(value, expected_type):
-                        raise TypeError(
-                            f"Expected type {expected_type} for field '{key}', but got {type(value)}"
-                        )
-
-                setattr(instance, key, value)
-            else:
-                raise ValueError(f"Invalid config key: {key}")
-
-        instance._gst_decoder_does_dequantization_and_depadding = (
-            gst_decoder_does_dequantization_and_depadding
+        # --- Determine settings SOLELY from model_info ---
+        instance.cpp_focus_layer_on_host = bool(
+            model_info_kwargs.get('YOLO', {}).get('focus_layer_replacement', True)
         )
         return instance
 
+    def update_from_decoder_op(self, postprocess_op: AxOperator | None):
+        """
+        Updates the GST-related flags based on the postprocess operator.
+        This should be called after the instance is created, typically
+        once the specific postprocess operator is known.
+
+        Args:
+            postprocess_op: The postprocessing operator instance (or None).
+        """
+        if not postprocess_op:
+            return
+        elif postprocess_op.cpp_decoder_does_all:
+            self._validate_and_set_cpp_flags(True, True, True)
+            return
+
+        depadding = getattr(
+            postprocess_op,
+            "cpp_decoder_does_dequantization_and_depadding",
+            self._cpp_decoder_does_dequantization_and_depadding,
+        )
+        if depadding is None:
+            depadding = self._cpp_decoder_does_dequantization_and_depadding
+
+        transpose = getattr(
+            postprocess_op, "cpp_decoder_does_transpose", self._cpp_decoder_does_transpose
+        )
+        if transpose is None:
+            transpose = self._cpp_decoder_does_transpose
+
+        postamble = getattr(
+            postprocess_op, "cpp_decoder_does_postamble", self._cpp_decoder_does_postamble
+        )
+        if postamble is None:
+            postamble = self._cpp_decoder_does_postamble
+
+        self._validate_and_set_cpp_flags(depadding, transpose, postamble)
+
     @property
-    def gst_decoder_does_dequantization_and_depadding(self):
-        return self._gst_decoder_does_dequantization_and_depadding
+    def cpp_decoder_does_dequantization_and_depadding(self) -> bool:
+        return self._cpp_decoder_does_dequantization_and_depadding
+
+    @property
+    def cpp_decoder_does_transpose(self) -> bool:
+        return self._cpp_decoder_does_transpose
+
+    @property
+    def cpp_decoder_does_postamble(self) -> bool:
+        return self._cpp_decoder_does_postamble
 
 
 class Inference:
@@ -456,9 +507,6 @@ class Inference:
             self.devices = self._device_man.devices
             if not isinstance(self.model, types.Manifest):
                 raise ValueError('AIPU device requires model to be a Manifest instance')
-            with open(self.compiled_model_dir / constants.K_COMPILE_CONFIG_FILE_NAME) as config:
-                compilation_config = json.load(config)
-            self.backend_config = compilation_config.get("backend_config", {})
 
         elif isinstance(self.model, torch.nn.Module):
             self.model.eval()
@@ -573,8 +621,8 @@ class Inference:
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph: graph.DependencyGraph,
     ):
         self.task_name = task_name
         self.model_category = model_info.task_category
@@ -588,39 +636,22 @@ class Inference:
                 f"Input color format mismatch in {task_name}. Expected {model_info.input_color_format}, but got {context.color_format}"
             )
 
-    @property
-    def _is_yolo(self):
-        return 'yolo' in self.model_name.lower()
-
     def check_focus_layer_on_host(self):
-        assert (
-            len(self.model.input_shapes) == 1 and len(self.model.input_shapes[0]) == 4
-        ), f"Expected input_shapes to be a [[N, H, W, C]] list but got {self.model.input_shapes}"
-        c_low, c_high = compile.get_padded_low_high(self.model.n_padded_ch_inputs, 'NHWC', 'C')[0]
-        # c_low is expected to be 0
-        channel = self.model.input_shapes[0][3] - c_low - c_high
-
-        if channel == 12:
-            return True
-        elif channel == 3:
-            return False
-        else:
-            raise ValueError(
-                f"Expected the channel of input tensor to be 3 or 12 but got {channel}"
-            )
+        if hasattr(self.model, 'preprocess_graph') and self.model.preprocess_graph:
+            preprocess_path = Path(self.model.preprocess_graph)
+            if not preprocess_path.is_absolute():
+                preprocess_path = self.compiled_model_dir / preprocess_path
+            return has_focus_layer_onnx(preprocess_path)
 
     @property
     def config(self):
         return self._inf_config
 
     def _do_pads_or_preproc(self, gst: gst_builder.Builder):
-        quant_zeropoint = self.model.quantize_params[0][1]
         from ..pipe.gst import generate_padding
 
         padding = generate_padding(self.model)
-        if (
-            self.config.gst_focus_layer_on_host or self._is_yolo
-        ) and self.check_focus_layer_on_host():
+        if self.config.cpp_focus_layer_on_host and self.check_focus_layer_on_host():
             gst.axtransform(
                 lib='libtransform_yolopreproc.so',
                 options=f'padding:{padding}',
@@ -652,11 +683,7 @@ class Inference:
 
         model = _get_model_path(self.compiled_model_dir, self.model.model_lib_file)
 
-        net = 'net' if gst.new_inference else ''
         name = f'inference-task{self._taskn}'
-        if not gst.new_inference:
-            batchsize = f'-batch{self._model_cores}' if self._model_cores > 1 else ''
-            name += f'{batchsize}-{self.model_name}'.replace('.', '_')
         options = _build_mock_options()
         inf = dict(
             name=name,
@@ -667,19 +694,13 @@ class Inference:
             dmabuf_outputs=config.env.UseDmaBuf.OUTPUTS in config.env.use_dmabuf,
             num_children=num_children,
         )
+        if gst.tile:
+            inf['meta'] = 'axelera-tiles-internal'
         if options:
             inf['options'] = options
         sopts = ' '.join(f"{k}={v}" for k, v in inf.items())
-        LOG.debug(f"Using inference{net} {sopts}")
-        if gst.new_inference:
-            gst.axinference(**inf)
-        else:
-            gst.queue()
-            gst.axinference(**inf)
-            if self.device != 'aipu':
-                gst.queue(
-                    connections={'src': f'decoder_{self.model_category.name.lower()}.sink_1'},
-                )
+        LOG.debug(f"Using inferencenet {sopts}")
+        gst.axinference(**inf)
 
     def exec_torch(self, image, result, meta):
         # result is the input tensor which changes in-place
@@ -694,11 +715,7 @@ class Inference:
             result = result.to(self.device)
             with torch.no_grad():
                 result = self.model(result)
-            if self.post_ort_sess:
-                result = _run_onnx_session(
-                    self.post_ort_sess, self.post_input_names, self.post_output_names, result
-                )
-                result = _convert_to_tensors(result if len(result) > 1 else result[0])
+            result = self._run_post_processing(result)
         elif isinstance(self.model, types.ONNXModel):
             if self._permute_op:
                 input_array = self._permute_op.exec_torch(result).numpy()
@@ -769,50 +786,128 @@ class Inference:
                     if out_shapes := self._get_core_model_output_shapes():
                         outputs = _reshape_to_target_shapes(outputs, out_shapes)
                 outputs = dequantize(outputs, self.model.dequantize_params)
+                result = self._run_post_processing(outputs)
 
-                # Create a mapping of shapes to arrays
-                shape_to_array = {tuple(arr.shape): arr for arr in outputs}
-
-                unused_shapes = set(shape_to_array.keys())
-
-                # Run post-processing if applicable
-                if self.post_ort_sess:
-                    # Reorder arrays based on post-processing input shapes
-                    reordered_array_list = []
-                    for shape in self.post_input_shapes:
-                        shape_tuple = tuple(shape)
-                        try:
-                            reordered_array_list.append(shape_to_array[shape_tuple])
-                            unused_shapes.remove(shape_tuple)
-                        except KeyError:
-                            LOG.warning(f"Expected shape {shape} not found in model outputs")
-
-                    input_dict = dict(zip(self.post_input_names, reordered_array_list))
-                    post_processed_result = self.post_ort_sess.run(
-                        self.post_output_names, input_dict
-                    )
-                    result = post_processed_result
-                else:
-                    result = []
-
-                # Add unused arrays to the result
-                unused_arrays = [shape_to_array[shape] for shape in unused_shapes]
-                if unused_arrays:
-                    LOG.trace(f"Found {len(unused_arrays)} unused output arrays")
-                    result = result if isinstance(result, list) else [result]
-                    result.extend(unused_arrays)
-
-                result = _convert_to_tensors(result if len(result) > 1 else result[0])
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
         return image, result, meta
 
+    def _run_post_processing(self, outputs):
+        if not isinstance(outputs, list):
+            outputs = [outputs]
+
+        # Create a mapping of shapes to arrays
+        shape_to_array = {tuple(arr.shape): arr for arr in outputs}
+        unused_shapes = set(shape_to_array.keys())
+
+        # Run post-processing if applicable
+        if self.post_ort_sess:
+            # Reorder arrays based on post-processing input shapes
+            reordered_array_list = []
+            for shape in self.post_input_shapes:
+                shape_tuple = tuple(shape)
+                try:
+                    reordered_array_list.append(shape_to_array[shape_tuple])
+                    unused_shapes.remove(shape_tuple)
+                except KeyError:
+                    LOG.warning(f"Expected shape {shape} not found in model outputs")
+
+            post_processed_result = _run_onnx_session(
+                self.post_ort_sess,
+                self.post_input_names,
+                self.post_output_names,
+                reordered_array_list,
+            )
+            result = post_processed_result
+        else:
+            result = []
+
+        # Add unused arrays to the result
+        unused_arrays = [shape_to_array[shape] for shape in unused_shapes]
+        if unused_arrays:
+            LOG.trace(f"Found {len(unused_arrays)} unused output arrays")
+            result = result if isinstance(result, list) else [result]
+            result.extend(unused_arrays)
+        return _convert_to_tensors(result if len(result) > 1 else result[0])
+
+
+def _calculate_tensor_selection_plan(model, postprocess_graph_path, compiled_model_dir=None):
+    """
+    Calculate tensor selection plan for postamble ONNX model.
+
+    This determines which tensors from model output should be used
+    as inputs to the postamble model.
+
+    Args:
+        model: Model manifest containing information about expected input shapes
+        postprocess_graph_path: Path to the ONNX postprocessing graph
+        compiled_model_dir: Optional directory where compiled models are stored
+
+    Returns:
+        List of tensor indices to use for ONNX postamble input
+    """
+    import os
+
+    import onnx
+
+    # Default to empty plan if no postprocess graph
+    if not postprocess_graph_path:
+        return []
+
+    try:
+        # Determine the full path to the ONNX model
+        model_path = postprocess_graph_path
+        if compiled_model_dir and not os.path.isabs(postprocess_graph_path):
+            model_path = os.path.join(compiled_model_dir, postprocess_graph_path)
+
+        # Check if the file exists
+        if not os.path.exists(model_path):
+            LOG.warning(f"Postprocess graph not found at: {model_path}")
+            return []
+
+        # Load ONNX model to get input shapes
+        onnx_model = onnx.load(model_path)
+
+        # Get expected input shapes from the ONNX model
+        postamble_inputs = []
+        for input_info in onnx_model.graph.input:
+            postamble_inputs.append(input_info.name)
+
+        # Get original output shapes from the model manifest
+        if not model or not hasattr(model, 'output_format'):
+            return list(range(len(postamble_inputs)))  # Default to sequential indices
+
+        # Match shapes between model outputs and postamble inputs
+        indices = []
+        model_shapes = []
+        if hasattr(model, 'get_original_shape'):
+            model_shapes = model.get_original_shape() or []
+
+        # If we have shape information, use it to match tensors
+        if model_shapes:
+            for i in range(len(postamble_inputs)):
+                # For simplicity, just use sequential mapping if counts match
+                if i < len(model_shapes):
+                    indices.append(i)
+                else:
+                    # If postamble expects more inputs than model provides,
+                    # just use what we have (will likely fail at runtime)
+                    break
+        else:
+            # Fallback: use sequential indices
+            output_layers = getattr(model, 'output_layers', [])
+            indices = list(range(min(len(postamble_inputs), len(output_layers))))
+
+        return indices
+    except Exception as e:
+        LOG.error(f"Error calculating tensor selection plan: {e}")
+        return []  # Return empty plan on error
+
 
 def _generate_depadding(manifest: types.Manifest) -> str:
-    padding = manifest.n_padded_ch_outputs[0] if manifest.n_padded_ch_outputs else []
-    padding = list(padding[:8])
-    padding = [-x for x in padding]
-    return ','.join(str(x) for x in padding)
+    return '|'.join(
+        ','.join(str(-num) for num in sublist) for sublist in manifest.n_padded_ch_outputs
+    )
 
 
 @builtin
@@ -822,6 +917,7 @@ class AxeleraDequantize(AxOperator):
     num_classes: int
     task_category: types.TaskCategory
     assigned_model_name: str
+    manifest_dir: Path
     taskn: int = 0
 
     def _post_init(self):
@@ -832,21 +928,113 @@ class AxeleraDequantize(AxOperator):
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         connections = dict(src=f'decoder_task{self.taskn}{stream_idx}.sink_1')
-        if self.inference_op_config.gst_decoder_does_dequantization_and_depadding:
-            if not gst.new_inference:
-                gst.queue(connections=connections)
+
+        # If all post-processing is handled by the decoder, nothing to do here.
+        if (
+            self.inference_op_config.cpp_decoder_does_dequantization_and_depadding
+            and self.inference_op_config.cpp_decoder_does_transpose
+            and self.inference_op_config.cpp_decoder_does_postamble
+        ):
+            return
+        deq_scales, deq_zeropoints = zip(*self.model.dequantize_params)
+        scales = ','.join(str(s) for s in deq_scales)
+        zeros = ','.join(str(s) for s in deq_zeropoints)
+
+        # If postamble is not handled by the decoder, but a postprocess graph exists,
+        # we must add all transforms: depadding, dequantize+transpose, and postamble.
+        if (
+            not self.inference_op_config.cpp_decoder_does_postamble
+            and self.model.postprocess_graph
+        ):
+            if stream_idx:
+                gst.queue(name=f'stream_queue{stream_idx}')
+            if self.model.n_padded_ch_outputs and any(self.model.n_padded_ch_outputs):
+                gst.axtransform(
+                    lib='libtransform_paddingdequantize.so',
+                    options=f'padding:{_generate_depadding(self.model)};'
+                    f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:1',
+                )
+            else:
+                gst.axtransform(
+                    lib=f'libtransform_dequantize.so',
+                    options=f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:1',
+                    connections=connections,
+                )
+            tensor_selection_plan = _calculate_tensor_selection_plan(
+                self.model, self.model.postprocess_graph, self.manifest_dir
+            )
+            options = f'onnx_path:{self.manifest_dir / self.model.postprocess_graph}'
+            if tensor_selection_plan:
+                options += f';tensor_selection_plan:{",".join(map(str, tensor_selection_plan))}'
+            LOG.debug(f"Using tensor selection plan for postamble: {tensor_selection_plan}")
+            gst.axtransform(
+                lib='libtransform_postamble.so',
+                options=options,
+            )
             return
 
+        # If postamble is handled by the decoder, but not all transforms are,
+        # add only the transforms not handled by the decoder.
         if stream_idx:
             gst.queue(name=f'stream_queue{stream_idx}')
-        if self.model.n_padded_ch_outputs and any(self.model.n_padded_ch_outputs):
-            gst.axtransform(
-                lib='libtransform_padding.so',
-                options=f'padding:{_generate_depadding(self.model)}',
-            )
-        dequant_scale, dequant_zeropoint = self.model.dequantize_params[0]
-        gst.axtransform(
-            lib=f'libtransform_dequantize.so',
-            options=f'dequant_scale:{dequant_scale};dequant_zeropoint:{dequant_zeropoint}',
-            connections=connections,
-        )
+        deq_scales, deq_zeropoints = zip(*self.model.dequantize_params)
+        scales = ','.join(str(s) for s in deq_scales)
+        zeros = ','.join(str(s) for s in deq_zeropoints)
+        # Only add dequantize if not handled by decoder
+        if not self.inference_op_config.cpp_decoder_does_dequantization_and_depadding:
+            if self.model.n_padded_ch_outputs and any(self.model.n_padded_ch_outputs):
+
+                gst.axtransform(
+                    lib='libtransform_paddingdequantize.so',
+                    options=f'padding:{_generate_depadding(self.model)};'
+                    f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:{int(not self.inference_op_config.cpp_decoder_does_transpose)}',
+                    connections=connections,
+                )
+            else:
+                gst.axtransform(
+                    lib=f'libtransform_dequantize.so',
+                    options=f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:{int(not self.inference_op_config.cpp_decoder_does_transpose)}',
+                    connections=connections,
+                )
+
+
+def has_focus_layer_onnx(onnx_model_path):
+    """
+    Detects a focus-layer pattern in an ONNX model by looking for a group of Slice nodes
+    operating on the input, followed by a Concat along the channel axis.
+    """
+    try:
+        import onnx
+        import onnx.numpy_helper
+    except ImportError:
+        # ONNX is not installed; cannot analyze focus layer; this is for passing CI runtime tests.
+        # Ideally, this step belongs to ahead of time AxInferenceNet generation, so runtime won't need this function.
+        LOG.warning("ONNX is not installed; skipping focus layer analysis.")
+        return False
+    try:
+        model = onnx.load(onnx_model_path)
+        graph = model.graph
+        if not graph.input:
+            return False
+        input_name = graph.input[0].name
+        # Find all nodes that take the input tensor as input
+        first_nodes = [node for node in graph.node if input_name in node.input]
+        # Look for a group of Slice nodes that all take the input tensor
+        slice_nodes = [node for node in first_nodes if node.op_type == "Slice"]
+        if not slice_nodes:
+            return False
+        # Find concat nodes that take outputs of these slice nodes
+        for node in graph.node:
+            if node.op_type == "Concat":
+                # Check if all inputs to this concat come from our slice nodes
+                if all(any(inp in s.output for s in slice_nodes) for inp in node.input):
+                    # Optionally, check axis attribute (should be channel axis, e.g., 1 for NCHW, 3 for NHWC)
+                    axis = None
+                    for attr in node.attribute:
+                        if attr.name == "axis":
+                            axis = attr.i
+                    if axis in (1, 3):
+                        return True
+        return False
+    except Exception:
+        return False

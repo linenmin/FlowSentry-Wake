@@ -13,8 +13,8 @@ from axelera.app.stream import InferenceStream, InterruptHandler
 # Setup common fixtures for tests
 @pytest.fixture
 def mock_pipe_mgr():
-    mock_pipe = Mock()
     mock_pipe_mgr = Mock(spec=PipeManager)
+    mock_pipe_mgr.hardware_caps = Mock()
     mock_pipe_mgr.number_of_frames = 100
     mock_pipe_mgr.is_single_image.return_value = False
     mock_pipe_mgr.evaluator = None

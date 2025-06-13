@@ -1,6 +1,10 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 # Board firmware update procedure
 
+> [!NOTE]  
+> The firmware update procedure is currently only supported on Linux systems. If you are using Windows, you will need to temporarily connect your board to a Linux host to perform the firmware update. After the update is complete, you can reconnect your board to your Windows system. This limitation will be addressed in a future release of the Voyager SDK.
+
+
 Some older Axelera AI development boards require a firmware update to be used with later versions of the
 Voyager SDK. If required, follow these steps:
 
@@ -15,20 +19,49 @@ source venv/bin/activate
 3. Download the board firmware to your development system.
 
 ```
-wget https://axelera-public.s3.eu-central-1.amazonaws.com/built_metis_firmware/voyager-sdk-v1.2.0/firmware_release_public_v1.2.0.tar.gz
+wget https://axelera-public.s3.eu-central-1.amazonaws.com/built_metis_firmware/voyager-sdk-v1.3.0/firmware_release_public_v1.3.0.tar.gz
 ```
 
 4. Extract the board firmware to the current directory.
 
 ```
-tar xzvf firmware_release_public_v1.2.0.tar.gz
+tar xzvf firmware_release_public_v1.3.0.tar.gz
 ```
 
-5. Run the firmware update tool to flash the firmware to your board.
+### Flash the firmware
+
+5. Run the firmware update tool to flash the firmware to your board. If you have multiple Metis devices connected, you can specify the device by using the `--device` option.
 
 ```
-cd firmware_release_public_v1.2.0
-./flash_update.sh flash_bundle.img
+$ cd firmware_release_public_v1.3.0
+$ ./flash_update.sh --fw-update
 ```
 
 The firmware flashing tool takes up to two minutes to run and on success outputs the message `flash success`.
+
+### Flash the board controller firmware
+
+> This step will only work if the pre-installed board controller firmware is at least `v1.0`. Otherwise contact an FAE or consult the community support.
+
+
+6. To figure out if the board will support an update, run the following command
+```
+$ axdevice
+Device 0: metis-0:1:0 4GiB pcie flver=1.3.0 bcver=1.0 clock=800MHz(0-3:800MHz) mvm=0-3:100%
+
+``` 
+which should report the `bcver` of at least `1.0`.
+
+7. Run the firmware update tool to flash the board controller firmware. If you have multiple Metis devices connected, you can specify the device by using the `--device` option.
+```
+$ cd firmware_release_public_v1.3.0
+$ ./flash_update.sh --bc-update
+```
+
+> NOTICE: This is not a failsafe or revertible function. Removing power during this process might brick your device. Verify to proceed with "y" when prompted. If you run into any issues, contact an FAE or consult the community support.
+
+After this step, the board will reboot. Next, check if the board controller version was successfully updated and the board is responsive.
+```
+$ axdevice
+Device 0: metis-0:1:0 4GiB pcie flver=1.3.0 bcver=1.4 clock=800MHz(0-3:800MHz) mvm=0-3:100%
+```

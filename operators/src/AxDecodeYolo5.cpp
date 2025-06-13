@@ -22,6 +22,8 @@ using inferences = ax_utils::inferences;
 
 struct properties {
   std::string meta_name{};
+  std::string master_meta{};
+  std::string association_meta{};
   std::vector<lookups> sigmoid_tables{};
   std::vector<float> anchors{};
   std::vector<std::string> class_labels{};
@@ -32,7 +34,6 @@ struct properties {
   bool multiclass{ false };
   bool transpose{};
   bool sigmoid_in_postprocess{ true };
-  std::string master_meta{};
   int model_width{};
   int model_height{};
   bool scale_up{ true };
@@ -267,6 +268,10 @@ init_and_set_static_properties(
   auto props = std::make_shared<yolov5::properties>();
   props->meta_name = Ax::get_property(
       input, "meta_key", "yolo_decode_static_properties", props->meta_name);
+  props->master_meta = Ax::get_property(
+      input, "master_meta", "yolo_decode_static_properties", props->master_meta);
+  props->association_meta = Ax::get_property(input, "association_meta",
+      "yolo_decode_static_properties", props->association_meta);
   auto zero_points = Ax::get_property(input, "zero_points",
       "yolo_decode_static_properties", std::vector<float>{});
   auto scales = Ax::get_property(
@@ -296,9 +301,6 @@ init_and_set_static_properties(
 
   props->transpose = Ax::get_property(
       input, "transpose", "yolo_decode_static_properties", props->transpose);
-
-  props->master_meta = Ax::get_property(
-      input, "master_meta", "yolo_decode_static_properties", props->master_meta);
 
   //  Build the lookup tables
   if (zero_points.size() != scales.size()) {
@@ -359,6 +361,8 @@ allowed_properties()
 {
   static const std::unordered_set<std::string> allowed_properties{
     "meta_key",
+    "master_meta",
+    "association_meta",
     "zero_points",
     "scales",
     "anchors",
@@ -370,7 +374,6 @@ allowed_properties()
     "transpose",
     "label_filter",
     "sigmoid_in_postprocess",
-    "master_meta",
     "scale_up",
     "letterbox",
     "model_width",
@@ -422,8 +425,9 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolov5::properties *p
         std::get<AxVideoInterface>(video_interface), prop->model_width,
         prop->model_height, prop->scale_up, prop->letterbox);
   } else {
-    auto master_meta
-        = ax_utils::get_meta<AxMetaBbox>(prop->master_meta, map, "yolov5_decode");
+    const auto &box_key = prop->association_meta.empty() ? prop->master_meta :
+                                                           prop->association_meta;
+    auto master_meta = ax_utils::get_meta<AxMetaBbox>(box_key, map, "yolov5_decode");
     auto master_box = master_meta->get_box_xyxy(subframe_index);
     pixel_boxes = ax_utils::scale_shift_boxes(predictions.boxes, master_box,
         prop->model_width, prop->model_height, prop->scale_up, prop->letterbox);
@@ -431,7 +435,7 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolov5::properties *p
   auto [boxes, scores, class_ids] = ax_utils::remove_empty_boxes(
       pixel_boxes, predictions.scores, predictions.class_ids);
 
-  ax_utils::insert_meta<AxMetaObjDetection>(map, prop->meta_name,
-      prop->master_meta, subframe_index, number_of_subframes, std::move(boxes),
-      std::move(scores), std::move(class_ids));
+  ax_utils::insert_and_associate_meta<AxMetaObjDetection>(map, prop->meta_name,
+      prop->master_meta, subframe_index, number_of_subframes, prop->association_meta,
+      std::move(boxes), std::move(scores), std::move(class_ids));
 }

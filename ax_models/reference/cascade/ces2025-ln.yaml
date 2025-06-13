@@ -32,7 +32,6 @@ pipeline:
         where: master_detections
         which: AREA # AREA, SCORE, CENTER
         top_k: 10
-        expand_margin: 0
       postprocess:
         - decodeyoloseg:
             label_filter: banana, apple, orange
@@ -49,7 +48,6 @@ pipeline:
 #        where: master_detections
 #        which: AREA # AREA, SCORE, CENTER
 #        top_k: 10
-#        expand_margin: 0
       preprocess:
         - letterbox:
             width: 640
@@ -86,7 +84,7 @@ models:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: weights/yolov8l-pose-v8.1.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/model_cards/weights/yolo/keypoint_detection/yolov8l-pose-v8.1.onnx
+    weight_url: https://media.axelera.ai/artifacts/model_cards/weights/yolo/keypoint_detection/yolov8l-pose-v8.1.onnx
     weight_md5: 60955674e106f59a14afcfec5d310f43
     task_category: KeypointDetection
     input_tensor_layout: NCHW
@@ -100,7 +98,7 @@ models:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: weights/yolov8n_ultralytics_v8.1.0.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/model_cards/weights/yolo/object_detection/yolov8n_ultralytics_v8.1.0.onnx
+    weight_url: https://media.axelera.ai/artifacts/model_cards/weights/yolo/object_detection/yolov8n_ultralytics_v8.1.0.onnx
     weight_md5: 2ec6c50f5cb0e059344f4ea7f72a3c41
     task_category: ObjectDetection
     input_tensor_layout: NCHW
@@ -114,7 +112,7 @@ models:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
     weight_path: weights/yolov8n-seg-v8.1.onnx
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/model_cards/weights/yolo/instance_segmentation/yolov8n-seg-v8.1.onnx
+    weight_url: https://media.axelera.ai/artifacts/model_cards/weights/yolo/instance_segmentation/yolov8n-seg-v8.1.onnx
     weight_md5: 62a278bf8fedb2121f72c6c92fb80a43
     task_category: InstanceSegmentation
     input_tensor_layout: NCHW
@@ -127,11 +125,11 @@ models:
 
 datasets: # Python dataloader
   CocoDataset-COCO2017:
-    class: ObjDataAdaptor
+    class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
-    download_year: 2017
+    label_type: COCO2017
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/data/coco/coco2017_repr400.zip
+    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
     repr_imgs_md5: b680128512392586e3c86b670886d9fa

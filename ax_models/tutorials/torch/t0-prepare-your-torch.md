@@ -42,24 +42,26 @@ If you prefer to skip the training process, you can use the pre-trained model an
 
 You can download the test dataset by running the following command:
 ```bash
-wget --show-progress -P $AXELERA_FRAMEWORK/data/ https://d1o2y3tc25j7ge.cloudfront.net/artifacts/tutorials/fruits-360-100x100-testset.zip && \
+wget --show-progress -P $AXELERA_FRAMEWORK/data/ https://media.axelera.ai/artifacts/tutorials/fruits-360-100x100-testset.zip && \
 unzip -q $AXELERA_FRAMEWORK/data/fruits-360-100x100-testset.zip -d $AXELERA_FRAMEWORK/data/ && \
 rm $AXELERA_FRAMEWORK/data/fruits-360-100x100-testset.zip
 ```
 
 Alternatively, you can download the full dataset by running:
 ```bash
-python ax_models/tutorials/resnet34_fruit360.py --download
+python ax_models/tutorials/resnet34_fruit360.py --download 2f981c83e352a9d4c15fb8c886034c817052c80b
 ```
+
+The commit hash `2f981c83e352a9d4c15fb8c886034c817052c80b` identifies the specific version of the Fruits-360 dataset used for training our model. To reproduce the exact results shown in our tutorial, you must use this same commit hash. If you prefer using the latest dataset version (which may yield different results), simply use the `--download` flag, as the Fruits-360 dataset receives periodic updates.
 
 
 2. Download the pre-trained weights and class names:
 
 ```bash
 mkdir -p ~/.cache/axelera/weights/tutorials/ && \
-wget --show-progress -O ~/.cache/axelera/weights/tutorials/resnet34_fruits360.onnx https://d1o2y3tc25j7ge.cloudfront.net/artifacts/tutorials/resnet34_fruits360_classifier.onnx && \
-wget --show-progress -O ~/.cache/axelera/weights/tutorials/resnet34_fruits360.pth https://d1o2y3tc25j7ge.cloudfront.net/artifacts/tutorials/resnet34_fruits360.pth && \
-wget --show-progress -O ~/.cache/axelera/weights/tutorials/fruits360.names https://d1o2y3tc25j7ge.cloudfront.net/artifacts/tutorials/fruits360.names
+wget --show-progress -O ~/.cache/axelera/weights/tutorials/resnet34_fruits360.onnx https://media.axelera.ai/artifacts/tutorials/resnet34_fruits360_classifier.onnx && \
+wget --show-progress -O ~/.cache/axelera/weights/tutorials/resnet34_fruits360.pth https://media.axelera.ai/artifacts/tutorials/resnet34_fruits360.pth && \
+wget --show-progress -O ~/.cache/axelera/weights/tutorials/fruits360.names https://media.axelera.ai/artifacts/tutorials/fruits360.names
 ```
 The model is trained to classify 131 different types of fruits and vegetables. The `fruits360.names` file contains all class labels, which you can reference to understand the model's classification capabilities. We download both pt and onnx models, so you can play with both.
 
@@ -68,7 +70,7 @@ The model is trained to classify 131 different types of fruits and vegetables. T
 We randomly sample 186 images from the validation set to use as representative images. You can prepare the representative images by running the following command:
 
 ```bash
-wget --show-progress -P ~/.cache/axelera/fruits-360-100x100/ https://d1o2y3tc25j7ge.cloudfront.net/artifacts/tutorials/fruits-360-100x100-repr200.zip && \
+wget --show-progress -P ~/.cache/axelera/fruits-360-100x100/ https://media.axelera.ai/artifacts/tutorials/fruits-360-100x100-repr200.zip && \
 unzip -q ~/.cache/axelera/fruits-360-100x100/fruits-360-100x100-repr200.zip -d $AXELERA_FRAMEWORK/data && \
 rm ~/.cache/axelera/fruits-360-100x100/fruits-360-100x100-repr200.zip
 ```

@@ -24,7 +24,7 @@ TEST(nms, empty_list_returns_empty_list)
   auto scores = std::vector<float>{};
   auto classes = std::vector<int>{};
   auto meta = AxMetaObjDetection(boxes, scores, classes);
-  auto actual = non_max_suppression(meta, 0.5f, true, 300);
+  auto actual = non_max_suppression(meta, 0.5f, true, 300, false);
   EXPECT_EQ(actual.num_elements(), 0);
 }
 
@@ -34,7 +34,7 @@ TEST(nms, overlapping_boxes_different_classes_do_not_suppress_if_class_aware)
   auto scores = std::vector<float>{ 0.5f, 0.6f };
   auto classes = std::vector<int>{ 1, 2 };
   auto meta = AxMetaObjDetection(boxes, scores, classes);
-  auto actual = non_max_suppression(meta, 0.5f, false, 300);
+  auto actual = non_max_suppression(meta, 0.5f, false, 300, false);
   EXPECT_EQ(actual.num_elements(), 2);
 }
 
@@ -44,7 +44,7 @@ TEST(nms, overlapping_boxes_different_classes_suppress_if_class_agnostic)
   auto scores = std::vector<float>{ 0.5f, 0.6f };
   auto classes = std::vector<int>{ 1, 2 };
   auto meta = AxMetaObjDetection(boxes, scores, classes);
-  auto actual = non_max_suppression(meta, 0.5f, true, 300);
+  auto actual = non_max_suppression(meta, 0.5f, true, 300, false);
   EXPECT_EQ(actual.num_elements(), 1);
 }
 
@@ -54,7 +54,7 @@ TEST(nms, non_overlapping_boxes_do_not_suppress)
   auto scores = std::vector<float>{ 0.5f, 0.6f };
   auto classes = std::vector<int>{ 1, 2 };
   auto meta = AxMetaObjDetection(boxes, scores, classes);
-  auto actual = non_max_suppression(meta, 0.5f, true, 300);
+  auto actual = non_max_suppression(meta, 0.5f, true, 300, false);
   EXPECT_EQ(actual.num_elements(), 2);
 }
 
@@ -64,7 +64,7 @@ TEST(nms, only_topk_is_returned)
   auto scores = std::vector<float>{ 0.5f, 0.6f };
   auto classes = std::vector<int>{ 1, 2 };
   auto meta = AxMetaObjDetection(boxes, scores, classes);
-  auto actual = non_max_suppression(meta, 0.5f, true, 1);
+  auto actual = non_max_suppression(meta, 0.5f, true, 1, false);
   EXPECT_EQ(actual.num_elements(), 1);
   auto box_xyxy = actual.get_box_xyxy(0);
   EXPECT_EQ(box_xyxy.x1, 10);
@@ -82,7 +82,7 @@ TEST(nms, kpts_input)
 
   auto scores = std::vector<float>{ 0.5f, 0.6f };
   auto meta = AxMetaKptsDetection(boxes, kpts, scores, { 17, 3 });
-  auto actual = non_max_suppression(meta, 0.5f, true, 1);
+  auto actual = non_max_suppression(meta, 0.5f, true, 1, false);
 
   EXPECT_EQ(actual.num_elements(), 1);
   auto box_xyxy = actual.get_box_xyxy(0);
@@ -103,7 +103,7 @@ TEST(nms, highest_scoring_overlapping_boxes_remains)
   auto scores = std::vector<float>{ 0.5F, 0.6F, 0.4F };
   auto classes = std::vector<int>{ 1, 1, 1 };
   auto meta = AxMetaObjDetection(boxes, scores, classes);
-  auto actual = non_max_suppression(meta, 0.5F, false, 300);
+  auto actual = non_max_suppression(meta, 0.5F, false, 300, false);
   EXPECT_EQ(actual.num_elements(), 1);
   EXPECT_FLOAT_EQ(actual.score(0), 0.6F);
   auto box_xyxy = actual.get_box_xyxy(0);

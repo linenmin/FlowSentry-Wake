@@ -169,6 +169,40 @@ TEST(resize_cl, four2one)
   EXPECT_EQ(out_buf, expected);
 }
 
+TEST(resize_cl, four2one_rgb)
+{
+  if (!has_opencl_platform) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "width", "4" },
+    { "height", "4" },
+  };
+
+  Transformer resize("libtransform_resize_cl.so", input);
+  std::vector<uint8_t> in_buf = {
+    // clang-format off
+    0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x20, 0x20, 0x20, 0x30, 0x30, 0x30,
+    0x40, 0x40, 0x40, 0x50, 0x50, 0x50, 0x60, 0x60, 0x60, 0x70, 0x70, 0x70,
+    0x80, 0x80, 0x80, 0x90, 0x90, 0x90, 0xa0, 0xa0, 0xa0, 0xb0, 0xb0, 0xb0,
+    0xc0, 0xc0, 0xc0, 0xd0, 0xd0, 0xd0, 0xe0, 0xe0, 0xe0, 0xf0, 0xf0, 0xf0,
+    // clang-format on
+  };
+  std::vector<uint8_t> out_buf(1 * 1 * 4);
+
+  auto expected = std::vector<uint8_t>{ 0x78, 0x78, 0x78, 0xFF };
+  auto in = AxVideoInterface{ { 4, 4, 12, 0, AxVideoFormat::RGB },
+    in_buf.data(), { 12 }, { 0 } };
+  auto out = AxVideoInterface{ { 1, 1, 4, 0, AxVideoFormat::RGBA },
+    out_buf.data(), { 4 }, { 0 } };
+
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  resize.transform(in, out, metadata, 0, 1);
+
+  EXPECT_EQ(out_buf, expected);
+}
+
+
 TEST(resize_cl, scale_up)
 {
   if (!has_opencl_platform) {

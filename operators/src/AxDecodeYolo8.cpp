@@ -40,8 +40,9 @@ struct properties {
   bool multiclass{ true };
   std::vector<int> kpts_shape{ 0, 0 };
   std::string meta_name{};
-  std::string decoder_name{};
   std::string master_meta{};
+  std::string association_meta{};
+  std::string decoder_name{};
   bool scale_up{ true };
   bool letterbox{ true };
   int model_width{};
@@ -308,7 +309,9 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolov8_decode::proper
         std::get<AxVideoInterface>(video_interface), prop->model_width,
         prop->model_height, prop->scale_up, prop->letterbox);
   } else {
-    master_meta = ax_utils::get_meta<AxMetaBbox>(prop->master_meta, map, "yolov8_decode");
+    const auto &box_key = prop->association_meta.empty() ? prop->master_meta :
+                                                           prop->association_meta;
+    master_meta = ax_utils::get_meta<AxMetaBbox>(box_key, map, "yolov8_decode");
     auto master_box = master_meta->get_box_xyxy(subframe_index);
     pixel_boxes = ax_utils::scale_shift_boxes(predictions.boxes, master_box,
         prop->model_width, prop->model_height, prop->scale_up, prop->letterbox);
@@ -331,21 +334,22 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolov8_decode::proper
   if (prop->kpts_shape[0] > 0) {
     auto [boxes, kpts, scores] = ax_utils::remove_empty_boxes(
         pixel_boxes, pixel_kpts, predictions.scores, prop->kpts_shape[0]);
-    ax_utils::insert_meta<AxMetaKptsDetection>(map, prop->meta_name,
-        prop->master_meta, subframe_index, number_of_subframes, std::move(boxes),
-        std::move(kpts), std::move(scores), prop->kpts_shape, prop->decoder_name);
+    ax_utils::insert_and_associate_meta<AxMetaKptsDetection>(map,
+        prop->meta_name, prop->master_meta, subframe_index, number_of_subframes,
+        prop->association_meta, std::move(boxes), std::move(kpts),
+        std::move(scores), prop->kpts_shape, prop->decoder_name);
   } else {
     auto [boxes, scores, class_ids] = ax_utils::remove_empty_boxes(
         pixel_boxes, predictions.scores, predictions.class_ids);
-    ax_utils::insert_meta<AxMetaObjDetection>(map, prop->meta_name,
-        prop->master_meta, subframe_index, number_of_subframes,
+    ax_utils::insert_and_associate_meta<AxMetaObjDetection>(map, prop->meta_name,
+        prop->master_meta, subframe_index, number_of_subframes, prop->association_meta,
         std::move(boxes), std::move(scores), std::move(class_ids));
   }
 
   auto end_time = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-  logger(AX_INFO) << "decode_to_meta : Decoding took " << duration.count()
-                  << " microseconds" << std::endl;
+  logger(AX_DEBUG) << "decode_to_meta : Decoding took " << duration.count()
+                   << " microseconds" << std::endl;
 }
 
 extern "C" const std::unordered_set<std::string> &
@@ -353,6 +357,8 @@ allowed_properties()
 {
   static const std::unordered_set<std::string> allowed_properties{
     "meta_key",
+    "master_meta",
+    "association_meta",
     "classlabels_file",
     "confidence_threshold",
     "max_boxes",
@@ -365,7 +371,6 @@ allowed_properties()
     "padding",
     "kpts_shape",
     "decoder_name",
-    "master_meta",
     "scale_up",
     "letterbox",
     "model_width",
@@ -381,6 +386,10 @@ init_and_set_static_properties(
   auto props = std::make_shared<yolov8_decode::properties>();
   props->meta_name = Ax::get_property(
       input, "meta_key", "detection_static_properties", props->meta_name);
+  props->master_meta = Ax::get_property(
+      input, "master_meta", "detection_static_properties", props->master_meta);
+  props->association_meta = Ax::get_property(input, "association_meta",
+      "detection_static_properties", props->association_meta);
   props->zero_points = Ax::get_property(
       input, "zero_points", "detection_static_properties", props->zero_points);
   props->scales = Ax::get_property<float>(
@@ -391,8 +400,6 @@ init_and_set_static_properties(
       input, "kpts_shape", "detection_static_properties", props->kpts_shape);
   props->decoder_name = Ax::get_property(
       input, "decoder_name", "detection_static_properties", props->decoder_name);
-  props->master_meta = Ax::get_property(
-      input, "master_meta", "detection_static_properties", props->master_meta);
   auto topk
       = Ax::get_property(input, "topk", "detection_static_properties", props->topk);
   if (topk > 0) {

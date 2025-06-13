@@ -12,8 +12,6 @@ inplace(const AxDataInterface &data, const void *, unsigned int, unsigned int,
   }
 
   for (const auto &ele : map) {
-    if (ele.second->enable_draw) {
-      ele.second->draw(std::get<AxVideoInterface>(data), map);
-    }
+    ele.second->draw(std::get<AxVideoInterface>(data), map);
   }
 }

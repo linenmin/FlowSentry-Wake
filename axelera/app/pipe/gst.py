@@ -10,35 +10,50 @@ import queue
 import re
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Callable, Dict, List
-
-import gi
-
-from ..meta import (
-    CocoBodyKeypointsMeta,
-    FaceLandmarkTopDownMeta,
-    InstanceSegmentationMeta,
-    SemanticSegmentationMeta,
-)
-from ..operators import Input, InputWithImageProcessing
-
-gi.require_version('Gst', '1.0')
-gi.require_version('GstVideo', '1.0')
-gi.require_version('GstApp', '1.0')  # for try_pull_sample
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List
+import warnings
 
 from gi.repository import GObject, Gst, GstApp, GstVideo
 import yaml
 
 from axelera import types
 
-from . import base, frame_data, gst_helper
+from . import base, frame_data, graph, gst_helper
 from .. import config, gst_builder, logging_utils, meta, operators, utils
+from .gst_helper import AGGREGATE_NAME
 
 if TYPE_CHECKING:
     from . import io
-    from .. import config, network
+    from .. import config, network, pipeline
 
 LOG = logging_utils.getLogger(__name__)
+
+
+def _at_eos(pipeline, appsinks, logging_dir: Path):
+    bus = pipeline.get_bus()
+    continue_stream = True
+    while continue_stream:
+        if appsinks:
+            msg = bus.pop()
+        else:
+            msg = bus.timed_pop_filtered(Gst.MSECOND, Gst.MessageType.EOS)
+
+        if msg is None:
+            return False
+        continue_stream = gst_helper.on_bus_message(msg, pipeline, logging_dir)
+
+    return True
+
+
+def _pre_roll_pipeline(pipeline, appsinks, logging_dir):
+    # we send the first frame through the pipeline to ensure all elemnets are
+    # fully constructed, this means errors in the pipeline are detected early
+    while not _at_eos(pipeline, appsinks, logging_dir):
+        for stream_id, sink in enumerate(appsinks):
+            sample = sink.try_pull_sample(Gst.MSECOND)
+            if sample:
+                LOG.debug("Received first frame from gstreamer")
+                return stream_id, sample
 
 
 class GstStream:
@@ -53,7 +68,6 @@ class GstStream:
         pipeline,
         logging_dir,
         hardware_caps,
-        progress: gst_helper.InitProgress,
         src=None,
         loader=None,
         data_formatter=None,
@@ -85,30 +99,30 @@ class GstStream:
         self.stream_meta_key = meta.GstMetaInfo('stream_id', 'stream_meta')
 
         self.hardware_caps = hardware_caps
-        self._appsinks = gst_helper._gst_iterate(
-            pipeline.iterate_all_by_element_factory_name('appsink')
-        )
+        self._appsinks = gst_helper.list_all_by_element_factory_name(pipeline, 'appsink')
         self.decoder = meta.GstDecoder()
         ret = self.pipeline.set_state(Gst.State.READY)
         if ret == Gst.StateChangeReturn.FAILURE:
             raise RuntimeError("Unable to set the pipeline to the ready state")
-        ret = self.pipeline.set_state(Gst.State.PLAYING)
-        if ret == Gst.StateChangeReturn.FAILURE:
-            raise RuntimeError("Unable to set the pipeline to the playing state")
 
-        # Uncomment to debug if a queue overrun/underrun occurs
-        # self.connect_queue_overrun_signals(pipeline)
-        if self._feeding_thread:
-            self._feeding_thread.start()
+        try:
+            ret = self.pipeline.set_state(Gst.State.PLAYING)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                raise RuntimeError("Unable to set the pipeline to the playing state")
 
-        self._pre_sample = None
-        while not self.at_eos(progress.on_message):
-            for stream_id, sink in enumerate(self._appsinks):
-                sample = sink.try_pull_sample(Gst.MSECOND)
-                if sample:
-                    progress.set_state(gst_helper.InitState.first_frame_received)
-                    self._pre_sample = stream_id, sample
-                    return
+            # Uncomment to debug if a queue overrun/underrun occurs
+            # self.connect_queue_overrun_signals(pipeline)
+            if self._feeding_thread:
+                self._feeding_thread.start()
+
+            self._pre_sample = _pre_roll_pipeline(self.pipeline, self._appsinks, self.logging_dir)
+        except BaseException as e:
+            # BaseException because we want to include KeyboardException here. You see this happen
+            # when you press Ctrl-C during pipeline setup if we have got the pipeline into READY
+            # or PLAYING we need to ensure a clean shutdown or else you get Gst-CRITICAL msgs
+            LOG.warning(f"An error occurred whilst in pre-roll pipeline: {e!r}, stopping pipeline")
+            self.stop()
+            raise
 
     def connect_queue_overrun_signals(self, pipeline):
         # Function to be called recursively to search for queue elements
@@ -129,20 +143,9 @@ class GstStream:
     def on_queue_overrun(self, queue):
         LOG.warning("Queue '{}' has overrun!".format(queue.get_name()))
 
-    def at_eos(self, on_message=gst_helper.gst_on_message):
+    def at_eos(self):
         if self.pipeline:
-            bus = self.pipeline.get_bus()
-            continue_stream = True
-            while continue_stream:
-                if self._appsinks:
-                    msg = bus.pop()
-                else:
-                    msg = bus.timed_pop_filtered(Gst.MSECOND, Gst.MessageType.EOS)
-
-                if msg is None:
-                    return False
-                continue_stream = on_message(msg, self.pipeline, self.logging_dir)
-
+            return _at_eos(self.pipeline, self._appsinks, self.logging_dir)
         return True
 
     def frame_from_sample(self, sample, stream_id):
@@ -342,7 +345,7 @@ def _labels(app_fmwk: Path, model_name: str):
 
 
 def _parse_low_level_pipeline(
-    tasks: List[network.AxTask],
+    tasks: list[pipeline.AxTask],
     mi: List,
     input_sources: List[str],
     hardware_caps: config.HardwareCaps,
@@ -404,67 +407,72 @@ def _add_element_name(name_counter, e):
     )
 
 
-def _add_element_names(pipeline):
+def _add_element_names(elements):
     counter = collections.defaultdict(int)
-    res = []
-    for pipe in pipeline:
-        pipe_name, elements = next(iter(pipe.items()))
-        elements = [_add_element_name(counter, e) for e in elements]
-        res.append({pipe_name: elements})
-    return res
+    elements = [_add_element_name(counter, e) for e in elements]
+    return elements
 
 
 def _build_input_pipeline(
-    gst: gst_builder.Builder, tasks: list[network.AxTask], input: io.PipeInput
+    gst: gst_builder.Builder, tasks: list[pipeline.AxTask], input: io.PipeInput, source_id: int
 ):
     stream_count = input.stream_count()
-    for n in range(stream_count):
+    for n in range(source_id, source_id + stream_count):
         idx = str(n)
         input.build_input_gst(gst, idx)
-        for task in tasks:
-            if isinstance(task.input, InputWithImageProcessing):
-                task.input.build_gst(gst, idx)
-        if gst.new_inference:
-            gst.queue(connections={'src': 'inference-task0.sink_%u'})
-        else:
-            gst.identity(connections={'src': 'inference-funnel.sink_%u'})
-    if not gst.new_inference:
-        gst.axfunnel(name='inference-funnel')
+        tasks[0].input.build_gst(gst, idx)
+        if len(tasks) > 1 and any(
+            isinstance(t.input, operators.InputWithImageProcessing) for t in tasks[1:]
+        ):
+            LOG.warning(
+                "Multiple tasks with InputWithImageProcessing are not supported, "
+                "only the first task will be used."
+            )
+        gst.queue(connections={'src': f'{AGGREGATE_NAME}.sink_%u'})
+
+
+def _update_inference_config(
+    config: operators.InferenceConfig,
+    first_postprocess_op: operators.AxOperator,
+    model_info: types.ModelInfo,
+):
+    config.update_according_to_gst_decoder_op(first_postprocess_op, model_info.extra_kwargs)
 
 
 def _build_pipeline(
-    nn: network.AxNetwork, input: io.PipeInput, output: io.PipeOutput, hw_caps: config.HardwareCaps
+    nn: network.AxNetwork,
+    input: io.PipeInput,
+    output: io.PipeOutput,
+    hw_caps: config.HardwareCaps,
+    tile: Dict[str, Any] | None,
 ) -> List[Dict[str, Any]]:
-    gst = gst_builder.builder(hw_caps)
-    _build_input_pipeline(gst, nn.tasks, input)
-
-    for task in nn.tasks:
-        if isinstance(task.input, Input):
-            task.input.build_gst(gst, '')
+    gst = gst_builder.builder(hw_caps, tile=tile)
+    _build_input_pipeline(gst, nn.tasks, input, 0)
 
     for taskn, task in enumerate(nn.tasks):
-        if not gst.new_inference:
-            conns = {
-                'src_%u': [
-                    f'queue_task{taskn}.sink',
-                    f'queue_decoder_task{taskn}.sink',
-                ]
-            }
-            gst.axtransform()
-            gst.tee(name=f'input_tee{taskn}', connections=conns)
-            gst.queue(name=f'queue_task{taskn}')
-        else:
-            # This is a marker for axinferencenet, it signals that the current instance
-            # is complete and the next instance should begin
-            gst.axtransform()
-        if not isinstance(task.input, (InputWithImageProcessing, Input)):
+        if task.model_info.model_type == types.ModelType.CLASSICAL_CV:
+            # TODO: use Input operator to convert color space (if needed) before cv_process
+            for op in task.cv_process:
+                op.build_gst(gst, '')
+            continue
+        if isinstance(task.input, operators.InputFromROI):
             task.input.build_gst(gst, '')
+        else:
+            gst.start_axinference()
+        if gst.tile:
+            gst.axtransform(
+                lib='libtransform_roicrop.so',
+                options=f'meta_key:axelera-tiles-internal',
+            )
+
         for op in task.preprocess:
             op.build_gst(gst, '')
 
         task.inference.build_inference_gst(gst, task.aipu_cores)
         dq = []
         if task.inference.device == 'aipu':
+            task.inference.config.update_from_decoder_op(task.postprocess[0])
+
             dq = [
                 operators.AxeleraDequantize(
                     model=task.inference.model,
@@ -472,11 +480,14 @@ def _build_pipeline(
                     num_classes=task.model_info.num_classes,
                     task_category=task.model_info.task_category,
                     assigned_model_name=task.model_info.name,
+                    manifest_dir=task.inference.compiled_model_dir,
                     taskn=taskn,
                 )
             ]
         for op in dq + task.postprocess:
             op.build_gst(gst, '')
+
+        gst.finish_axinference()
     output.build_output_gst(gst, input.stream_count())
     return list(gst)
 
@@ -512,110 +523,106 @@ def _samefile(a: str | Path, b: str | Path) -> bool:
 class GstPipe(base.Pipe):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pipeline_cache = None
-        self.agg_pads = None
+        self._pipeline_cache = None
+        self._agg_pads: dict[int, str] = {}
 
-    def get_pipe(self):
-        return self.pipeline_cache
-
-    def _get_source_elements(self, pipeline):
+    def _get_source_elements(self):
         """Find and return all source elements in the given pipeline."""
         sources = []
-        for element in gst_helper._gst_iterate(pipeline.iterate_elements()):
+        for element in gst_helper.list_elements(self._pipeline_cache):
             # Check if the element is a source (it has only source pads)
-            pads = gst_helper._gst_iterate(element.iterate_pads())
-            if not any(p for p in pads if p.get_direction() == Gst.PadDirection.SINK):
+            if not gst_helper.list_sink_pads(element):
                 sources.append(element)
         return sources
 
-    def pause(self):
-        for src in self._get_source_elements(self.pipeline_cache):
-            if src.get_name().startswith("rtsp"):
-                src.set_state(Gst.State.PAUSED)
-            else:
-                try:
-                    ret = self.pipeline_cache.set_state(Gst.State.PAUSED)
-                except Exception as e:
-                    raise RuntimeError(f"Unable to pause stream: {e}")
+    def _get_pausable_elements(self):
+        # if we have any live srcs we will pause them first, and then if we have aby non-live srcs
+        # we also pause/play the whole pipeline
+        # [for now we assume that only rtsp srcs are live, we should proably check
+        #  the pipeline for other live srcs such as v4l]
+        srcs = [src for src in self._get_source_elements()]
+        rtsp = [src for src in srcs if src.get_name().startswith("rtsp")]
+        if len(rtsp) != len(srcs):
+            srcs.append(self._pipeline_cache)
+        return srcs
 
-                if ret == Gst.StateChangeReturn.FAILURE:
-                    raise RuntimeError("Unable to set the pipeline to the pause state")
-                return
+    def pause(self):
+        for elem in self._get_pausable_elements():
+            gst_helper.set_state_and_wait(elem, Gst.State.PAUSED)
 
     def play(self):
-        for src in self._get_source_elements(self.pipeline_cache):
-            if src.get_name().startswith("rtsp"):
-                src.set_state(Gst.State.PLAYING)
-            else:
+        for elem in self._get_pausable_elements():
+            gst_helper.set_state_and_wait(elem, Gst.State.PLAYING)
 
-                try:
-                    ret = self.pipeline_cache.set_state(Gst.State.PLAYING)
-                except Exception as e:
-                    raise RuntimeError(f"Unable to play stream: {e}")
-                if ret == Gst.StateChangeReturn.FAILURE:
-                    raise RuntimeError("Unable to set the pipeline to the playing state")
-                return
-
-    def remove_source(self, agg_pad_name):
-        if self.pipeline_cache == None:
-            raise RuntimeError("Pipeline not yet created")
-
-        self.pipeline_cache = gst_helper.gst_remove_source(agg_pad_name, self.pipeline_cache)
-
-    def stream_select(self, streams):
-        agg_name = 'inference-task0' if config.env.axinferencenet else 'inference-funnel'
-        agg = self.pipeline_cache.get_by_name(agg_name)
-        agg.set_property("stream_select", streams)
-
-    def gen_newinput_gst(self, input, idx):
+    def add_source(self, pipe_newinput: io.PipeInput, source_id: int):
+        assert source_id > -1, "For now source_id allocation comes from manager.py"
         gst = gst_builder.builder(self.hardware_caps)
-        input.build_input_gst(gst, idx)
+        _build_input_pipeline(gst, self.nn.tasks, pipe_newinput, source_id)
+        self._agg_pads[source_id] = gst_helper.add_input(gst, self._pipeline_cache)
 
-        # Process tasks for InputWithImageProcessing
-        for task in self.nn.tasks:
-            for op in filter(
-                lambda op: isinstance(op, InputWithImageProcessing), [task.input, *task.preprocess]
-            ):
-                op.build_gst(gst, idx)
-
-        # Set up the aggregator name and optionally add an identity element
-        agg_name = 'inference-task0' if gst.new_inference else 'inference-funnel'
-        if not gst.new_inference:
-            gst.identity(connections={'src': f'{agg_name}.sink_%u'})
-
-        # Ensure the pipeline cache exists and add the GStreamer input
-        if self.pipeline_cache is None:
+    def remove_source(self, source_id: int) -> None:
+        if self._pipeline_cache == None:
             raise RuntimeError("Pipeline not yet created")
+        if source_id not in self._agg_pads:
+            LOG.warning(f"Source slot {source_id} not occupied")
+            return
+        if len(self._agg_pads) == 1:
+            LOG.warning(f"Can't remove last stream, stop pipeline instead")
+            return
+        agg_pad_name = self._agg_pads[source_id]
+        gst_helper.remove_source(self._pipeline_cache, agg_pad_name)
+        del self._agg_pads[source_id]
 
-        self.pipeline_cache, agg_pad_name = gst_helper.add_gst_input(gst, self.pipeline_cache)
-        return agg_pad_name
+    def _get_aggregator(self):
+        return self._pipeline_cache.get_by_name(AGGREGATE_NAME)
 
-    def gen_end2end_pipe(self, input, output):
+    def stream_select(self, streams: Iterable[int] | str) -> None:
+        if isinstance(streams, str):
+            warnings.warn(
+                "Passing a comma-separated string to stream_select is deprecated. "
+                "Please pass an iterable of integers instead.",
+                DeprecationWarning,
+            )
+            if not re.match(r'^\d+(,\d+)*$', streams):
+                raise ValueError(f"Invalid stream select format: {streams}")
+        else:
+            streams = ','.join(str(s) for s in sorted(streams))
+        self._get_aggregator().set_property("stream_select", streams)
+
+    def get_stream_select(self) -> list[int]:
+        streams = self._get_aggregator().get_property("stream_select")
+        return [int(s) for s in streams.split(',') if s]
+
+    def gen_end2end_pipe(self, input, output, tile=None):
         '''Construct gst E2E pipeline'''
         self.batched_data_reformatter = input.batched_data_reformatter
         if self.batched_data_reformatter:
-            self.input_generator = input.create_generator()
+            self.frame_generator = input.frame_generator()
         self.format = input.format
         # from generic Input, get the first model in the pipeline
         inputs = getattr(input, 'inputs', [input])
-
         sources = [i.location for i in inputs]
 
         pipeline = None
         if self.ax_precompiled_gst:
             mi = list(iter(self.model_infos.models()))
-            pipeline = _parse_low_level_pipeline(
+            _pipelines = _parse_low_level_pipeline(
                 self.nn.tasks, mi, sources, self.hardware_caps, self.ax_precompiled_gst
             )
+            try:
+                pipeline = _pipelines[0]['pipeline']
+            except (ValueError, IndexError, KeyError):
+                raise ValueError(
+                    f"Invalid precompiled YAML file {self.ax_precompiled_gst}: expected `- pipeline:`"
+                ) from None
         plugin_path = os.environ.get('GST_PLUGIN_PATH', '')
         if 'operators' not in plugin_path:
             extra = f"{config.env.framework}/operators/lib"
             os.environ['GST_PLUGIN_PATH'] = f"{extra}:{plugin_path}" if plugin_path else extra
         if pipeline is None:
-            gst = _build_pipeline(self.nn, input, output, self.hardware_caps)
-            pipeline = [{'pipeline': gst}]
+            pipeline = _build_pipeline(self.nn, input, output, self.hardware_caps, tile)
             task_names = [t.model_info.name for t in self.nn.tasks]
-            _save_axnet_files(gst, task_names, self.logging_dir)
+            _save_axnet_files(pipeline, task_names, self.logging_dir)
 
         self.pipeout = output
         self.pipeout.initialize_writer(input)
@@ -624,75 +631,70 @@ class GstPipe(base.Pipe):
         if self.ax_precompiled_gst and _samefile(self.ax_precompiled_gst, out_yaml):
             LOG.debug(f"Not writing GST representation because it was passed in")
         else:
-            out_yaml.write_text(yaml.dump(pipeline, sort_keys=False))
+            pipelines = [{'pipeline': pipeline}]
+            out_yaml.write_text(yaml.dump(pipelines, sort_keys=False))
             LOG.debug(f"GST representation written to {os.path.relpath(out_yaml)}")
 
-        # TODO: take off the following hard assignment of self.pipeline, it does
-        # not need to be stored.
         self.pipeline = _add_element_names(pipeline)
-        self.model_info_labels_dict = {t.name: t.model_info.labels for t in self.nn.tasks}
-        self.model_info_num_classes_dict = {
-            t.name: t.model_info.num_classes for t in self.nn.tasks
-        }
 
-    def get_agg_pads(self):
-        return self.agg_pads
+        self.model_info_labels_dict = {}
+        self.model_info_num_classes_dict = {}
+        for t in self.nn.tasks:
+            self.model_info_labels_dict[t.name] = t.model_info.labels
+            self.model_info_num_classes_dict[t.name] = t.model_info.num_classes
 
-    def get_agg_pad(self, idx):
-        if self.agg_pads is None:
-            # Pipeline not yet created
-            LOG.warning('Pipeline not yet started to add new source')
-            return None
+            # pass labels from detections to tracker
+            if t.model_info.task_category == types.TaskCategory.ObjectTracking:
+                bbox_task_name = self.task_graph.get_master(t.name)
+                self.model_info_labels_dict[t.name] = self.model_info_labels_dict[bbox_task_name]
+                self.model_info_num_classes_dict[t.name] = self.model_info_num_classes_dict[
+                    bbox_task_name
+                ]
 
-        if idx not in self.agg_pads:
-            LOG.warning('Pipeline slot does not exist')
-            return None
-        return self.agg_pads[idx]
+    def delete_pipeline(self):
+        # TODO this is used by inference server only, should be a more structured way to do this
+        self._pipeline_cache = None
+        self._agg_pads = {}
 
     def init_loop(self) -> Callable[[], None]:
-        pipeline_names = [t.model_info.name for t in self.nn.tasks]
-        with gst_helper.InitProgress() as progress:
-            if LOG.isEnabledFor(logging_utils.TRACE):
-                env = {k: v for k, v in sorted(os.environ.items()) if k.startswith('AX')}
-                env = pprint.pformat(env, width=1, compact=True, depth=1)
-                LOG.trace(f"environment at gst pipeline construction:\n%s", env)
+        if LOG.isEnabledFor(logging_utils.TRACE):
+            env = {k: v for k, v in sorted(os.environ.items()) if k.startswith('AX')}
+            senv = pprint.pformat(env, width=1, compact=True, depth=1)
+            LOG.trace(f"environment at gst pipeline construction:\n%s", senv)
 
-            if self.pipeline_cache is None:
-                self.pipeline_cache = gst_helper.build_gst_pipelines(
-                    self.pipeline, pipeline_names, progress
-                )[-1]
-                new_inference = config.env.axinferencenet
-                agg_pads = gst_helper.get_agg_pads(self.pipeline_cache, new_inference)
+        start = time.time()
+        LOG.debug("Started building gst pipeline")
+        if self._pipeline_cache is None:
+            self._pipeline_cache = gst_helper.build_pipeline(self.pipeline)
+            agg_pads = gst_helper.get_agg_pads(self._pipeline_cache)
+            self._agg_pads = {n: pad for n, pad in enumerate(agg_pads)}
+        self.is_pair_validation = False
 
-                self.agg_pads = {n: pad for n, pad in enumerate(agg_pads)}
-            self.is_pair_validation = False
-
-            args = ()
+        args = ()
+        if self.batched_data_reformatter:
+            src_name = 'axelera_dataset_src' if self.format == 'dataset' else 'axelera_server_src'
+            args = (src_name, self.frame_generator, self.batched_data_reformatter)
+            # check if it is pair validation
+            data = next(iter(self.frame_generator))
             if self.batched_data_reformatter:
-                src_name = (
-                    'axelera_dataset_src' if self.format == 'dataset' else 'axelera_server_src'
-                )
-                args = (src_name, self.input_generator, self.batched_data_reformatter)
-                # check if it is pair validation
-                data = next(iter(self.input_generator))
-                if self.batched_data_reformatter:
-                    data = self.batched_data_reformatter(data)[0]
-                    self.is_pair_validation = data.imgs is not None
-                else:
-                    self.is_pair_validation = False
-            stream = GstStream(
-                self.pipeline_cache,
-                self.logging_dir,
-                self.hardware_caps,
-                progress,
-                *args,
-            )
+                data = self.batched_data_reformatter(data)[0]
+                self.is_pair_validation = data.imgs is not None
+            else:
+                self.is_pair_validation = False
+        stream = GstStream(
+            self._pipeline_cache,
+            self.logging_dir,
+            self.hardware_caps,
+            *args,
+        )
+        LOG.debug("Finished building gst pipeline - build time = %.3f", time.time() - start)
         return lambda: self._loop(stream)
 
     def _create_meta_instances_from_gst_decoded_meta(
         self, ax_meta, gst_meta_info, task_meta, master_meta
     ):
         gst_meta_key = gst_meta_info.task_name
+        subframe_index = gst_meta_info.subframe_index
         if type(task_meta) == meta.ClassificationMeta:
             model_meta = meta.ClassificationMeta(
                 num_classes=self.model_info_num_classes_dict[gst_meta_key],
@@ -705,7 +707,7 @@ class GstPipe(base.Pipe):
                 boxes=task_meta.boxes,
                 scores=task_meta.scores,
                 class_ids=task_meta.class_ids,
-                labels=self.model_info_labels_dict[gst_meta_key],
+                labels=self.model_info_labels_dict.get(gst_meta_key, None),
                 make_extra_info_mutable=True,
             )
         elif type(task_meta) == meta.TrackerMeta:
@@ -718,7 +720,7 @@ class GstPipe(base.Pipe):
                 labels_dict=self.model_info_labels_dict,
             )
         elif type(task_meta) == meta.CocoBodyKeypointsMeta:
-            model_meta = CocoBodyKeypointsMeta(
+            model_meta = meta.CocoBodyKeypointsMeta(
                 keypoints=task_meta.keypoints,
                 boxes=task_meta.boxes,
                 scores=task_meta.scores,
@@ -730,25 +732,44 @@ class GstPipe(base.Pipe):
                 scores=task_meta.scores,
             )
         elif type(task_meta) == meta.InstanceSegmentationMeta:
-            model_meta = meta.InstanceSegmentationMeta(self.model_info_labels_dict[gst_meta_key])
+            model_meta = meta.InstanceSegmentationMeta(
+                labels=self.model_info_labels_dict[gst_meta_key]
+            )
             model_meta.transfer_data(task_meta)
         elif type(task_meta) == meta.FaceLandmarkTopDownMeta:
-            model_meta = FaceLandmarkTopDownMeta(
+            model_meta = meta.FaceLandmarkTopDownMeta(
                 _keypoints=task_meta._keypoints, _boxes=[], _scores=[]
             )
         elif type(task_meta) == meta.SemanticSegmentationMeta:
-            model_meta = SemanticSegmentationMeta(
+            model_meta = meta.SemanticSegmentationMeta(
                 shape=task_meta.shape,
                 class_map=task_meta.class_map,
                 probabilities=task_meta.probabilities,
                 extra_info=task_meta.extra_info,
             )
+        elif type(task_meta) == meta.LicensePlateMeta:
+            model_meta = meta.LicensePlateMeta(label=task_meta.label)
+        elif type(task_meta) == meta.ImageMeta:
+            model_meta = meta.ImageMeta(img=task_meta.img)
+        elif type(task_meta) == meta.PoseInsSegMeta:
+            model_meta = meta.PoseInsSegMeta(labels=self.model_info_labels_dict[gst_meta_key])
+            model_meta.transfer_data(task_meta)
         else:
             LOG.debug(f"Directly registering {type(task_meta)} into ax_meta")
-            ax_meta.add_instance(gst_meta_info.task_name, task_meta, master_meta_name=master_meta)
+            ax_meta.add_instance(
+                gst_meta_info.task_name,
+                task_meta,
+                master_meta_name=master_meta,
+                subframe_index=subframe_index,
+            )
             return
 
-        ax_meta.add_instance(gst_meta_info.task_name, model_meta, master_meta_name=master_meta)
+        ax_meta.add_instance(
+            gst_meta_info.task_name,
+            model_meta,
+            master_meta_name=master_meta,
+            subframe_index=subframe_index,
+        )
 
     def _handle_pair_validation(self, ax_meta, decoded_meta):
         gst_meta_key, task_meta = next(iter(decoded_meta.items()))
@@ -771,7 +792,9 @@ class GstPipe(base.Pipe):
                         continue
                 else:
                     for gst_meta_info, task_meta in (decoded_meta or {}).items():
-                        master_meta = self.task_graph.get_master(gst_meta_info.task_name)
+                        master_meta = self.task_graph.get_master(
+                            gst_meta_info.task_name, view=graph.EdgeType.RESULT
+                        )
                         has_master = master_meta and gst_meta_info.master
                         if has_master and gst_meta_info.master != master_meta:
                             raise ValueError(

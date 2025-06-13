@@ -5,12 +5,14 @@
 #include <memory>
 #include <unordered_map>
 #include "AxDataInterface.h"
+#include "AxInference.hpp"
 #include "AxInferenceNet.hpp"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
 #include "AxMetaStreamId.hpp"
 #include "AxStreamerUtils.hpp"
 #include "GstAxDataUtils.hpp"
+#include "GstAxInPlace.hpp"
 #include "GstAxInferenceNet.hpp"
 #include "GstAxMeta.hpp"
 #include "GstAxStreamerUtils.hpp"
@@ -28,11 +30,11 @@ GST_DEBUG_CATEGORY_STATIC(gst_axinferencenet_debug);
 GST_ELEMENT_REGISTER_DEFINE(
     axinferencenet, "axinferencenet", GST_RANK_NONE, GST_TYPE_AXINFERENCENET);
 
-static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink_%u",
-    GST_PAD_SINK, GST_PAD_REQUEST, GST_STATIC_CAPS("video/x-raw,format={RGBA,BGRA}"));
+static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink_%u", GST_PAD_SINK,
+    GST_PAD_REQUEST, GST_STATIC_CAPS("video/x-raw,format={RGBA,BGRA,RGB,BGR}"));
 
-static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src",
-    GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw,format={RGBA,BGRA}"));
+static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC,
+    GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw,format={RGBA,BGRA,RGB,BGR}"));
 
 
 G_DEFINE_TYPE_WITH_CODE(GstAxInferenceNet, gst_axinferencenet, GST_TYPE_ELEMENT,
@@ -51,8 +53,75 @@ enum {
   PROP_POSTPROC0_MODE,
   PROP_POSTPROC_END = PROP_POSTPROC0_SHARED_LIB_PATH + Ax::MAX_OPERATORS * PROPERTY_STRIDE,
   PROP_STREAM_SELECT,
+  PROP_MAX_POOL_BUFFERS,
 };
 
+class GstAxStreamSelect
+{
+  public:
+  void set_property(const std::string &stream_select)
+  {
+    // this is a comma separated list of stream ids that should be enabled
+    // so the omission of the stream id means disable it.
+    // easiest way to handle this is set all to disabled and then enable them.
+    for (auto &[sid, enabled] : ids_) {
+      enabled = false;
+    }
+    for (auto &token : Ax::Internal::split(stream_select, ',')) {
+      auto stoken = std::string(token);
+      try {
+        auto sid = std::stoi(stoken);
+        ids_[sid] = true;
+      } catch (const std::invalid_argument &e) {
+        // TODO        GST_ERROR_OBJECT(inf, "Invalid number '%s' in stream_select", stoken.c_str());
+      }
+    }
+  }
+
+  std::string get_property() const
+  {
+    std::string stream_select;
+    for (auto &[sid, enabled] : ids_) {
+      if (enabled) {
+        if (!stream_select.empty()) {
+          stream_select += ",";
+        }
+        stream_select += std::to_string(sid);
+      }
+    }
+    return stream_select;
+  }
+
+  bool is_pad_enabled(const std::string &pad_name, int stream_id)
+  {
+    // check if the stream has been explicity disabled
+    // we also maintain a padname->stream_id mapping so that on pad removal we can remove the stream id
+    // and not have removed streams returned in get_stream_select
+    // (for belt and braces we also add it enabled if never seen before,
+    //  in case the pipeline does not have axinplace:addstreamid)
+    pads_.try_emplace(pad_name, stream_id);
+    return ids_.try_emplace(stream_id, true).first->second;
+  }
+
+  void add_pad(const std::string &pad_name, int stream_id)
+  {
+    pads_.try_emplace(pad_name, stream_id);
+    ids_.try_emplace(stream_id, true);
+  }
+
+  void remove_pad(const std::string &pad_name)
+  {
+    auto id = pads_.find(pad_name);
+    if (id != pads_.end()) {
+      ids_.erase(id->second);
+      pads_.erase(id);
+    }
+  }
+
+  private:
+  std::map<std::string, int> pads_;
+  std::map<int, bool> ids_;
+};
 
 static std::string *
 find_property(Ax::InferenceNetProperties &properties, int property_id)
@@ -97,11 +166,21 @@ gst_axinferencenet_set_property(
   }
 
   if (property_id == PROP_STREAM_SELECT) {
+    // this is a comma separated list of stream ids that should be enabled
+    // so the omission of the stream id means disable it.
+    // easiest way to handle this is set all to disabled and then enable them.
     auto stream_select = Ax::get_string(value, "stream_select");
-    *inf->stream_select = Ax::create_stream_set(stream_select);
+    inf->stream_select->set_property(stream_select);
     return;
   }
 
+  if (property_id == PROP_MAX_POOL_BUFFERS) {
+    const auto max_buffers = g_value_get_uint(value);
+    if (max_buffers > 0) {
+      inf->properties->max_buffers = max_buffers;
+    }
+    return;
+  }
   G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
 }
 
@@ -121,9 +200,16 @@ gst_axinferencenet_get_property(
     return;
   }
   if (property_id == PROP_STREAM_SELECT) {
-    g_value_set_string(value, Ax::to_string(*inf->stream_select).c_str());
+    const auto stream_select = inf->stream_select->get_property();
+    g_value_set_string(value, stream_select.c_str());
     return;
   }
+
+  if (property_id == PROP_MAX_POOL_BUFFERS) {
+    g_value_set_uint(value, inf->properties->max_buffers);
+    return;
+  }
+
   G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
 }
 
@@ -170,24 +256,13 @@ as_handle(GstCaps *p)
   return { p, ::gst_caps_unref };
 }
 
-static bool
-stream_filter(const std::set<int> &stream_select, GstPad *pad)
+static std::string
+get_pad_name(GstPad *pad)
 {
-  if (stream_select.empty()) {
-    return false;
-  }
   auto *pname = gst_pad_get_name(pad);
   std::string padname = std::string(pname);
   g_free(pname);
-  auto pos = padname.find(std::string("pad"));
-  if (pos == std::string::npos) {
-    throw std::runtime_error("Invalid pad name");
-  }
-  const auto id = std::atoi(padname.erase(pos, 3).c_str());
-  if (stream_select.find(id) != stream_select.end()) {
-    return false;
-  }
-  return true;
+  return padname;
 }
 
 static Ax::InferenceNet &net(_GstAxInferenceNet *inf);
@@ -216,12 +291,17 @@ gst_axinferencenet_sink_chain(GstPad *sinkpad, GstObject *parent, GstBuffer *buf
       return GST_FLOW_EOS;
     }
 
-    if (stream_filter(*inf->stream_select, sinkpad)) {
+    auto &axmetamap = *gst_buffer_get_general_meta(buf)->meta_map_ptr;
+    auto stream_id = 0;
+    if (auto *sid = dynamic_cast<AxMetaStreamId *>(axmetamap["stream_id"].get())) {
+      stream_id = sid->stream_id;
+    }
+
+    if (!inf->stream_select->is_pad_enabled(get_pad_name(sinkpad), stream_id)) {
       gst_buffer_unref(buf);
       return GST_FLOW_OK;
     }
 
-    auto &axmetamap = *gst_buffer_get_general_meta(buf)->meta_map_ptr;
     auto video = video_interface_from_caps_and_meta(sinkpad_caps.get(), buf);
     if (gst_buffer_n_memory(buf) != 1) {
       throw std::runtime_error("Buffer must have exactly one memory (for now)");
@@ -233,10 +313,6 @@ gst_axinferencenet_sink_chain(GstPad *sinkpad, GstObject *parent, GstBuffer *buf
     video.data = handle->map_info.data;
     insert_event_end_marker(inf);
 
-    auto stream_id = 0;
-    if (auto *sid = dynamic_cast<AxMetaStreamId *>(axmetamap["stream_id"].get())) {
-      stream_id = sid->stream_id;
-    }
     net(inf).push_new_frame(std::move(handle), video, axmetamap, stream_id);
   }
   return GST_FLOW_OK;
@@ -322,6 +398,30 @@ gst_axinferencenet_push_done(GstAxInferenceNet *inf, Ax::CompletedFrame &frame)
   }
 }
 
+static int
+determine_max_pool_buffers(GstAxInferenceNet *sink)
+{
+  auto *properties = sink->properties.get();
+  auto max_buffers = properties->max_buffers;
+  auto pre_fill = Ax::pipeline_pre_fill(*properties);
+  auto output_drop = Ax::output_drop(*properties);
+  //  We need to ensure that we have enough buffers to handle the pre-fill and
+  //  output drop, otherwise we could block permanently
+  auto min_buffers = pre_fill + output_drop + 4;
+
+  if (max_buffers < min_buffers) {
+    if (max_buffers > 0) {
+      GST_WARNING_OBJECT(sink, "Max buffers %d is less than min required %d, using default",
+          max_buffers, min_buffers);
+    }
+    //  This assumes 4 pre and 4 post processing operators with double buffering
+    //  and 50 buffers for the last layer
+    auto other_buffers = 8 * 2 + 50;
+    max_buffers = pre_fill + output_drop + other_buffers;
+  }
+  return max_buffers;
+}
+
 static gboolean
 add_allocation_proposal(GstAxInferenceNet *sink, GstQuery *query)
 {
@@ -346,12 +446,13 @@ add_allocation_proposal(GstAxInferenceNet *sink, GstQuery *query)
   }
 
   if (need_pool) {
-    constexpr int min_buffers = 4;
+    const auto min_buffers = 4;
+    const auto max_buffers = determine_max_pool_buffers(self);
     self->pool = Ax::as_handle(gst_buffer_pool_new());
     GstStructure *config = gst_buffer_pool_get_config(self->pool.get());
     guint size = size_from_interface(interface_from_caps_and_meta(caps, nullptr));
 
-    gst_buffer_pool_config_set_params(config, caps, size, min_buffers, 0);
+    gst_buffer_pool_config_set_params(config, caps, size, min_buffers, max_buffers);
     gst_buffer_pool_config_set_allocator(config, self->allocator.get(), NULL);
     if (!gst_buffer_pool_set_config(self->pool.get(), config)) {
       self->allocator.reset();
@@ -359,7 +460,7 @@ add_allocation_proposal(GstAxInferenceNet *sink, GstQuery *query)
       GST_ERROR_OBJECT(self, "Failed to set pool configuration");
       return TRUE;
     }
-    gst_query_add_allocation_pool(query, self->pool.get(), size, min_buffers, 0);
+    gst_query_add_allocation_pool(query, self->pool.get(), size, min_buffers, max_buffers);
   }
 
   gst_query_add_allocation_param(query, self->allocator.get(), NULL);
@@ -385,6 +486,7 @@ gst_axinferencenet_request_new_pad(GstElement *element, GstPadTemplate *templ,
 {
   auto *inf = GST_AXINFERENCENET(element);
   GST_DEBUG_OBJECT(element, "requesting pad\n");
+  (void) net(inf); // start the construction of the inference net and start loading models
 
   auto sinkpad = GST_PAD_CAST(g_object_new(GST_TYPE_PAD, "name", name,
       "direction", templ->direction, "template", templ, NULL));
@@ -397,6 +499,105 @@ gst_axinferencenet_request_new_pad(GstElement *element, GstPadTemplate *templ,
   gst_element_add_pad(element, sinkpad);
   GST_DEBUG_OBJECT(element, "requested pad %s:%s", GST_DEBUG_PAD_NAME(sinkpad));
   return sinkpad;
+}
+
+static GstPad *
+find_sink(GstElement *elem)
+{
+  GstPad *pad = nullptr;
+  GValue value = G_VALUE_INIT;
+  if (auto *iter = gst_element_iterate_sink_pads(elem)) {
+    gst_iterator_next(iter, &value);
+    // todo is this a problem for cascade?
+    pad = GST_PAD(g_value_get_object(&value));
+    gst_iterator_free(iter);
+  }
+  return pad;
+}
+
+static GstElement *
+next_upstream(GstElement *elem)
+{
+  // iterate upstream, going peer to parent.  elem is unref'd and the return elem must be unref'd
+  // by the caller. always takes the first sink pad, so will ont do the right thing on a funnel/net
+  auto *sink = find_sink(elem);
+  gst_object_unref(elem);
+  elem = nullptr;
+  if (sink) {
+    auto *peer = gst_pad_get_peer(sink);
+    gst_object_unref(sink);
+    if (peer) {
+      elem = gst_pad_get_parent_element(peer);
+      gst_object_unref(peer);
+    }
+  }
+  return elem;
+}
+
+static int
+get_axinplace_stream_id(GstElement *elem)
+{
+  int stream_id = -1;
+  if (GST_IS_AXINPLACE(elem)) {
+    char *options = nullptr;
+    g_object_get(elem, "options", &options, NULL);
+    if (options) {
+      if (auto sid = std::strstr(options, "stream_id:")) {
+        stream_id = std::atoi(sid + 10);
+      }
+      g_free(options);
+    }
+  }
+  return stream_id;
+}
+
+static void
+axnet_on_pad_linked(GstPad *pad, GstPad *peer, gpointer user_data)
+{
+  auto *inf = GST_AXINFERENCENET(gst_pad_get_parent_element(pad));
+  GST_DEBUG_OBJECT(inf, "pad connected %s:%s", GST_DEBUG_PAD_NAME(pad));
+  auto stream_id = -1;
+  // find axinplace stream_id element by walking the sink pads upstream
+  auto *upstream = gst_pad_get_parent_element(peer);
+  while (upstream && stream_id == -1) {
+    GST_DEBUG_OBJECT(upstream, "searching for axinplace:addstreamid");
+    stream_id = get_axinplace_stream_id(upstream);
+    upstream = next_upstream(upstream);
+    if (upstream && GST_IS_AXINFERENCENET(upstream)) {
+      GST_INFO_OBJECT(upstream, "found axinferencenet whilst looking for stream_id");
+      break;
+    }
+  }
+  if (upstream) {
+    gst_object_unref(upstream);
+  }
+  if (stream_id != -1) {
+    GST_INFO_OBJECT(inf, "new sink pad added %s:%s with stream_id %d",
+        GST_DEBUG_PAD_NAME(pad), stream_id);
+    inf->stream_select->add_pad(get_pad_name(pad), stream_id);
+  } else {
+    GST_WARNING_OBJECT(inf, "new sink pad added %s:%s but could not find stream_id",
+        GST_DEBUG_PAD_NAME(pad));
+  }
+}
+
+
+static void
+axnet_on_pad_added(GstElement *element, GstPad *pad, gpointer user_data)
+{
+  if (pad->direction == GST_PAD_SINK) {
+    g_signal_connect(pad, "linked", G_CALLBACK(axnet_on_pad_linked), nullptr);
+  }
+}
+
+static void
+axnet_on_pad_removed(GstElement *element, GstPad *pad, gpointer user_data)
+{
+  GST_INFO_OBJECT(element, "pad removed %s:%s", GST_DEBUG_PAD_NAME(pad));
+  auto *inf = GST_AXINFERENCENET(element);
+  if (pad->direction == GST_PAD_SINK) {
+    inf->stream_select->remove_pad(get_pad_name(pad));
+  }
 }
 
 static Ax::InferenceNet &
@@ -441,13 +642,15 @@ gst_axinferencenet_init(GstAxInferenceNet *inf)
   inf->event_queue = std::make_unique<event_queue>();
   inf->logger = std::make_unique<Ax::Logger>(
       Ax::Severity::trace, nullptr, gst_axinferencenet_debug);
-  inf->stream_select = std::make_unique<std::set<int>>();
+  inf->stream_select = std::make_unique<GstAxStreamSelect>();
   Ax::init_logger(*inf->logger);
 
   auto srcpad = gst_pad_new_from_static_template(&src_template, "src");
   gst_pad_use_fixed_caps(srcpad);
   gst_pad_set_active(srcpad, TRUE);
   gst_element_add_pad(&inf->parent, srcpad);
+  g_signal_connect(&inf->parent, "pad-removed", G_CALLBACK(axnet_on_pad_removed), nullptr);
+  g_signal_connect(&inf->parent, "pad-added", G_CALLBACK(axnet_on_pad_added), nullptr);
 }
 
 static void
@@ -506,4 +709,7 @@ gst_axinferencenet_class_init(GstAxInferenceNetClass *klass)
 
   Ax::add_string_property(object_klass, PROP_STREAM_SELECT, "stream_select",
       "Select stream to output");
+
+  Ax::add_string_property(object_klass, PROP_MAX_POOL_BUFFERS, "max_pool_buffers",
+      "Maximum number of buffers in the pool. 0 means application decides (default).");
 }

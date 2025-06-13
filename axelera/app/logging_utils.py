@@ -106,8 +106,8 @@ class LogWithTrace(logging.Logger):
 
     def report_recoverable_exception(self, e: Exception):
         """Send a traceback of the current exception to the logger at ERROR level,
-        if TRACE is enabled then a traceback is included."""
-        if self.isEnabledFor(TRACE):
+        if DEBUG is enabled then a traceback is included."""
+        if self.isEnabledFor(DEBUG):
             self.error(traceback.format_exc())
         else:
             self.error(f'Exception: {e}')
@@ -265,6 +265,7 @@ def get_config_from_args(args: argparse.Namespace) -> Config:
 def configure_compiler_level(args: argparse.Namespace):
     compiler_level = _args_to_level(args, 1)
     compiler_modules = '''\
+        git.cmd
         te_compiler
         onnx2torch
         python_jsonschema_objects

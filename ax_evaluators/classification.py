@@ -441,7 +441,6 @@ class ClassificationEvaluator(types.Evaluator):
 
         metric_names = list(results.keys())
         aggregator_dict = {metric: list(aggs.keys()) for metric, aggs in results.items()}
-
         eval_result = types.EvalResult(
             metric_names,
             aggregator_dict,

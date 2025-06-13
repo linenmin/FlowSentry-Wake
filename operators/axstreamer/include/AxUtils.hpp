@@ -212,4 +212,22 @@ get_property(const properties &props, const std::string &property,
   return default_value;
 }
 
+
+/// @brief  Create a AxVideoInterface that references the given cv::Mat.
+/// @param mat cv::Mat to reference.
+/// @param format color format, (note that AxVideoFormat::BGR is the usual format that opencv provides).
+/// @return a AxVideoInterface that can be passed to AxInterfaceNet::push_new_frame.
+inline AxVideoInterface
+video_from_cvmat(const cv::Mat &mat, AxVideoFormat format)
+{
+  AxVideoInterface video;
+  video.info.width = mat.cols;
+  video.info.height = mat.rows;
+  video.info.format = format;
+  const auto pixel_width = AxVideoFormatNumChannels(video.info.format);
+  video.info.stride = mat.cols * pixel_width;
+  video.data = mat.data;
+  return video;
+}
+
 } // namespace Ax

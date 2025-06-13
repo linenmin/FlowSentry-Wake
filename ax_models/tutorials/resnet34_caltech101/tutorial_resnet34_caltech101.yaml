@@ -26,11 +26,12 @@ models:
     weight_path: resnet34_caltech101.pth
     # You can comment out the following 2 fields and train the model by yourself via
     # python ax_models/tutorials/tutorial_resnet34_caltech101.py
-    weight_url: https://d1o2y3tc25j7ge.cloudfront.net/artifacts/weights/tutorial/resnet34_caltech101.pth
+    weight_url: https://media.axelera.ai/artifacts/weights/tutorial/resnet34_caltech101.pth
     weight_md5: 43e16f6d467349a41b48efbe8387d3a2
     extra_kwargs:
-      block: BasicBlock
-      layers: [3, 4, 6, 3] # Resnet34
+      torchvision_args:
+        block: BasicBlock
+        layers: [3, 4, 6, 3]
 
 datasets:
   Caltech101:

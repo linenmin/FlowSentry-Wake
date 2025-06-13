@@ -92,11 +92,6 @@ def test_render_queue_size():
     assert get(render_queue_size='3').render_queue_size == 3
 
 
-def test_axinferencenet():
-    assert get().axinferencenet is True
-    assert get(axinferencenet='0').axinferencenet is False
-
-
 def test_use_dmabuf():
     assert environ.UseDmaBuf.INPUTS in get().use_dmabuf
     assert environ.UseDmaBuf.OUTPUTS in get().use_dmabuf

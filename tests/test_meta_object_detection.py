@@ -15,7 +15,7 @@ from axelera.app.meta import DetectedObject, ObjectDetectionMeta
 LABEL_BACK_COLOR = (0, 0, 0, 255)
 LABEL_FORE_COLOR = (244, 190, 24, 255)
 
-CLS0_COLOR = (255, 0, 0, 255)
+CLS0_COLOR = (255, 255, 000, 255)
 CLS1_COLOR = (255, 178, 125, 255)
 CLS2_COLOR = (255, 255, 255, 255)
 
@@ -44,7 +44,7 @@ def mock_image_draw(draw):
                 call(((10, 10), (20, 20)), None, CLS1_COLOR, 2),
                 call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((10, 11), 'cls:1 0.30', LABEL_FORE_COLOR, ANY)],
+            [call((10, 11), 'cls:1 30%', LABEL_FORE_COLOR, ANY, ANY)],
             "test box with no label names",
         ),
         pytest.param(
@@ -55,7 +55,7 @@ def mock_image_draw(draw):
                 call(((0, 0), (20, 20)), None, CLS0_COLOR, 2),
                 call(((0, 1), (40, 9)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((0, 1), 'cls:0 0.30', LABEL_FORE_COLOR, ANY)],
+            [call((0, 1), 'cls:0 30%', LABEL_FORE_COLOR, ANY, ANY)],
             "test box with no label names",
         ),
         pytest.param(
@@ -69,8 +69,8 @@ def mock_image_draw(draw):
                 call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
             ],
             [
-                call((0, 1), 'cls:0 0.30', LABEL_FORE_COLOR, ANY),
-                call((10, 11), 'cls:2 0.40', LABEL_FORE_COLOR, ANY),
+                call((0, 1), 'cls:0 30%', LABEL_FORE_COLOR, ANY, ANY),
+                call((10, 11), 'cls:2 40%', LABEL_FORE_COLOR, ANY, ANY),
             ],
             "test multiple boxes with no label names",
         ),
@@ -84,7 +84,7 @@ def test_box_with_no_labels(
     draw, image = mock_draw(output_width, output_height, monkeypatch)
     meta = ObjectDetectionMeta(boxes, scores, classes)
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
-        display_draw = display_cv.CVDraw(image)
+        display_draw = display_cv.CVDraw(image, [])
         meta.draw(display_draw)
         display_draw.draw()
 
@@ -103,7 +103,7 @@ def test_box_with_no_labels(
                 call(((20, 20), (40, 40)), None, CLS1_COLOR, 2),
                 call(((20, 10), (60, 18)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((20, 10), "car 0.30", LABEL_FORE_COLOR, ANY)],
+            [call((20, 10), "car 30%", LABEL_FORE_COLOR, ANY, ANY)],
             "box with label names, name fits outside box",
         ),
         pytest.param(
@@ -114,7 +114,7 @@ def test_box_with_no_labels(
                 call(((20, 10), (40, 40)), None, CLS1_COLOR, 2),
                 call(((20, 11), (60, 19)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((20, 11), "car 0.30", LABEL_FORE_COLOR, ANY)],
+            [call((20, 11), "car 30%", LABEL_FORE_COLOR, ANY, ANY)],
             "box with label names, name does not fit outside box",
         ),
         pytest.param(
@@ -128,8 +128,8 @@ def test_box_with_no_labels(
                 call(((20, 10), (60, 18)), LABEL_BACK_COLOR, None, 1),
             ],
             [
-                call((20, 11), "car 0.30", ANY, ANY),
-                call((20, 10), "person 0.30", ANY, ANY),
+                call((20, 11), "car 30%", ANY, ANY, ANY),
+                call((20, 10), "person 30%", ANY, ANY, ANY),
             ],
             "box with label names, multiple boxes both inside and outside",
         ),
@@ -150,7 +150,7 @@ def test_box_with_labels(
     draw, image = mock_draw(output_width, output_height, monkeypatch)
     meta = ObjectDetectionMeta(boxes, scores, classes, labels=labels)
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
-        display_draw = display_cv.CVDraw(image)
+        display_draw = display_cv.CVDraw(image, [])
         meta.draw(display_draw)
         display_draw.draw()
 

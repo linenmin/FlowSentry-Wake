@@ -8,6 +8,7 @@
     - [Pixel Value Transformations](#pixel-value-transformations)
     - [Color Space Transformations](#color-space-transformations)
     - [Tensor Conversion](#tensor-conversion)
+    - [Mapping Your Existing Preprocess Code](#mapping-your-existing-preprocess-code)
   - [Postprocess](#postprocess)
 
 This is a list of non-neural pre- & post-processing operators that may be referred to in the
@@ -65,17 +66,27 @@ This category includes various normalization techniques that modify the intensit
 *   **ContrastNormalize (`contrast-normalize`)**
     *   **Description:** Performs contrast stretching by linearly mapping the pixel values to the full available range.
     *   **Formula:** `(input - min) / (max - min)`
+    *   **When to use:** For enhancing image contrast, especially for images with poor contrast.
+    *   **Identifying in code:** Look for operations that find min/max values of an image and scale based on that range.
 
 *   **LinearScaling (`linear-scaling`)**
-    *   **Description:** Applies a linear transformation to the pixel values by multiplying with a scale factor and adding an optional bias (shift).
-    *   **Typical Use Case:** Transforming pixel values from the range [0, 255] to [-1, 1] (e.g., `input/mean + shift`, commonly used in TensorFlow normalization).
+    *   **Description:** Applies a linear transformation using scale and shift values.
+    *   **Formula:** `output = input * scale + shift`
+    *   **When to use:** When transforming from one value range to another, e.g., [0,255] → [-1,1]
+    *   **Common patterns:**
+        - `img / 255.0` → scales [0,255] to [0,1]
+        - `img * (2/255) - 1` → scales [0,255] to [-1,1]
+        - `img -= 127.5; img *= 0.0078125` → scales [0,255] to [-1,1] (0.0078125 = 1/128)
 
 *   **Normalize (`normalize`)**
-    *   **Description:** Normalizes the pixel values using a specified mean and standard deviation for each channel.
-    *   **Equivalence:** Equivalent to `torchvision.transforms.Normalize(mean, std)`.
+    *   **Description:** Standardizes pixel values using specified mean and standard deviation.
     *   **Formula:** `output[channel] = (input[channel] - mean[channel]) / std[channel]`
+    *   **When to use:** When using pre-trained models that expect standardized inputs.
+    *   **Common examples:**
+        - ImageNet normalization: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        - Mean centering: mean=127.5, std=127.5 or std=128.0
 
-**Important Note on Color Channels:** When using `Normalize`, ensure you provide the correct `mean` and `std` values for each color channel of your input image. For example, for an RGB image, you would typically provide three values for `mean` and three values for `std`. If you have a multi-channel image but only provide a single `mean` and `std` value, the same values will be applied to all channels.
+**Important Note on Color Channels:** When using `Normalize`, provide the correct `mean` and `std` values for each color channel of your input image. For RGB images, provide three values for both `mean` and `std`. If you provide only single values, they'll be applied to all channels.
 
 ### Color Space Transformations
 This category includes transformations that change the color representation of the image.
@@ -98,7 +109,154 @@ This category includes transformations that change the color representation of t
     *   **Functionality:** Permutes the dimensions to NCHW (Number of channels, Height, Width) and, by default, normalizes pixel values to the range [0, 1].
     *   **Parameter:**
         - scale: (Boolean, default: True) If False, the pixel values are not normalized to the range [0, 1].
+        - **Note:** The `scale` parameter controls whether pixel values are divided by 255. This is important to consider when combining with other normalization operations.
 
+## Mapping Your Existing Preprocess Code
+
+When deploying a model, you'll need to replicate the same preprocessing used during training. This section helps you identify common transform patterns from your training code and map them to our library's operators.
+
+### Common Code Patterns and Their Equivalents
+
+**Pattern 1: PyTorch ToTensor style normalization**
+```python
+# Either directly using torchvision:
+transforms.ToTensor()
+
+# Or manually implemented as:
+def transform(img):
+    img = img.astype('float32')
+    img = img / 255.0  # Scale to [0,1]
+    img = np.transpose(img, (2, 0, 1))  # HWC to CHW
+    return img
+```
+
+Map to: Our library's torch-totensor operator with default settings:
+
+```yaml
+- torch-totensor:
+    scale: true  # Default value, can be omitted
+```
+
+**Pattern 2: Scale to [-1,1] with transpose**
+
+```python
+def transform(img):
+    img = img.astype('float32')
+    img = img / 127.5 - 1  # Scale to [-1,1]
+    img = np.transpose(img, (2, 0, 1))  # HWC to CHW
+    return img
+```
+
+Map to:
+
+```yaml
+- linear-scaling:
+    scale: 0.00784  # 1/127.5
+    shift: -1
+- torch-totensor:
+    scale: false  # Important: disable scaling in torch-totensor
+```
+
+**Pattern 3: Mean and std normalization (e.g., ImageNet preprocessing)**
+
+```python
+# Using torchvision:
+transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# Or manually:
+def transform(img):
+    # ImageNet normalization values (RGB channels)
+    mean = [0.485, 0.456, 0.406]  # Pre-computed from ImageNet training set
+    std = [0.229, 0.224, 0.225]   # Pre-computed from ImageNet training set
+    
+    img = img.astype('float32')
+    img = img / 255.0  # Scale to [0,1]
+    img = (img - mean) / std  # Standardization using dataset statistics
+    img = np.transpose(img, (2, 0, 1))  # HWC to CHW
+    return img
+
+# Alternative: parameterized version
+def transform(img, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+    img = img.astype('float32')
+    img = img / 255.0
+    img = (img - np.array(mean)) / np.array(std)
+    img = np.transpose(img, (2, 0, 1))
+    return img
+```
+
+**Note**: The mean and std values should be chosen based on your use case:
+
+- **Transfer Learning from ImageNet models**: Use ImageNet stats `[0.485, 0.456, 0.406]` and `[0.229, 0.224, 0.225]` to match what the pre-trained model expects
+- **Training from scratch**: Compute mean and std from your own dataset statistics for optimal performance
+- **Fine-tuning**: Generally use the same normalization as the original pre-trained model
+
+The ImageNet values shown are the standard statistics computed across millions of training images and are required when using models pre-trained on ImageNet (ResNet, EfficientNet, etc.).
+
+Map to:
+
+```yaml
+# For torchvision's standard pattern (ToTensor followed by Normalize):
+- torch-totensor:
+    scale: true
+- normalize:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+```
+
+**Pattern 4: Scaling with offset (common in many frameworks)**
+
+```python
+def transform(img):
+    img = img.astype('float32')
+    img -= 127.5
+    img *= 0.0078125  # This is 1/128
+    img = np.transpose(img, (2, 0, 1))
+```
+
+Map to:
+
+```yaml
+- normalize:
+    mean: 127.5
+    std: 128
+- torch-totensor:
+    scale: false  # Important: disable scaling in torch-totensor
+```
+
+### Important Considerations About Normalization
+
+- **Torchvision's approach:** Torchvision typically uses a two-step normalization process:
+  1. `ToTensor()` scales pixel values from [0,255] to [0,1]
+  2. `Normalize()` then applies (pixel-mean)/std normalization
+
+  When using this standard pattern, you should keep `scale=true` in `torch-totensor` followed by the `normalize` operator:
+  ```yaml
+  - torch-totensor:
+      scale: true
+  - normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+  ```
+  Our C++ operators will automatically optimize these calculations to avoid redundant operations.
+
+- **Custom normalization:** When implementing custom normalization that doesn't follow torchvision's pattern (like direct scaling to [-1,1]), be careful about the hidden scaling in `torch-totensor`. In these cases, you typically want to set `scale=false`:
+  ```yaml
+  - linear-scaling:
+      scale: 0.00784
+      shift: -1
+  - torch-totensor:
+      scale: false
+  ```
+- **Color channel order:** Verify if your model expects RGB or BGR format, and use convert-color if needed.
+- **Framework differences:**
+  - PyTorch models typically expect CHW format with normalized values.
+  - TensorFlow models often use HWC format with scaled values.
+  - YOLO models frequently use letterboxing for maintaining aspect ratio.
+
+For ready-to-use examples, refer to the pipeline templates in the [pipeline-template](/pipeline-template) directory that demonstrate preprocessing setups for various model architectures.
 
 ## Postprocess
 

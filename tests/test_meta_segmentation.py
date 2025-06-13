@@ -32,7 +32,7 @@ def test_draw_no_masks():
 
     with patch("axelera.app.meta.segmentation.LOG.warning") as mock_warning:
         with patch("axelera.app.display_cv.CVDraw", return_value=draw):
-            display_draw = display_cv.CVDraw(image)
+            display_draw = display_cv.CVDraw(image, [])
             meta.draw(display_draw)
             display_draw.draw()
 
@@ -41,7 +41,8 @@ def test_draw_no_masks():
 
 def test_add_results():
     meta = InstanceSegmentationMeta()
-    masks = np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]], dtype=np.uint8)
+    masks_3d = np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]], dtype=np.uint8)
+    masks = [(0, 0, 1, 1, 0, 0, 1, 1, masks_3d[0]), (0, 0, 1, 1, 0, 0, 1, 1, masks_3d[1])]
     boxes = np.array([[0, 0, 1, 1], [1, 1, 2, 2]], dtype=np.float32)
     class_ids = np.array([0, 1], dtype=np.int32)
     scores = np.array([0.9, 0.8], dtype=np.float32)
@@ -52,8 +53,10 @@ def test_add_results():
     assert len(meta._boxes) == 2
     assert len(meta._class_ids) == 2
     assert len(meta._scores) == 2
-
-    np.testing.assert_array_equal(meta.masks, masks)
+    assert meta.masks[0][:8] == masks[0][:8]
+    assert meta.masks[1][:8] == masks[1][:8]
+    np.testing.assert_array_equal(meta.masks[0][-1], masks[0][-1])
+    np.testing.assert_array_equal(meta.masks[1][-1], masks[1][-1])
     np.testing.assert_array_equal(meta.boxes, boxes)
     np.testing.assert_array_equal(meta.class_ids, class_ids)
     np.testing.assert_array_equal(meta.scores, scores)
@@ -66,14 +69,14 @@ def test_add_result():
     class_id = 0
     score = 0.9
 
-    meta.add_result(mask, box, class_id, score)
+    meta.add_result((0, 0, 1, 1, 0, 0, 1, 1, mask), box, class_id, score)
 
     assert len(meta._masks) == 1
     assert len(meta._boxes) == 1
     assert len(meta._class_ids) == 1
     assert len(meta._scores) == 1
 
-    np.testing.assert_array_equal(meta.masks[0], mask)
+    np.testing.assert_array_equal(meta.masks[0][-1], mask)
     np.testing.assert_array_equal(meta.boxes[0], box)
     assert meta.class_ids[0] == class_id
     assert meta.scores[0] == score
@@ -86,11 +89,11 @@ def test_get_result():
     class_id = 0
     score = 0.9
 
-    meta.add_result(mask, box, class_id, score)
+    meta.add_result((0, 0, 1, 1, 0, 0, 1, 1, mask), box, class_id, score)
 
     result_mask, result_box, result_class_id, result_score = meta.get_result()
 
-    np.testing.assert_array_equal(result_mask, mask)
+    np.testing.assert_array_equal(result_mask[-1], mask)
     np.testing.assert_array_equal(result_box, box)
     assert result_class_id == class_id
     assert result_score == score
@@ -108,11 +111,11 @@ def test_transfer_data():
 
     mask1 = np.array([[1, 0], [0, 1]], dtype=np.uint8)
     box1 = np.array([0, 0, 1, 1], dtype=np.float32)
-    meta1.add_result(mask1, box1, 0, 0.9)
+    meta1.add_result((0, 0, 1, 1, 0, 0, 1, 1, mask1), box1, 0, 0.9)
 
     mask2 = np.array([[0, 1], [1, 0]], dtype=np.uint8)
     box2 = np.array([1, 1, 2, 2], dtype=np.float32)
-    meta2.add_result(mask2, box2, 1, 0.8)
+    meta2.add_result((0, 0, 1, 1, 1, 1, 2, 2, mask2), box2, 1, 0.8)
 
     meta1.transfer_data(meta2)
 
@@ -121,7 +124,7 @@ def test_transfer_data():
     assert len(meta1._class_ids) == 2
     assert len(meta1._scores) == 2
 
-    np.testing.assert_array_equal(meta1.masks[1], mask2)
+    np.testing.assert_array_equal(meta1.masks[1][-1], mask2)
     np.testing.assert_array_equal(meta1.boxes[1], box2)
     assert meta1.class_ids[1] == 1
     assert meta1.scores[1] == 0.8
@@ -140,33 +143,53 @@ def test_transfer_data_wrong_type():
     [
         (
             "add_result",
-            (np.array([1, 2, 3]), np.array([0, 0, 1, 1]), 0, 0.9),
+            ((np.array([1, 2, 3]),), np.array([0, 0, 1, 1]), 0, 0.9),
+            "mask must be a SegmentationMask tuple",
+        ),
+        (
+            "add_result",
+            ((0, 0, 1, 1, 0, 0, 1, 1, np.array([3, 4, 5])), np.array([0, 0, 1, 1]), 0, 0.9),
             "mask must be a 2D numpy array",
         ),
         (
             "add_result",
-            (np.array([[1, 0], [0, 1]]), np.array([0, 0, 1]), 0, 0.9),
+            ((0, 0, 1, 1, 0, 0, 1, 1, np.array([[1, 0], [0, 1]])), np.array([0, 0, 1]), 0, 0.9),
             r"box must be a 1D numpy array with shape (4,)",
         ),
         (
             "add_result",
-            (np.array([[1, 0], [0, 1]]), np.array([0, 0, 1, 1]), 0.5, 0.9),
+            (
+                (0, 0, 1, 1, 0, 0, 1, 1, np.array([[1, 0], [0, 1]])),
+                np.array([0, 0, 1, 1]),
+                0.5,
+                0.9,
+            ),
             "class_id must be an integer",
         ),
         (
             "add_result",
-            (np.array([[1, 0], [0, 1]]), np.array([0, 0, 1, 1]), 0, np.array([0.9])),
+            (
+                (0, 0, 1, 1, 0, 0, 1, 1, np.array([[1, 0], [0, 1]])),
+                np.array([0, 0, 1, 1]),
+                0,
+                np.array([0.9]),
+            ),
             "score must be a single scalar value",
         ),
         (
             "add_results",
-            (np.array([[[1, 0], [0, 1]]]), np.array([0, 0, 1, 1]), np.array([0]), np.array([0.9])),
+            (
+                [(0, 0, 1, 1, 0, 0, 1, 1, np.array([[1, 0], [0, 1]]))],
+                np.array([0, 0, 1, 1]),
+                np.array([0]),
+                np.array([0.9]),
+            ),
             r"boxes must be a 2D numpy array with shape (N, 4)",
         ),
         (
             "add_results",
             (
-                np.array([[[1, 0], [0, 1]]]),
+                [(0, 0, 1, 1, 0, 0, 1, 1, np.array([[1, 0], [0, 1]]))],
                 np.array([[0, 0, 1, 1]]),
                 np.array([[0]]),
                 np.array([0.9]),
@@ -176,7 +199,7 @@ def test_transfer_data_wrong_type():
         (
             "add_results",
             (
-                np.array([[[1, 0], [0, 1]]]),
+                [(0, 0, 1, 1, 0, 0, 1, 1, np.array([[1, 0], [0, 1]]))],
                 np.array([[0, 0, 1, 1]]),
                 np.array([0]),
                 np.array([[0.9]]),
@@ -203,8 +226,12 @@ def test_transfer_data_empty():
 
 def test_properties():
     meta = InstanceSegmentationMeta()
-    meta.add_result(np.array([[1, 0], [0, 1]]), np.array([0, 0, 1, 1]), 0, 0.9)
-    meta.add_result(np.array([[0, 1], [1, 0]]), np.array([1, 1, 2, 2]), 1, 0.8)
+    meta.add_result(
+        (0, 0, 1, 1, 0, 0, 1, 1, np.array([[1, 0], [0, 1]])), np.array([0, 0, 1, 1]), 0, 0.9
+    )
+    meta.add_result(
+        (0, 0, 1, 1, 1, 1, 2, 2, np.array([[0, 1], [1, 0]])), np.array([1, 1, 2, 2]), 1, 0.8
+    )
 
     properties = ['masks', 'boxes', 'class_ids', 'scores']
     expected_shapes = [(2, 2), (2, 4), (2,), (2,)]
@@ -217,8 +244,8 @@ def test_properties():
         else:
             assert isinstance(value, list)
             assert len(value) == 2
-            assert isinstance(value[-1], np.ndarray)
-            assert value[-1].shape == shape
+            assert isinstance(value[0][-1], np.ndarray)
+            assert value[0][-1].shape == shape
 
 
 @pytest.mark.parametrize(
@@ -231,8 +258,12 @@ def test_properties():
 )
 def test_box_conversions(method, expected):
     meta = InstanceSegmentationMeta()
-    meta.add_result(np.array([[1, 0], [0, 1]]), np.array([0, 0, 1, 1]), 0, 0.9)
-    meta.add_result(np.array([[0, 1], [1, 0]]), np.array([1, 1, 2, 2]), 1, 0.8)
+    meta.add_result(
+        (0, 0, 1, 1, 0, 0, 1, 1, np.array([[1, 0], [0, 1]])), np.array([0, 0, 1, 1]), 0, 0.9
+    )
+    meta.add_result(
+        (0, 0, 1, 1, 1, 1, 2, 2, np.array([[0, 1], [1, 0]])), np.array([1, 1, 2, 2]), 1, 0.8
+    )
 
     if method == "xyxy":
         assert np.array_equal(getattr(meta, method)(), expected)

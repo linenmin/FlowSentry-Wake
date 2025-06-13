@@ -107,7 +107,6 @@ Ax::Internal::split(std::string_view s, const std::string &delims)
   return result;
 }
 
-
 std::string_view
 Ax::Internal::trim(std::string_view s)
 {
@@ -120,32 +119,45 @@ Ax::Internal::trim(std::string_view s)
                          std::string_view();
 }
 
-std::unordered_map<std::string, std::string>
-Ax::Internal::extract_options(Ax::Logger &logger, const std::string &opts)
+template <char element_delimiter = ';', char key_value_delimiter = ':'>
+static std::unordered_map<std::string, std::string>
+extract_options_impl(Ax::Logger &logger, const std::string &opts)
 {
   std::unordered_map<std::string, std::string> properties;
 
-  auto options = split(opts, ';');
+  auto options = Ax::Internal::split(opts, element_delimiter);
   properties.reserve(options.size());
   for (const auto &op : options) {
     if (op.empty()) {
       continue;
     }
-    auto option = split(op, ':');
+    auto option = Ax::Internal::split(op, key_value_delimiter);
     if (option.size() != 2) {
       logger(AX_ERROR)
           << "Options must be specified as a semicolon separated list of colon separated pairs.\n"
           << "'" << op << "' has no colon in '" << opts << "'" << std::endl;
     } else {
-      auto key = std::string(trim(option[0]));
+      auto key = std::string(Ax::Internal::trim(option[0]));
       if (properties.count(key) != 0) {
         logger(AX_ERROR) << "Option is specified more than once." << std::endl;
       }
-      auto value = std::string(trim(option[1]));
+      auto value = std::string(Ax::Internal::trim(option[1]));
       properties[key] = value;
     }
   }
   return properties;
+}
+
+std::unordered_map<std::string, std::string>
+Ax::extract_options(Ax::Logger &logger, const std::string &opts)
+{
+  return extract_options_impl(logger, opts);
+}
+
+std::unordered_map<std::string, std::string>
+Ax::extract_secondary_options(Ax::Logger &logger, const std::string &opts)
+{
+  return extract_options_impl<'&', '='>(logger, opts);
 }
 
 Ax::SkipRate
@@ -217,7 +229,7 @@ std::unordered_map<std::string, std::string>
 Ax::parse_and_validate_plugin_options(Ax::Logger &logger, const std::string &options,
     const std::unordered_set<std::string> &allowed_properties)
 {
-  auto opts = Internal::extract_options(logger, options);
+  auto opts = extract_options(logger, options);
   for (const auto &opt : opts) {
     if (allowed_properties.count(opt.first) == 0) {
       logger(AX_ERROR) << "Property not allowed - " << opt.first << "." << std::endl;
@@ -367,8 +379,7 @@ class DmaBufDataInterfaceAllocator : public Ax::DataInterfaceAllocator
     std::vector<std::shared_ptr<void>> buffers;
     auto &fds = buffer.fds();
     if (auto *video = std::get_if<AxVideoInterface>(&buffer.data())) {
-      auto p = map_buf(fds[0]->fd, video->info.stride * video->info.height
-                                       * AxVideoFormatNumChannels(video->info.format));
+      auto p = map_buf(fds[0]->fd, video->info.stride * video->info.height);
       buffers.push_back(std::move(p));
     } else if (auto *tensors = std::get_if<AxTensorsInterface>(&buffer.data())) {
       size_t n = 0;
@@ -453,25 +464,26 @@ Ax::to_string(const std::set<int> &s)
   return Ax::Internal::join(s, ",");
 }
 
-std::set<int>
-Ax::create_stream_set(std::string &input)
+Ax::slice_overlap
+Ax::determine_overlap(size_t image_size, size_t slice_size, size_t overlap)
 {
-  std::set<int> result;
-  for (auto &token : Ax::Internal::split(input, ',')) {
-    try {
-      result.insert(std::stoi(std::string(token)));
-    } catch (const std::invalid_argument &e) {
-      throw std::runtime_error("Invalid number '" + std::string(token) + "' in stream_select");
-    }
+  if (image_size <= slice_size) {
+    return { 1, 0 };
   }
-  return result;
+  auto overlap_size = slice_size * overlap / 100;
+  auto overlapped_slice = slice_size - overlap_size;
+  auto num_slices = (image_size + overlapped_slice - 1) / overlapped_slice;
+  auto total_overlap = num_slices * slice_size - image_size;
+  auto adjusted_overlap = num_slices == 1 ? 0 : total_overlap / (num_slices - 1);
+  return { num_slices, adjusted_overlap };
 }
 
 static void
 load_v1_base(Ax::SharedLib &lib, Ax::V1Plugin::Base &base)
 {
-  lib.initialise_function("init_and_set_static_properties", base.init_and_set_static_properties);
-  lib.initialise_function("allowed_properties", base.allowed_properties);
+  lib.initialise_function("init_and_set_static_properties",
+      base.init_and_set_static_properties, false);
+  lib.initialise_function("allowed_properties", base.allowed_properties, false);
   lib.initialise_function("set_dynamic_properties", base.set_dynamic_properties, false);
 }
 
@@ -494,6 +506,7 @@ Ax::load_v1_plugin(SharedLib &lib, Ax::V1Plugin::Transform &xform)
   lib.initialise_function("set_output_interface_from_meta",
       xform.set_output_interface_from_meta, false);
   lib.initialise_function("can_use_dmabuf", xform.can_use_dmabuf, false);
+  lib.initialise_function("can_use_vaapi", xform.can_use_vaapi, false);
 }
 
 void
@@ -501,4 +514,19 @@ Ax::load_v1_plugin(SharedLib &lib, Ax::V1Plugin::Decoder &decoder)
 {
   load_v1_base(lib, decoder);
   lib.initialise_function("decode_to_meta", decoder.decode_to_meta);
+}
+
+void
+Ax::load_v1_plugin(SharedLib &lib, Ax::V1Plugin::DetermineObjectAttribute &determine_object_attribute)
+{
+  load_v1_base(lib, determine_object_attribute);
+  lib.initialise_function("determine_object_attribute",
+      determine_object_attribute.determine_object_attribute);
+}
+
+void
+Ax::load_v1_plugin(SharedLib &lib, Ax::V1Plugin::TrackerFilter &tracker_filter)
+{
+  load_v1_base(lib, tracker_filter);
+  lib.initialise_function("filter", tracker_filter.filter);
 }

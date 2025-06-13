@@ -141,8 +141,11 @@ get_meta_from_buffer(GstBuffer *buffer)
 
   auto *metadata = gst_buffer_get_general_meta(buffer);
 
-  int total_size = std::accumulate(metadata->meta_map_ptr->begin(),
-      metadata->meta_map_ptr->end(), 0, [](int sum, const auto &pair) {
+  size_t total_size = std::accumulate(metadata->meta_map_ptr->begin(),
+      metadata->meta_map_ptr->end(), (size_t) 0, [](size_t sum, const auto &pair) {
+        if (!pair.second->enable_extern) {
+          return sum;
+        }
         return sum + pair.second->get_extern_meta().size();
       });
 
@@ -152,6 +155,9 @@ get_meta_from_buffer(GstBuffer *buffer)
   all_meta.meta = new extern_named_meta[total_size];
   int i = 0;
   for (const auto &[name, values] : *metadata->meta_map_ptr) {
+    if (!values->enable_extern) {
+      continue;
+    }
     auto meta = values->get_extern_meta();
     for (const auto &m : meta) {
       all_meta.meta[i].name = name.c_str();
@@ -208,21 +214,21 @@ get_submeta_from_buffer(GstBuffer *buffer)
 {
   all_extern_submeta_all_models all_models;
   auto *metadata = gst_buffer_get_general_meta(buffer);
-
   const auto &models_map = *metadata->meta_map_ptr;
-  all_models.num_meta = models_map.size();
+  all_models.num_meta = std::count_if(models_map.begin(), models_map.end(),
+      [](const auto &kv) { return kv.second->enable_extern; });
+  if (!all_models.num_meta) {
+    return all_models;
+  }
   all_models.meta_models = new all_extern_submeta[all_models.num_meta];
   int i_model = -1;
   for (const auto &[name_model, axmeta] : models_map) {
-    ++i_model;
-    all_models.meta_models[i_model].name_model = name_model.c_str();
-    const auto &submeta_map = axmeta->submeta_map;
-    if (!submeta_map) {
-      all_models.meta_models[i_model].num_submeta = 0;
-      all_models.meta_models[i_model].meta_submodels = nullptr;
+    if (!axmeta->enable_extern) {
       continue;
     }
-    const auto [submodel_names, subframe_numbers] = submeta_map->contents();
+    ++i_model;
+    all_models.meta_models[i_model].name_model = name_model.c_str();
+    const auto submodel_names = axmeta->submeta_names();
     all_models.meta_models[i_model].num_submeta = submodel_names.size();
     if (submodel_names.empty()) {
       all_models.meta_models[i_model].meta_submodels = nullptr;
@@ -231,21 +237,27 @@ get_submeta_from_buffer(GstBuffer *buffer)
     all_models.meta_models[i_model].meta_submodels
         = new extern_named_submeta_collection[submodel_names.size()];
     for (int i_submodel = 0; i_submodel < submodel_names.size(); ++i_submodel) {
+      const auto submeta_vector = axmeta->get_submetas(submodel_names[i_submodel]);
+      int subframe_number = submeta_vector.size();
       all_models.meta_models[i_model].meta_submodels[i_submodel]
-          = { submodel_names[i_submodel], nullptr, subframe_numbers[i_submodel] };
-      if (subframe_numbers[i_submodel] == 0) {
+          = { submodel_names[i_submodel], nullptr, subframe_number };
+      if (subframe_number == 0) {
         continue;
       }
       all_models.meta_models[i_model].meta_submodels[i_submodel].meta_indices
-          = new extern_indexed_submeta[subframe_numbers[i_submodel]];
-      for (int i_subframe = 0; i_subframe < subframe_numbers[i_submodel]; ++i_subframe) {
-        auto *axmeta = submeta_map->get(submodel_names[i_submodel], i_subframe,
-            subframe_numbers[i_submodel]);
-        auto extern_meta_vector = axmeta->get_extern_meta();
-        auto *p_meta = new extern_meta[extern_meta_vector.size()];
-        std::copy(extern_meta_vector.begin(), extern_meta_vector.end(), p_meta);
+          = new extern_indexed_submeta[subframe_number];
+      for (int i_subframe = 0; i_subframe < subframe_number; ++i_subframe) {
+        auto *axmeta = submeta_vector[i_subframe];
+        int extern_meta_size = 0;
+        extern_meta *p_meta = nullptr;
+        if (axmeta && axmeta->enable_extern) {
+          auto extern_meta_vector = axmeta->get_extern_meta();
+          extern_meta_size = extern_meta_vector.size();
+          p_meta = new extern_meta[extern_meta_size];
+          std::copy(extern_meta_vector.begin(), extern_meta_vector.end(), p_meta);
+        }
         all_models.meta_models[i_model].meta_submodels[i_submodel].meta_indices[i_subframe]
-            = { p_meta, i_subframe, static_cast<int>(extern_meta_vector.size()) };
+            = { p_meta, i_subframe, extern_meta_size };
       }
     }
   }
@@ -263,4 +275,12 @@ free_submeta(all_extern_submeta_all_models *all_models)
     delete[] all_models->meta_models[i_model].meta_submodels;
   }
   delete[] all_models->meta_models;
+}
+
+
+GType
+gst_vaapi_video_meta_api_get_type(void)
+{
+  const GstMetaInfo *info = gst_meta_get_info("GstVaapiVideoMeta");
+  return info ? info->api : 0;
 }

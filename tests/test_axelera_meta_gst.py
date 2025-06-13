@@ -1,10 +1,11 @@
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
+import numpy as np
 import pytest
 
 from axelera.app.meta import gst
 
-NULL_TS = b'\x00' * 16
-FORTY_TWO_TS = b'\x28\x00\x00\x00\x00\x00\x00\x00' b'\x02\x00\x00\x00\x00\x00\x00\x00'
+NULL_TS = b'\x00' * 8
+FORTY_TWO_TS = np.uint64(40_000_000_002).tobytes()
 
 
 @pytest.mark.parametrize(
@@ -16,8 +17,8 @@ FORTY_TWO_TS = b'\x28\x00\x00\x00\x00\x00\x00\x00' b'\x02\x00\x00\x00\x00\x00\x0
         (b'\xff', NULL_TS, 'Expecting stream_id to be a byte stream 4 bytes long'),
         (b'\xff' * 5, NULL_TS, 'Expecting stream_id to be a byte stream 4 bytes long'),
         (b'\x00' * 4, None, "Expecting timestamp meta element"),
-        (b'\x00' * 4, b'\x00' * 15, "Expecting timestamp to be a byte stream 16 bytes long"),
-        (b'\x00' * 4, b'\x00' * 17, "Expecting timestamp to be a byte stream 16 bytes long"),
+        (b'\x00' * 4, b'\x00' * 7, "Expecting timestamp to be a byte stream 8 bytes long"),
+        (b'\x00' * 4, b'\x00' * 9, "Expecting timestamp to be a byte stream 8 bytes long"),
         (None, NULL_TS, "Expecting stream_id meta element"),
     ],
 )

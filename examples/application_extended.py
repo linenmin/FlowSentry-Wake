@@ -21,6 +21,7 @@ stream = create_inference_stream(
         opencl=config.HardwareEnable.detect,
         opengl=config.HardwareEnable.detect,
     ),
+    allow_hardware_codec=False,
     tracers=tracers,
     specified_frame_rate=10,
     # rtsp_latency=500,
@@ -30,6 +31,10 @@ stream = create_inference_stream(
 def main(window, stream):
     window.options(0, title="Traffic 1")
     window.options(1, title="Traffic 2")
+    counter = window.text(
+        ('20px', '10%'),
+        "Vehicles: 00",
+    )
     last_temp_report = time.time()
     CLASS = stream.manager.detections.classes
     for frame_result in stream:
@@ -48,20 +53,23 @@ def main(window, stream):
             print(' | '.join(metrics).center(90))
             print('='.center(90, '='))
 
-        # # Print car, vehicle and person count to terminal
-        print(f"Found {sum(d.is_car for d in frame_result.detections)} car(s)")
+        # Print car, vehicle and person count to terminal,
+        # and show vehicle count on the window
         VEHICLE = ('car', 'truck', 'motorcycle')
-        print(f"Found {sum(d.is_a(VEHICLE) for d in frame_result.detections)} vehicle(s)")
+        vehicles = sum(d.is_a(VEHICLE) for d in frame_result.detections)
+        counter["text"] = f"Vehicles: {vehicles:02}"
+        print(f"Found {sum(d.is_car for d in frame_result.detections)} car(s)")
+        print(f"Found {vehicles} vehicle(s)")
         # (d.class_id == 0) equivalent to (d.label == CLASS.person)
         print(f"Found {sum(d.label == CLASS.person for d in frame_result.detections)} person(s)")
 
 
 with display.App(
     visible=True,
-    opengl=stream.manager.hardware_caps.opengl,
+    opengl=stream.hardware_caps.opengl,
     buffering=not stream.is_single_image(),
 ) as app:
     wnd = app.create_window("Advanced usage demo", (900, 600))
     app.start_thread(main, (wnd, stream), name='InferenceThread')
-    app.run(interval=1 / 10)
+    app.run()
 stream.stop()

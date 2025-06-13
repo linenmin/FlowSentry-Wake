@@ -1,6 +1,8 @@
 // Copyright Axelera AI, 2023
 #include <gtest/gtest.h>
 #include <algorithm>
+#include "AxMetaObjectDetection.hpp"
+#include "AxMetaTracker.hpp"
 #include "AxOpUtils.hpp"
 #include "AxUtils.hpp"
 
@@ -207,4 +209,129 @@ TEST(axutils, property_throw_message)
       "test : uint cannot be converted from 'txt' to a type of std::vector<int>");
   ASSERT_EQ(get_error_msg("uint", std::vector<std::vector<int32_t>>{}),
       "test : uint cannot be converted from 'txt' to a type of std::vector<std::vector<int>>");
+}
+
+TEST(scale_boxes, test_scale_boxes)
+{
+  const auto boxes = std::vector<ax_utils::fbox>{
+    { 0.0F, 0.0F, 1.0F, 1.0F },
+  };
+
+  AxVideoInterface video_info{ { 1280, 960, 1280 * 4, 0, AxVideoFormat::RGBA }, nullptr };
+
+  const auto model_width = 640;
+  const auto model_height = 480;
+  const auto scale_up = true;
+  const auto result = ax_utils::scale_boxes(
+      boxes, video_info, model_width, model_height, scale_up, true);
+  const auto expected = std::vector<box_xyxy>{
+    { 0, 0, 1279, 959 },
+  };
+  ASSERT_EQ(result.size(), 1);
+  ASSERT_EQ(result[0].x1, expected[0].x1);
+  ASSERT_EQ(result[0].y1, expected[0].y1);
+  ASSERT_EQ(result[0].x2, expected[0].x2);
+  ASSERT_EQ(result[0].y2, expected[0].y2);
+}
+
+
+TEST(scale_boxes, test_scale_portrait_boxes)
+{
+  const auto boxes = std::vector<ax_utils::fbox>{
+    { 80.0F / 640.0F, 0.0F / 640.0F, 560.0F / 640.0F, 480.0F / 640.0F },
+  };
+
+  AxVideoInterface video_info{ { 960, 1280, 1280 * 4, 0, AxVideoFormat::RGBA }, nullptr };
+
+  const auto model_width = 640;
+  const auto model_height = 480;
+  const auto scale_up = true;
+  const auto result = ax_utils::scale_boxes(
+      boxes, video_info, model_width, model_height, scale_up, true);
+  const auto expected = std::vector<box_xyxy>{
+    { 0, 0, 959, 1279 },
+  };
+  ASSERT_EQ(result.size(), 1);
+  ASSERT_EQ(result[0].x1, expected[0].x1);
+  ASSERT_EQ(result[0].y1, expected[0].y1);
+  ASSERT_EQ(result[0].x2, expected[0].x2);
+  ASSERT_EQ(result[0].y2, expected[0].y2);
+}
+
+TEST(scale_boxes, test_scale_portrait_boxes_central)
+{
+  const auto boxes = std::vector<ax_utils::fbox>{
+    { 80.0F / 640.0F, 80.0F / 640.0F, 560.0F / 640.0F, 400.0F / 640.0F },
+  };
+
+  AxVideoInterface video_info{ { 960, 1280, 1280 * 4, 0, AxVideoFormat::RGBA }, nullptr };
+
+  const auto model_width = 640;
+  const auto model_height = 480;
+  const auto scale_up = true;
+  const auto result = ax_utils::scale_boxes(
+      boxes, video_info, model_width, model_height, scale_up, true);
+  const auto expected = std::vector<box_xyxy>{
+    { 0, 213, 959, 1067 },
+  };
+  ASSERT_EQ(result.size(), 1);
+  ASSERT_EQ(result[0].x1, expected[0].x1);
+  ASSERT_EQ(result[0].y1, expected[0].y1);
+  ASSERT_EQ(result[0].x2, expected[0].x2);
+  ASSERT_EQ(result[0].y2, expected[0].y2);
+}
+
+TEST(ax_oputils_tests, test_get_meta)
+{
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
+  auto meta_map_value = std::make_unique<AxMetaTracker>();
+  auto *meta_map_value_ptr = meta_map_value.get();
+  meta_map["test"] = std::move(meta_map_value);
+  meta_map["unassigned"];
+
+  EXPECT_THROW(ax_utils::get_meta<AxMetaObjDetection>("test", meta_map), std::runtime_error);
+  EXPECT_THROW(ax_utils::get_meta<AxMetaTracker>("non_existing", meta_map), std::runtime_error);
+  EXPECT_THROW(ax_utils::get_meta<AxMetaTracker>("unassigned", meta_map), std::runtime_error);
+  EXPECT_EQ(ax_utils::get_meta<AxMetaTracker>("test", meta_map), meta_map_value_ptr);
+}
+
+TEST(ax_oputils_tests, test_insert_and_associate_meta)
+{
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
+
+  auto meta_map_value_master_detections = std::make_unique<AxMetaObjDetection>(
+      std::vector<box_xyxy>{ { 10, 10, 20, 20 }, { 30, 30, 40, 40 },
+          { 50, 50, 60, 60 }, { 70, 70, 80, 80 } },
+      std::vector<float>{ 1.0, 1.0, 1.0, 1.0 }, std::vector<int>{ 0, 0, 0, 0 });
+
+  auto meta_map_value_associate_detections = std::make_unique<AxMetaObjDetection>(
+      std::vector<box_xyxy>{ { 70, 70, 80, 80 }, { 30, 30, 40, 40 } },
+      std::vector<float>{ 1.0, 1.0 }, std::vector<int>{ 0, 0 });
+  int index_of_0th_associate_box_in_master = 3;
+  int index_of_1st_associate_box_in_master = 1;
+  meta_map_value_associate_detections->set_id(0, index_of_0th_associate_box_in_master);
+  meta_map_value_associate_detections->set_id(1, index_of_1st_associate_box_in_master);
+  meta_map["master"] = std::move(meta_map_value_master_detections);
+  meta_map["associate"] = std::move(meta_map_value_associate_detections);
+
+  ax_utils::insert_and_associate_meta<AxMetaObjDetection>(meta_map, "subkey",
+      "master", 0, 2, "associate", std::vector<box_xyxy>{ { 77, 77, 79, 79 } },
+      std::vector<float>{ 1.0 }, std::vector<int>{ 0 });
+  ax_utils::insert_and_associate_meta<AxMetaObjDetection>(meta_map, "subkey",
+      "master", 1, 2, "associate", std::vector<box_xyxy>{ { 33, 33, 36, 36 } },
+      std::vector<float>{ 1.0 }, std::vector<int>{ 0 });
+
+  auto submetas = meta_map["master"]->get_submetas<AxMetaObjDetection>("subkey");
+
+  EXPECT_EQ(submetas.size(), 4);
+  EXPECT_EQ(submetas[0], nullptr);
+  EXPECT_EQ(submetas[1]->get_box_xyxy(0).x1, 33);
+  EXPECT_EQ(submetas[1]->get_box_xyxy(0).y1, 33);
+  EXPECT_EQ(submetas[1]->get_box_xyxy(0).x2, 36);
+  EXPECT_EQ(submetas[1]->get_box_xyxy(0).y2, 36);
+  EXPECT_EQ(submetas[2], nullptr);
+  EXPECT_EQ(submetas[3]->get_box_xyxy(0).x1, 77);
+  EXPECT_EQ(submetas[3]->get_box_xyxy(0).y1, 77);
+  EXPECT_EQ(submetas[3]->get_box_xyxy(0).x2, 79);
+  EXPECT_EQ(submetas[3]->get_box_xyxy(0).y2, 79);
 }

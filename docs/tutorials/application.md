@@ -10,7 +10,12 @@
     - [Frame rate control](#frame-rate-control)
     - [RTSP latency](#rtsp-latency)
   - [Customizing visualisation](#customizing-visualisation)
+    - [Visualisation without metadata](#visualisation-without-metadata)
+  - [Using Raw Tensor Output in Your Application](#using-raw-tensor-output-in-your-application)
+    - [Pipeline configuration for raw tensor output](#pipeline-configuration-for-raw-tensor-output)
+    - [Example: Extracting the tensor in Python](#example-extracting-the-tensor-in-python)
   - [List of example applications](#list-of-example-applications)
+
 
 Voyager application integration APIs cleanly separate the task of developing computer vision
 pipelines from the task of developing inferencing applications based on these pipelines.
@@ -117,7 +122,7 @@ release all of its allocated resources.
 with display.App(visible=True) as app:
     wnd = app.create_window("Business logic demo", (900, 600))
     app.start_thread(main, (wnd, stream), name='InferenceThread')
-    app.run(interval=1 / 10)
+    app.run()
 stream.stop()
 ```
 
@@ -147,13 +152,8 @@ The `stream` object is an iterator that yields a `frame_result` for each input f
 
 - `frame_result.image`: The input source image at its original resolution
 - `frame_result.meta`: All inference metadata
-<<<<<<< Updated upstream
-- `frame_result.detections`: Convenient access to detection results
-- `frame_result.stream_id`: The input stream ID that produced this result
-=======
 - `frame_result.detections`: The name `detections` is the name defined in the YAML pipeline and provides convenient access to detection results
 - `frame_result.stream_id`: The input stream id that produced this result
->>>>>>> Stashed changes
 
 The method `window.show()` overlays the frame metadata on the original image and renders the result.
 
@@ -238,9 +238,13 @@ provide additional information useful for debugging.
 Tracers provide real-time metrics that help you better understand
 device resource utilization, performance and thermal characteristics.
 
-The function `create_tracers` shown in the example above takes a list of metrics as its arguments and
-returns an object to provide the `tracers` argument
-in the function `create_inference_stream`.
+The function `create_tracers` shown in the example below takes a list of metrics as its arguments and returns a list of
+tracers to provide the `tracers` argument in the function `create_inference_stream`.  The available tracers are:
+
+* `end_to_end_fps` - collects end-to-end fps metric
+* `core_temp` - collects the temperature of the metis core
+* `cpu_usage` - collects information about the host CPU usage
+* `stream_timing`  - collects metrics about stream latency and jitter
 
 The main application periodically queries these tracers using the method `stream.get_all_metrics()` and prints
 the returned metrics to the terminal.
@@ -252,9 +256,10 @@ def main(window, stream):
         # Process frames...
         
         # Get current metrics
-        core_temp = stream.get_all_metrics()['core_temp']
-        end_to_end_fps = stream.get_all_metrics()['end_to_end_fps']
-        cpu_usage = stream.get_all_metrics()['cpu_usage']
+        metrics = stream.get_all_metrics()
+        core_temp = metrics['core_temp']
+        end_to_end_fps = metrics['end_to_end_fps']
+        cpu_usage = metrics['cpu_usage']
         
         # Report metrics periodically
         if (now := time.time()) - last_temp_report > 1:
@@ -306,7 +311,8 @@ a good tradeoff between latency and reliability in many typical network conditio
 
 ## Customizing visualisation
 
-The file [ces2025.py](/examples/ces2025.py) shows how to configure the visualiser in a number of different ways.
+The file [fruit_demo.py](/examples/fruit_demo.py) shows how to configure the visualiser in a number
+of different ways.
 
 ```python
 def main(window, stream):
@@ -337,10 +343,90 @@ The method `window.options()` supports the following configuration options:
 > Consider reducing rendering overheads by calling `window.show()` only when needed, or by setting `visible=False` to
 > disable rendering if not required by your application.
 
+### Visualisation without metadata
+
+The file [application_extended](/examples/application_extended.py) shows how to render layers,
+such as text and images, in the visualiser.
+
+```python
+def main(window, stream):
+    ...
+    counter = window.text(
+        ('20px', '10%'),
+        "Vehicles: 00",
+    )
+    ...
+    for frame_result in stream:
+        ...
+        VEHICLE = ('car', 'truck', 'motorcycle')
+        vehicles = sum(d.is_a(VEHICLE) for d in frame_result.detections)
+        counter["text"] = f"Vehicles: {vehicles:02}"
+```
+
+The method `window.text` creates a text box on the window, and returns a handle to the text box which can be used for future modification.
+
+- The text box will be located at the given css-style string position `('20px', '10%')`. This means the anchor point of the text box (default top left) will be located 20 screen pixels from the lext of the window, and 10% down from the top. This illustrates the two methods of providing layer locations. In absolute pixel terms, or relative to the window/stream size.
+  - Note that the counter example is constructed without a `stream_id`. If a `stream_id` is provided, the layer will be rendered to the stream, not the window. As such, the positions will be relative to the indicated `stream_id`, not relative to the window.
+- The text box will contain the text "Vehicles: 00" after initialization, to serve as a counter of the number of vehicles currently in the frame.
+
+Later, when processing the stream, we update the text in the text box to whatever the current vehicle count is for this frame. This is done by setting the field by name like a dictionary, `counter["text"]` in this case. This will update the text in-place on the next rendered frame.
+
+> [!TIP]
+> You can also update fields by kwarg with the `set` method on the handle, including multiple fields at once.
+> Other layers, such as images, may be displayed in a similar fashion.
+> There are many other customisations and methods provided by the handle. See the [`Window` and `LayerHandle` class definitions](/axelera/app/display.py) for further details.
+
+
+## Using Raw Tensor Output in Your Application
+
+In some cases, you may want your pipeline to return the raw output tensor from your model, rather than ready-to-use detection objects. This is useful if:
+- You are working with a custom model or a model not supported by the standard postprocessing operators.
+- You want full control over postprocessing (e.g., custom decoding, NMS, or analytics).
+- You want to experiment with new postprocessing algorithms or integrate with your own pipeline.
+
+### Pipeline configuration for raw tensor output
+
+To receive the raw tensor, configure your YAML pipeline to use a `get-raw-tensor` postprocess step instead of a standard decoder. For example:
+
+```yaml
+postprocess:
+  - get-raw-tensor:
+      dequantized_and_depadded: True
+      transposed: True
+      postamble_processed: True
+```
+
+This will produce an `.axnet` where the output meta contains a tensor, not decoded detections.
+
+### Example: Extracting the tensor in Python
+
+When you run inference, you can extract the tensor from the frame result like this:
+
+```python
+for frame_result in stream:
+    tensor_wrapper = frame_result.meta['detections']
+    tensor = tensor_wrapper.tensors[0]  # This is a numpy array
+    # Now you can implement your own postprocessing, e.g.:
+    # detections = postprocess_yolov8(tensor, tensor.shape, ...)
+```
+
+> **Note:**
+> - The output is a tensor (e.g., shape `[1, 84, 8400]` for YOLOv8), not a list of detection objects.
+> - You are responsible for all postprocessing, including decoding, NMS, and mapping to image coordinates.
+> - **For InferenceStream, we highly recommend using the standard pipeline path for production and real applications.** The raw tensor output path is intended primarily for educational purposes, experimentation, or quick prototyping, and it significantly reduces performance compared to the standard pipeline.
+> - You can use the raw tensor output path for quick prototyping or exploration. After that, you can either:
+>   - Move to a production solution with AxInferenceNet ([AxInferenceNet C++ Integration Tutorial](/docs/tutorials/axinferencenet.md)), or
+>   - Finish your implementation and use InferenceStream properly with a standard pipeline ([Advanced model and pipeline deployment](/ax_models/tutorials/general/tutorials.md)).
+
+
+See the [axinferencenet_tensor.cpp](/examples/axinferencenet/axinferencenet_tensor.cpp) and [application_tensor.py](/examples/application_tensor.py) examples for more details on working with raw tensor output.
+
+
 ## List of example applications
 
 | Example | Description |
 | :------ | :---------- |
 | [`/examples/application.py`](/examples/application.py) | Simple integration of vehicle tracker into an application including visualisation and basic analytics |
 | [`/examples/application_extended.py`](/examples/application_extended.py) | Adds advanced customization and monitoring to the simple vehicle tracker example |
-| [`/examples/ces2025.py`](/examples/ces2025.py) | Renders segmentation of fruits held by people in colour against a grayscale background |
+| [`/examples/fruit_demo.py`](/examples/fruit_demo.py) | Renders segmentation of fruits held by people in colour against a grayscale background |
+| [`/examples/application_tensor.py`](/examples/application_tensor.py) | Demonstrates how to extract and postprocess the raw tensor output from a YOLOv8 model |

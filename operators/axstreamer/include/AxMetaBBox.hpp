@@ -38,8 +38,25 @@ using BboxXyxyVector = std::vector<BboxXyxy>;
 class AxMetaBbox : public virtual AxMetaBase
 {
   public:
-  AxMetaBbox(BboxXyxyVector boxes) : bboxvec(std::move(boxes))
+  AxMetaBbox() = default;
+
+  explicit AxMetaBbox(BboxXyxyVector boxes, std::vector<int> ids = {})
+      : bboxvec(std::move(boxes)), ids(std::move(ids))
   {
+    if (!ids.empty() && ids.size() != bboxvec.size()) {
+      throw std::runtime_error(
+          "When constructing AxMetaBbox with ids, the number of ids must match the number of boxes");
+    }
+  }
+
+  void extend(const BboxXyxyVector &boxes)
+  {
+    bboxvec.insert(bboxvec.end(), boxes.begin(), boxes.end());
+  }
+
+  void extend(const AxMetaBbox &other)
+  {
+    bboxvec.insert(bboxvec.end(), other.bboxvec.begin(), other.bboxvec.end());
   }
 
   void draw(const AxVideoInterface &video,
@@ -82,6 +99,11 @@ class AxMetaBbox : public virtual AxMetaBase
   BboxXyxy get_box_xyxy(size_t idx) const
   {
     return bboxvec[idx];
+  }
+
+  void set_box_xyxy(size_t idx, const BboxXyxy &box)
+  {
+    bboxvec[idx] = box;
   }
 
   ///
@@ -151,6 +173,35 @@ class AxMetaBbox : public virtual AxMetaBase
   }
 
   ///
+  /// @brief Set box id
+  /// @param idx - Index of the box
+  /// @param id - Id to set
+  ///
+  void set_id(size_t idx, int id)
+  {
+    if (ids.size() < bboxvec.size()) {
+      ids.resize(bboxvec.size(), -1);
+    }
+    ids[idx] = id;
+  }
+
+  ///
+  /// @brief Get box id
+  /// @param idx - Index of the box
+  /// @return - Id of the box
+  ///
+  int get_id(size_t idx) const
+  {
+    if (idx >= bboxvec.size()) {
+      throw std::out_of_range("Index out of range");
+    }
+    if (idx >= ids.size()) {
+      return -1;
+    }
+    return ids[idx];
+  }
+
+  ///
   /// @brief Get the number of boxes in the metadata
   /// @return Get the number of subframes (number of boxes in the metadata)
   ///
@@ -161,4 +212,5 @@ class AxMetaBbox : public virtual AxMetaBase
 
   protected:
   BboxXyxyVector bboxvec;
+  std::vector<int> ids;
 };

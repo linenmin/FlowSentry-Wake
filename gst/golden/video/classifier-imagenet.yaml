@@ -19,6 +19,7 @@
     max-size-time: 0
     max-size-bytes: 0
   - instance: axinplace
+    name: decodebin-link0
     lib: libinplace_addstreamid.so
     mode: meta
     options: stream_id:0
@@ -71,7 +72,7 @@
     num_children: 0
   - instance: axtransform
     lib: '{{prefix}}libtransform_dequantize.so'
-    options: dequant_scale:{{dequant_scale}};dequant_zeropoint:{{dequant_zeropoint}}
+    options: dequant_scale:{{dequant_scale}};dequant_zeropoint:{{dequant_zeropoint}};transpose:0
     connections:
       src: decoder_task0.sink_1
   - instance: queue
@@ -84,7 +85,7 @@
   - instance: decode_muxer
     name: decoder_task0
     lib: '{{prefix}}libdecode_classification.so'
-    options: meta_key:{{model_name}};classlabels_file:{{label_file}};top_k:5;softmax:0
+    options: meta_key:{{task_name}};classlabels_file:{{label_file}};top_k:5;softmax:0
   - instance: appsink
     max-buffers: 16
     drop: false

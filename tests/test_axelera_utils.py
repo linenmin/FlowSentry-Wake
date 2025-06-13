@@ -15,24 +15,24 @@ import zipfile
 import numpy as np
 import pyopencl
 import pytest
+from strictyaml import Any
 
 from axelera.app import utils, yaml
 
 
 def test_load_yaml_no_file():
     with pytest.raises(FileNotFoundError):
-        utils.load_yaml_by_reference("no_file.yaml", {})
+        utils.load_yaml_by_reference("no_file.yaml", {}, Any())
 
 
 def test_load_yaml_no_substitutions():
     with patch("pathlib.Path.read_text", return_value="not yaml"):
-        assert "not yaml" == utils.load_yaml_by_reference("no_yaml.yaml", {})
+        assert "not yaml" == utils.load_yaml_by_reference("no_yaml.yaml", {}, Any())
 
 
-@pytest.mark.skip(reason="this is invalid yaml syntax due to flow nodes")
 def test_load_yaml_unterminated_substitutions():
-    with patch("pathlib.Path.read_text", return_value="x: {{"):
-        assert {"x": "{{"} == utils.load_yaml_by_reference("no_yaml.yaml", {})
+    with patch("pathlib.Path.read_text", return_value="x: ${{"):
+        assert {"x": "${{"} == utils.load_yaml_by_reference("no_yaml.yaml", {}, Any())
 
 
 @pytest.mark.parametrize(
@@ -40,25 +40,25 @@ def test_load_yaml_unterminated_substitutions():
     [
         (
             "as_taken_from_template",
-            "letterbox:\n  width: {{input_width}}\n  height: {{input_height}}",
+            "letterbox:\n  width: ${{input_width}}\n  height: ${{input_height}}",
             dict(input_width=100, input_height=200),
             {"letterbox": {"width": 100, "height": 200}},
         ),
         (
             "special_values",
-            "values: {{i}} {{x}} {{y}} {{z}}",
+            "values: ${{i}} ${{x}} ${{y}} ${{z}}",
             dict(i="s", x=None, y=True, z=False),
             {"values": "s null true false"},
         ),
         (
             "expansion works when the value is a list entry",
-            "values:\n - {{i}}\n - {{x}}\n - {{y}}\n - {{z}}",
+            "values:\n - ${{i}}\n - ${{x}}\n - ${{y}}\n - ${{z}}",
             dict(i="s", x=None, y=True, z=False),
             {"values": ["s", None, True, False]},
         ),
         (
             "expansion works in the key",  # which may or may not be desired?
-            "value{{i}}: {{i}} {{x}} {{y}} {{z}}",
+            "value${{i}}: ${{i}} ${{x}} ${{y}} ${{z}}",
             dict(i="s", x=None, y=True, z=False),
             {"values": "s null true false"},
         ),
@@ -82,18 +82,18 @@ def test_load_yaml_unterminated_substitutions():
         ),
         (
             "default value",
-            "values: {{i:default_i}} {{j:default_j}}",
+            "values: ${{i:default_i}} ${{j:default_j}}",
             dict(i="actual_i"),
             {"values": "actual_i default_j"},
         ),
         (
             "default value integer and specials",
             "values:\n"
-            " - {{i:nope}}\n"
-            " - {{j:14}}\n"
-            " - {{k:null}}\n"
-            " - {{l:true}}\n"
-            " - {{m:false}}",
+            " - ${{i:nope}}\n"
+            " - ${{j:14}}\n"
+            " - ${{k:null}}\n"
+            " - ${{l:true}}\n"
+            " - ${{m:false}}",
             dict(i="actual_i"),
             {"values": ["actual_i", 14, None, True, False]},
         ),
@@ -101,21 +101,21 @@ def test_load_yaml_unterminated_substitutions():
 )
 def test_load_yaml_substitutions(test_name, input, refs, expected, caplog):
     with patch("pathlib.Path.read_text", return_value=input):
-        assert expected == utils.load_yaml_by_reference("inp.yaml", refs)
+        assert expected == utils.load_yaml_by_reference("inp.yaml", refs, Any())
     assert "" == caplog.text
 
 
 def test_load_yaml_unmatched_substitutions_raise_err_log(caplog):
     input = "values: ${{i}}"
     with patch("pathlib.Path.read_text", return_value=input):
-        assert {"values": "${{i}}"} == utils.load_yaml_by_reference("inp.yaml", {"I": ""})
+        assert {"values": "${{i}}"} == utils.load_yaml_by_reference("inp.yaml", {"I": ""}, Any())
     assert "inp.yaml: Variable i missing argument from {'I'" in caplog.text
 
 
 def test_load_yaml_unmatched_substitutions_in_comments_ignored(caplog):
     input = "values:\n - ok\n# - ${{also_ok}}"
     with patch("pathlib.Path.read_text", return_value=input):
-        assert {"values": ["ok"]} == utils.load_yaml_by_reference("inp", {})
+        assert {"values": ["ok"]} == utils.load_yaml_by_reference("inp", {}, Any())
     assert "" == caplog.text
 
 
@@ -684,6 +684,7 @@ def test_is_opengl_available(fail_on):
     mod = Mod()
     mod.display = mod
     expected = not fail_on
+    utils.is_opengl_available.cache_clear()
     with patch.dict(sys.modules, {'pyglet': mod}):
         assert utils.is_opengl_available("gl,3,3") == expected
 

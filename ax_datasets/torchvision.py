@@ -253,12 +253,19 @@ class Caltech101(torchvision.datasets.Caltech101):
         yargs = MapYAMLtoFunction(
             supported=['download'],
             required=[],
-            defaults={'download': False},
+            defaults={'download': True},
             named_args=[],
             attribs=args,
         )
         download = yargs.get_arg('download')
-        super().__init__(root, transform=transform, download=download)
+        try:
+            super().__init__(root, transform=transform, download=download)
+        except RuntimeError as e:
+            if "Dataset not found or corrupted" in str(e) and not download:
+                # If dataset is not found and download=False, provide helpful message
+                error_msg = _add_download_info(Path(root), str(e))
+                raise RuntimeError(error_msg) from e
+            raise
 
 
 def _add_download_info(

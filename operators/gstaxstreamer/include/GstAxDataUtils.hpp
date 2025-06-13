@@ -115,6 +115,9 @@ size_t size_from_interface(const AxDataInterface &interface);
 void copy_or_fixate_framerate(GstCaps *from, GstCaps *to);
 void assign_data_ptrs_to_interface(
     const std::vector<GstMapInfo> &info, AxDataInterface &interface);
+void assign_vaapi_ptrs_to_interface(
+    const std::vector<GstMapInfo> &info, AxDataInterface &interface);
+
 void assign_fds_to_interface(AxDataInterface &input, GstBuffer *buffer);
 void add_video_meta_from_interface_to_buffer(
     GstBuffer *buffer, const AxDataInterface &interface);
@@ -125,7 +128,7 @@ void unmap_mem(std::vector<GstMapInfo> &mapInfoVec);
 
 void init_options(GObject *self, const std::string &options_string,
     const Ax::V1Plugin::Base &fns, Ax::Logger &logger,
-    std::shared_ptr<void> &options, bool &initialized);
+    std::shared_ptr<void> &options, bool &initialized, void *display);
 
 void update_options(GObject *self, const std::string &options_string,
     const Ax::V1Plugin::Base &fns, Ax::Logger &logger,

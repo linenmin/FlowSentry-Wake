@@ -3,8 +3,8 @@ input:
     type: image
 preprocess:
     - resize:
-        width: {{input_width}}
-        height: {{input_height}}
+        width: ${{input_width}}
+        height: ${{input_height}}
         half_pixel_centers: True
     - torch-totensor:
         scale: False
@@ -20,7 +20,7 @@ postprocess:
         nms_iou_threshold: 0.5
         nms_class_agnostic: True
         nms_top_k: 200
-        label_filter: {{label_filter}}
+        label_filter: ${{label_filter}}
         eval: # overrides for evaluating accuracy
           conf_threshold: 0.016
           nms_iou_threshold: 0.5

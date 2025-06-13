@@ -99,7 +99,6 @@ struct GstAxInferenceImpl {
   int pipeline_pre_fill = 0;
   int output_drop = 0;
   bool remove_batch = true;
-  std::set<int> stream_select;
 };
 
 static size_t
@@ -293,7 +292,7 @@ push_inference(GstAxInference *self, GstBuffer *inbuf)
 }
 
 static void
-pop_inference(GstAxInference *self, GstBuffer *inbuf, GstBuffer *outbuf, Params &&outputs)
+pop_inference(GstAxInference *self, GstBuffer *inbuf, GstBuffer *outbuf, Params &outputs)
 {
   gst_buffer_remove_all_memory(outbuf);
   if (!GST_BASE_TRANSFORM_GET_CLASS(self)->copy_metadata(
@@ -372,7 +371,7 @@ gst_axinference_transform(GstBaseTransform *trans, GstBuffer *inbuf, GstBuffer *
     if (!input) {
       return GST_BASE_TRANSFORM_FLOW_DROPPED;
     }
-    pop_inference(self, input.get(), outbuf, std::move(outputs));
+    pop_inference(self, input.get(), outbuf, outputs);
     return GST_FLOW_OK;
   } catch (const std::exception &e) {
     GST_ERROR_OBJECT(trans, "Error: %s", e.what());

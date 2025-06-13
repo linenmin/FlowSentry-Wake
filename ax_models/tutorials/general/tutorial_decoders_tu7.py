@@ -74,11 +74,11 @@ class TopKDecoderWithMySimplifiedGstPluginAndMyAxTaskMeta(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        where: str,
         compiled_model_dir: Path,
+        task_graph,
     ):
         super().configure_model_and_context_info(
-            model_info, context, task_name, taskn, where, compiled_model_dir
+            model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         self.num_classes = model_info.num_classes
 
