@@ -90,10 +90,11 @@ c) **Optional: Deploy or Download Models**:
 2. During installation:
    - Enable the option to add Python to PATH
    - Select "Disable path length limit" when prompted
-3. Create a virtual environment:
+3. Test Python installation by creating a virtual environment in a new Command Prompt:
    ```cmd
    python -m venv venv
    ```
+   If everything went well, you may now delete this venv.
 4. Add the Python installation path and Python\Scripts path to the Windows environment Path variable:
    ![Python Environment Variables](/docs/images/windows/system_variable_python.png)
 
@@ -145,7 +146,7 @@ venv-win\Scripts\activate.bat
 ```
 Install the Python package:
 ```cmd
-pip install "windows-packages\axelera_runtime-1.3.0rc1.post89+git.53f21485-py3-none-any.whl"
+pip install "windows-packages\axelera_runtime-1.3.1-py3-none-any.whl"
 ```
 
 ## Step 5: Running Examples [Optional]
