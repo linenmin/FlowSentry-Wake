@@ -14,6 +14,7 @@
     - [Depth Estimation](#depth-estimation)
     - [License Plate Recognition](#license-plate-recognition)
     - [Image Enhancement Super Resolution](#image-enhancement-super-resolution)
+    - [Large Language Model (LLM)](#large-language-model-llm)
   - [Next Steps](#next-steps)
 
 The Voyager model zoo provides a comprehensive set of industry-standard models for common tasks
@@ -243,6 +244,18 @@ to verify these results and how to perform many other evaluation tasks on all su
 | :----------------- | :------------------------------------------------------------- | :-------------------------------------------------- | :--------- | :------------------------------ | ------------: | ------------: | -----------: | ----------: | ------------: |
 | Real-ESRGAN-x4plus | [&#x1F517;](/ax_models/zoo/torch/real-esrgan-x4plus-onnx.yaml) | [&#x1F517;](https://github.com/xinntao/Real-ESRGAN) | 128x128    | SuperResolutionCustomSet128x128 | 24.77         | 0.22          | 11           | 8           | BSD-3-Clause  |
 
+### Large Language Model (LLM)
+For details of usage please see [SLM Inference on Axelera AI Platform](/docs/tutorials/llm.md).
+
+| Model                                                                                      | Max Context Window (tokens) |
+| :----------------------------------------------------------------------------------------- | --------------------------: |
+| [meta-llama/Llama-3.1-8B-Instruct](/ax_models/zoo/llm/llama-3-1-8b-1024-static.yaml)       | 1024                        |
+| [meta-llama/Llama-3.2-1B-Instruct](/ax_models/zoo/llm/llama-3-2-1b-1024-4core-static.yaml) | 1024                        |
+| [meta-llama/Llama-3.2-3B-Instruct](/ax_models/zoo/llm/llama-3-2-3b-1024-4core-static.yaml) | 1024                        |
+| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-512-static.yaml)           | 512                         |
+| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-1024-4core-static.yaml)    | 1024                        |
+| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-2048-static.yaml)          | 2048                        |
+| [Almawave/Velvet-2B](/ax_models/zoo/llm/velvet-2b-1024-static.yaml)                        | 1024                        |
 
 ## Next Steps
 
