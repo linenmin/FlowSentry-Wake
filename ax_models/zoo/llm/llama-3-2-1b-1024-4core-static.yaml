@@ -15,5 +15,7 @@ models:
       llm:
         max_tokens: 1024
         embeddings_url: https://llm.axelera.ai/embeddings/llama_3_2_1b_embeddings.npz
+        embeddings_md5: bd4c51008c6841e2c5433ff063401693
         model_name: meta-llama/Llama-3.2-1B-Instruct
         tokenizer_url: https://llm.axelera.ai/embeddings/meta-llama_Llama-3.2-1B-Instruct_tokenizer.zip
+        tokenizer_md5: db8ec2142912b12444c59c864851ffdc

@@ -12,6 +12,7 @@ The `axmonitor` application enables users to monitor key metrics from Axelera AI
 
 - Core Utilization
 - Core & Board Temperatures
+- Kernels Per Second (KPS)
 
 These metrics are retrieved periodically (every 1 second) over a TCP/IP network connection to the Axelera System Service (`axsystemservice`), a host system service for device monitoring and management.
 
@@ -21,7 +22,7 @@ Before running `axmonitor`, make sure the Axelera System Service is active. This
 
 ### Configuring the Axelera System Service
 
-By default, the Axelera System Service listens on `*:5555`. If you need to change this IP address or port, you can do so by modifying the `/etc/systemd/system/axsystemserver.service` file. Locate and update the following line:
+By default, the Axelera System Service listens on `*:5555`. If you need to change this IP address or port, you can do so by modifying the `/lib/systemd/system/axsystemserver.service` file. Locate and update the following line:
 ```
 ExecStart=/bin/bash -c 'exec axsystemserver --bind "<IP>:<Port>"'
 ```
@@ -75,15 +76,13 @@ Global options:
 
 The axmonitor interface is structured into multiple pages:
 
-#### SYSTEM
+#### SYSTEM page
 
 Displays top-level system information and general status of connected Axelera AI devices.
 
-#### AXL
+#### AXL page
 
-Dedicated to detailed per-device metrics. Currently, the following are available:
-- Core Utilization 
-- Core & Board Temperatures
+Provides additional data for all metrics, offering deeper insight into the device behavior.
 
 ### Console mode
 

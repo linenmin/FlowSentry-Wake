@@ -84,3 +84,9 @@ This section provides links to additional documentation available in the Voyager
 | [ONNX operator support](/docs/reference/onnx-opset14-support.md)           | List of ONNX operators supported by the Axelera AI compiler |
 | [Thermal Guide](/docs/reference/thermal_guide.md) | Document detailing the thermal behavior for Metis and instructions to make changes |
 | [SLM/LLM inference tutorial](/docs/tutorials/llm.md)        | Explains how to run Language Models on Metis devices [experimental]                                                                                                      |
+
+## Further support
+
+For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+
+For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

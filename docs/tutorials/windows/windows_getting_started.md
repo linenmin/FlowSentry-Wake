@@ -52,7 +52,7 @@ wsl
 ```
 
 b) **Clone and Configure voyager-sdk**:
-   - Clone the voyager-sdk repository from https://github.com/axelera-ai-hub/voyager-sdk and checkout branch release/1.3.0 **in a Windows-accessible folder**. For example: `/mnt/c/Axelera/voyager-sdk` (accessible from Windows as `C:\Axelera\voyager-sdk`). Complete cloning instructions are available in the [Installation guide](/docs/tutorials/install.md).
+   - Clone the voyager-sdk repository from https://github.com/axelera-ai-hub/voyager-sdk and checkout branch release/v1.3 **in a Windows-accessible folder**. For example: `/mnt/c/Axelera/voyager-sdk` (accessible from Windows as `C:\Axelera\voyager-sdk`). Complete cloning instructions are available in the [Installation guide](/docs/tutorials/install.md).
    - Follow the [Installation guide](/docs/tutorials/install.md) setup instructions, selecting only the Python environment and runtime libraries during installation
    - **Important:** Do not select the driver installation option as it is not compatible with WSL
    ![WSL Installation Options](/docs/images/windows/wsl_voyager_install.png)
@@ -84,7 +84,7 @@ c) **Optional: Deploy or Download Models**:
 > [!NOTE]  
 > Perform this step in Windows natively, **not in WSL**.
 
-1. Download [Python for Windows](https://www.python.org/downloads/windows/). The latest Python 3.14 version is recommended.
+1. Download [Python for Windows](https://www.python.org/downloads/windows/). The latest Python Stable Release version is recommended. The latest stable release tested by Axelera is 3.13.5.
 > [!IMPORTANT]  
 > Install Python from the official website link above, not from the Microsoft Store
 2. During installation:
@@ -110,12 +110,13 @@ Create a local windows-packages directory and download the installers:
 ```cmd
 mkdir windows-packages
 cd windows-packages
-curl -O https://media.axelera.ai/releases/v1.3.1/build-Release-Windows-2204-amd64/package_repos/axelera-win-device-installer.exe
-curl -O https://media.axelera.ai/releases/v1.3.1/build-Release-Windows-2204-amd64/package_repos/axelera-win-runtime-installer.exe
-curl -O https://media.axelera.ai/releases/v1.3.1/build-Release-Windows-2204-amd64/package_repos/axelera-win-syslibs-installer.exe
-curl -O https://media.axelera.ai/releases/v1.3.1/build-Release-Windows-2204-amd64/package_repos/axelera-win-toolchain-deps-installer.exe
-curl -O https://media.axelera.ai/releases/v1.3.1/build-Release-Windows-2204-amd64/package_repos/axelera_runtime-1.3.1-py3-none-any.whl
+curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera-win-device-installer.exe
+curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera-win-runtime-installer.exe
+curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera-win-syslibs-installer.exe
+curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera-win-toolchain-deps-installer.exe
+curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera_runtime-1.3.3-py3-none-any.whl
 cd ..
+
 ```
 
 ### Installing the Executable Installers
@@ -146,7 +147,7 @@ venv-win\Scripts\activate.bat
 ```
 Install the Python package:
 ```cmd
-pip install "windows-packages\axelera_runtime-1.3.1-py3-none-any.whl"
+pip install "windows-packages\axelera_runtime-1.3.2-py3-none-any.whl"
 ```
 
 ## Step 5: Running Examples [Optional]

@@ -283,8 +283,8 @@ def _get_compiler_config():
 
 
 @functools.lru_cache
-def generate_compilation_configs():
-    if conf := _get_compiler_config():
+def generate_compilation_configs(load_compiler_config):
+    if load_compiler_config and (conf := _get_compiler_config()):
         schema = {}
         for f, t in conf.model_fields.items():
             schema_type = _to_type(t.annotation, allow_variable=False, use_enum_values=True)

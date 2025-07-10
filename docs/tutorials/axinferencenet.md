@@ -75,10 +75,10 @@ Usage: examples/bin/axinferencenet_example <model>.axnet [labels.txt] input-sour
   labels.txt: path to the labels file (default: ax_datasets/labels/coco.names)
   input-source: path to video source
 
-The <model>.axnet file is a file describing the model, preprocessing, and
-postprocessing steps of the pipeline.  In the future this will be created
+The `<model>.axnet` file describes the model, preprocessing, and
+postprocessing steps of the pipeline. In the future, this will be created
 by deploy.py when deploying a pipeline, but for now it is necessary to run
-the gstreamer pipeline.  The file can also be created by hand or you can
+the gstreamer pipeline. The file can also be created by hand or you can
 manually pass the parameters to AxInferenceNet.
 
 The first step is to compile or download a prebuilt model, here we will show
@@ -124,7 +124,7 @@ struct Frame {
 };
 ```
 
-Next, we define a function that we will start in another thread to read image data, perform the BGR to RGBA color conversion, configure the `AxVideoInterface` structure that notifies `AxInferenceNet` how the image data is formatted, including resolution, color format, and strides between the beginning of each row of pixel data.
+Next, we define a function that we will start in another thread to read image data and check for end of stream. The function `Ax::video_from_cvmat` creates an `AxVideoInterface` object which contains the frame meta data such as width/height, pixel stride, and color format that notifies `AxInferenceNet` how the image data is formatted, including resolution, color format, and strides between the beginning of each row of pixel data.
 
 Finally, we push our `Frame` object, along with the `video` information structure, and a reference to the `meta`. If using multiple stream we would also include a stream_id here.
 
@@ -142,19 +142,7 @@ reader_thread(cv::VideoCapture &input, Ax::InferenceNet &net)
       net.end_of_input();
       break;
     }
-    // Convert the frame to RGBA format, retaining the original image in the
-    // frame in case we want to render it with opencv later. Ideally, this would
-    // be done in the preprocessing stage of the AxInferenceNet, but at the
-    // moment the resize_cl operator does not support BGR or RGB input. This
-    // will be added in a future release.
-    cv::cvtColor(frame->bgr, frame->rgba, cv::COLOR_BGR2RGBA);
-    AxVideoInterface video;
-    video.info.width = frame->rgba.cols;
-    video.info.height = frame->rgba.rows;
-    video.info.format = AxVideoFormat::RGBA;
-    const auto pixel_width = AxVideoFormatNumChannels(video.info.format);
-    video.info.stride = frame->rgba.cols * pixel_width;
-    video.data = frame->rgba.data;
+    auto video = Ax::video_from_cvmat(frame->bgr, AxVideoFormat::BGR);
     net.push_new_frame(frame, video, frame->meta);
   }
 }
@@ -353,6 +341,6 @@ With the standard pipeline, you receive ready-to-use detection objects in `meta[
 
 ### Performance note
 
-This path is not as optimized as the default pipeline, especially for large batch sizes or high-throughput. If you want maximum speed, we encourage you to build a standard decoder (as done for models in the Axelera model zoo), which allows the pipeline to use fully optimized postprocessing. The raw tensor path is intended for flexibility, experimentation, and integration—not for maximum speed. We plan to improve this path by optimizing how we perform postprocessing before providing the tensor output in future releases.
+This path is not as optimized as the default pipeline, especially for large batch sizes or high-throughput. If you want maximum speed, we encourage you to build a standard decoder (as done for models in the Axelera model zoo), which allows the pipeline to use fully optimized postprocessing. The raw tensor path is intended for flexibility, experimentation, and integration - not for maximum speed. We plan to improve this path by optimizing how we perform postprocessing before providing the tensor output in future releases.
 
 See the full source in [`axinferencenet_tensor.cpp`](/examples/axinferencenet/axinferencenet_tensor.cpp).

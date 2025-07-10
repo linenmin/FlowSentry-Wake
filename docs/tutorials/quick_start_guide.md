@@ -178,3 +178,9 @@ Beta support is also provided for deploying your own [custom model](/docs/tutori
 API reference material:
 - [YAML pipeline operators](/docs/reference/yaml_operators.md)
 - [Axelera GStreamer pipeline elements](/docs/reference/pipeline_operators.md)
+
+## Further support
+
+For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+
+For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

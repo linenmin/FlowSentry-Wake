@@ -402,9 +402,9 @@ network = lambda operators, compilation_configs: {
 }
 
 
-def load(schema, path=None, check_required=True):
+def load(schema, path=None, check_required=True, load_compiler_config=False):
     path = Path(path) if path else None
     base = path.parent if path else None
     operators = generate_operators(path, base)
-    compilation_configs = generate_compilation_configs()
+    compilation_configs = generate_compilation_configs(load_compiler_config)
     return compile_schema(schema(operators, compilation_configs), check_required)

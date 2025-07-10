@@ -88,8 +88,8 @@ init_and_set_static_properties(
 }
 
 struct tiling_params {
-  int video_width;
-  int video_height;
+  int tile_region_width;
+  int tile_region_height;
   int col_start;
   int row_start;
 };
@@ -99,24 +99,24 @@ determine_tile_params(int width, int height, const std::string &position)
 {
   int col_start = 0;
   int row_start = 0;
-  int video_width = width;
-  int video_height = height;
+  int tile_region_width = width;
+  int tile_region_height = height;
   if (position == "none") {
     //  Nothing to do
   } else if (position == "left") {
-    video_width = width / 2;
+    tile_region_width = width / 2;
   } else if (position == "right") {
-    col_start = video_width / 2;
-    video_width = width / 2;
+    col_start = tile_region_width / 2;
+    tile_region_width = width / 2;
   } else if (position == "top") {
-    video_height = height / 2;
+    tile_region_height = height / 2;
   } else if (position == "bottom") {
-    video_height = height / 2;
+    tile_region_height = height / 2;
     row_start = height / 2;
   } else {
     throw std::runtime_error("Invalid tile position");
   }
-  return { video_width, video_height, col_start, row_start };
+  return { tile_region_width, tile_region_height, col_start, row_start };
 }
 
 extern "C" void
@@ -140,34 +140,36 @@ inplace(const AxDataInterface &interface, const addtiles_properties *details,
 
   auto &video = std::get<AxVideoInterface>(interface);
 
-  auto [video_width, video_height, col_start, row_start] = determine_tile_params(
-      video.info.width, video.info.height, details->tile_position);
+  auto [tile_region_width, tile_region_height, col_start, row_start]
+      = determine_tile_params(video.info.width, video.info.height, details->tile_position);
 
-  auto slice_width = details->tile_width;
-  auto slice_height = details->tile_height;
+  int slice_width = details->tile_width;
+  int slice_height = details->tile_height;
 
   auto [x_slices, x_overlap]
-      = Ax::determine_overlap(video_width, slice_width, details->tile_overlap);
+      = Ax::determine_overlap(tile_region_width, slice_width, details->tile_overlap);
   auto [y_slices, y_overlap]
-      = Ax::determine_overlap(video_height, slice_height, details->tile_overlap);
+      = Ax::determine_overlap(tile_region_height, slice_height, details->tile_overlap);
 
-  std::vector<box_xyxy> boxes{ { 0, 0, video_width - 1, video_height - 1 } };
+  std::vector<box_xyxy> boxes{ { 0, 0, video.info.width - 1, video.info.height - 1 } };
   for (auto row = 0; row != y_slices; ++row) {
     for (auto col = 0; col != x_slices; ++col) {
       int x = col * (slice_width - x_overlap);
       int y = row * (slice_height - y_overlap);
-      if (x + slice_width > video_width) {
-        x = video_width - slice_width;
+      if (x + slice_width > tile_region_width) {
+        x = std::max(tile_region_width - slice_width, 0);
       }
-      if (y + slice_height > video.info.height) {
-        y = video.info.height - slice_height;
+      if (y + slice_height > tile_region_height) {
+        y = std::max(tile_region_height - slice_height, 0);
       }
       auto box = box_xyxy{
         .x1 = x + col_start,
         .y1 = y + row_start,
         //  Remember this is a fully closed range
-        .x2 = static_cast<int>(x + slice_width) + col_start - 1,
-        .y2 = static_cast<int>(y + slice_height) + row_start - 1,
+        .x2 = std::min(static_cast<int>(x + slice_width) + col_start - 1,
+            col_start + tile_region_width - 1),
+        .y2 = std::min(static_cast<int>(y + slice_height) + row_start - 1,
+            row_start + tile_region_height - 1),
       };
       boxes.push_back(box);
     }

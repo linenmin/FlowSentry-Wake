@@ -272,6 +272,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
         tests/ax/unittest_decode_to_raw_tensor.cc
         tests/ax/unittest_decode_ctc.cc
         tests/ax/unittest_inplace_normalize.cc
+        tests/ax/unittest_inplace_addtiles.cc
         tests/ax/unittest_transform_centrecropextra.cc
         tests/ax/unittest_transform_dequantize.cc
         tests/ax/unittest_transform_padding.cc

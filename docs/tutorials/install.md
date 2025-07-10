@@ -62,7 +62,7 @@ To run the installer create an Axelera AI account and accept our Software End Us
 > with your Axelera AI account (or, register a new account if you don't have one already).
 > Once logged in, on the top-right corner of the website under your profile, click **Edit Profile**
 > and then click the button **Generate an Identity Token**. In the Generate Identity Token window, 
-> the token you need to use is found under "Reference Token". Please make sure to copy and store
+> the token you need to use is found under "Reference Token" **(not the Token ID which is a much shorter string)**. Please make sure to copy and store
 > the token somewhere safe.
 
 Note: that for installing only the runtime environment accepting the EULA and providing a token is not required.
@@ -82,7 +82,7 @@ option to `--token` is the token generated using the registered Axelera AI accou
 The installer inspects the system and ensures the Metis PCIe driver, system runtime
 libraries and Python virtual environment are all correctly installed. The Python virtual
 environment contains all libraries needed by the complete toolchain. All
-of these components are listed in the installer configuration file for your specific host,
+of these components and their version numbers are listed in the installer configuration file for your specific host,
 for example [`cfg/config-ubuntu-2204-amd64.yaml`](/cfg/config-ubuntu-2204-amd64.yaml).
 
 The `--media` option downloads a collection of sample videos which you can use to evaluate
@@ -133,3 +133,9 @@ All environment variables that were previously set during activation are restore
 Each time you use git to change the SDK release branch, you should deactivate and then reactivate your
 environment. This ensures that your environment variables are correctly set to the values in the
 installer configuration file on the new release branch.
+
+## Further support
+
+For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+
+For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

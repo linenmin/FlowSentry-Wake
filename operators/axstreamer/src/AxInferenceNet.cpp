@@ -750,9 +750,11 @@ AxInferenceNet::unbatch(std::queue<std::unique_ptr<Frame>> &pending_frames,
     out_frame->op_input = get_shared_view_of_batch_buffer(out, n++);
     eos = out_frame->end_of_input;
     update_frame_latency(*out_frame, "Inference latency");
-    post_ops.input_queue().push(std::move(out_frame));
+    if (out_frame->buffer_handle || eos) {
+      //  Do not forward manufactured frames
+      post_ops.input_queue().push(std::move(out_frame));
+    }
   }
-  //  Push any following gap frames
   return eos;
 }
 

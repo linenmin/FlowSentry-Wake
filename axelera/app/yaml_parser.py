@@ -339,9 +339,10 @@ def gen_model_help():
     print_model_help(model_collection.tutorial, "TUTORIALS")
     print_model_help(model_collection.reference, "REFERENCE APPLICATION PIPELINES")
     print_model_help(model_collection.customers, "CUSTOMER MODELS [Confidential]")
-    if model_collection.llm_local or model_collection.llm_cards:
+    if model_collection.llm_local or model_collection.llm_cards or model_collection.llm_zoo:
         print_model_help(
-            model_collection.llm_local + model_collection.llm_cards, "LARGE LANGUAGE MODELS (LLM)"
+            model_collection.llm_local + model_collection.llm_cards + model_collection.llm_zoo,
+            "LARGE LANGUAGE MODELS (LLM)",
         )
 
     print_header()

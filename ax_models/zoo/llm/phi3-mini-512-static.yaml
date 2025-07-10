@@ -14,4 +14,5 @@ models:
       llm:
         max_tokens: 512
         embeddings_url: https://llm.axelera.ai/embeddings/phi3_mini_embeddings.npz
+        embeddings_md5: 3ea21245bb4e2d3f0c124d7b56fc59e4
         model_name: microsoft/Phi-3-mini-4k-instruct

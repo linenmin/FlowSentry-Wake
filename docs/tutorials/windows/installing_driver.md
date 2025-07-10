@@ -36,7 +36,7 @@ The PC desktop should display "Test Mode" in the lower right corner.
 > [!NOTE]  
 > These steps require access to a Windows Administrator account.
 ### Step 1 - Getting the Driver
-The driver archive can be downloaded from: [Metis-v1.3.1.zip](https://media.axelera.ai/releases/v1.3.1/build-Release-Windows-2204-amd64/package_repos/Metis-v1.3.1.zip)
+The driver archive can be downloaded from: [Metis-v1.3.3.zip](https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/Metis-v1.3.3.zip)
 
 Then extract the driver to a local folder. The extracted folder should contain three files: .cat, .inf and .sys.
 

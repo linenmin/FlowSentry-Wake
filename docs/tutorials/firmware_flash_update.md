@@ -19,21 +19,28 @@ source venv/bin/activate
 3. Download the board firmware to your development system.
 
 ```
-wget https://axelera-public.s3.eu-central-1.amazonaws.com/built_metis_firmware/voyager-sdk-v1.3.0/firmware_release_public_v1.3.0.tar.gz
+wget https://axelera-public.s3.eu-central-1.amazonaws.com/built_metis_firmware/voyager-sdk-v1.3.2/firmware_release_public_v1.3.2.tar.gz
 ```
 
 4. Extract the board firmware to the current directory.
 
 ```
-tar xzvf firmware_release_public_v1.3.0.tar.gz
+tar xzvf firmware_release_public_v1.3.2.tar.gz
 ```
+> [!NOTE]  
+> After extracting the firmware, you need to make the flash update script executable before proceeding to the next step:
+> 
+> ```bash
+> chmod +x firmware_release_public_v1.3.2/flash_update.sh
+> ```
 
 ### Flash the firmware
 
 5. Run the firmware update tool to flash the firmware to your board. If you have multiple Metis devices connected, you can specify the device by using the `--device` option.
 
 ```
-$ cd firmware_release_public_v1.3.0
+$ cd firmware_release_public_v1.3.2
+$ chmod u+x flash_update.sh
 $ ./flash_update.sh --fw-update
 ```
 
@@ -47,14 +54,15 @@ The firmware flashing tool takes up to two minutes to run and on success outputs
 6. To figure out if the board will support an update, run the following command
 ```
 $ axdevice
-Device 0: metis-0:1:0 4GiB pcie flver=1.3.0 bcver=1.0 clock=800MHz(0-3:800MHz) mvm=0-3:100%
+Device 0: metis-0:1:0 4GiB pcie flver=1.3.2 bcver=1.0 clock=800MHz(0-3:800MHz) mvm=0-3:100%
 
 ``` 
 which should report the `bcver` of at least `1.0`.
 
 7. Run the firmware update tool to flash the board controller firmware. If you have multiple Metis devices connected, you can specify the device by using the `--device` option.
 ```
-$ cd firmware_release_public_v1.3.0
+$ cd firmware_release_public_v1.3.2
+$ chmod u+x flash_update.sh
 $ ./flash_update.sh --bc-update
 ```
 
@@ -63,5 +71,5 @@ $ ./flash_update.sh --bc-update
 After this step, the board will reboot. Next, check if the board controller version was successfully updated and the board is responsive.
 ```
 $ axdevice
-Device 0: metis-0:1:0 4GiB pcie flver=1.3.0 bcver=1.4 clock=800MHz(0-3:800MHz) mvm=0-3:100%
+Device 0: metis-0:1:0 4GiB pcie flver=1.3.2 bcver=1.4 clock=800MHz(0-3:800MHz) mvm=0-3:100%
 ```

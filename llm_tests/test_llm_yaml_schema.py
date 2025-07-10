@@ -69,14 +69,19 @@ def test_llm_yaml_schema(yaml_path, require_internal_model_card):
         "model_name",
         "max_tokens",
         "embeddings_url",
+        "embeddings_md5",
         "min_response_space",
         "tokenizer_url",
+        "tokenizer_md5",
         "ddr_requirement_gb",
     }
-    for field in ("model_name", "max_tokens", "embeddings_url"):
+    for field in ("model_name", "max_tokens", "embeddings_url", "embeddings_md5"):
         assert field in llm_kwargs, f"extra_kwargs.llm missing '{field}': {yaml_path}"
     # tokenizer_url is optional, but if present, must be a string and a valid URL
     if "tokenizer_url" in llm_kwargs:
+        assert (
+            "tokenizer_md5" in llm_kwargs
+        ), f"extra_kwargs.llm missing 'tokenizer_md5': {yaml_path}"
         assert isinstance(
             llm_kwargs["tokenizer_url"], str
         ), f"tokenizer_url must be a string: {yaml_path}"

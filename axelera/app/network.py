@@ -1025,7 +1025,12 @@ def parse_network_from_path(
     """Parse YAML pipeline to Network object, returns the network and the yaml."""
     # First create network and ensure all models are deployed
     LOG.debug(f"Create network from {path}")
-    compiled_schema = schema.load(schema.network, path, check_required=(not _has_template(path)))
+    compiled_schema = schema.load(
+        schema.network,
+        path,
+        check_required=(not _has_template(path)),
+        load_compiler_config=from_deploy,
+    )
     yaml = utils.load_yamlfile(path, compiled_schema)
     base = Path(path).parent.resolve()
     # Make all paths in model config absolute so it can be processed from a different directory
@@ -1095,6 +1100,21 @@ def _load_manifest_and_check_batch(manifest_file, needed_cores):
     return m
 
 
+def localise_path(original_path):
+    """if the path starts with /home/<any-user>/.cache/axelera/, replace it with
+    /home/<this-user>/.cache/axelera/, generating debug if doesn't."""
+    result_path = original_path
+    if original_path:
+        pattern = r"^/home/[^/]+/.cache/axelera/"
+        if re.sub(pattern, "", original_path) == original_path:
+            LOG.debug(f"~<any-user>/.cache/axelera/ not found in path {original_path}")
+        else:
+            home_directory = os.path.expanduser("~")
+            result_path = re.sub(pattern, f"{home_directory}/.cache/axelera/", original_path)
+
+    return result_path
+
+
 def read_deployed_model_infos(
     nn_dir: Path,
     nn: AxNetwork,
@@ -1126,6 +1146,7 @@ def read_deployed_model_infos(
             continue
         try:
             model_info = types.ModelInfo.from_json(model_json.read_text())
+            model_info.weight_path = localise_path(model_info.weight_path)
             model_info.class_path = os.path.join(config.env.framework, model_info.class_path)
             # # fill manifest with dummy values for non-aipu pipelines, it
             # # will be overwritten by the manifest file if it exists
