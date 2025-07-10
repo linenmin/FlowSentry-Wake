@@ -1,11 +1,16 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-# Voyager SDK release notes v1.3.1
+# Voyager SDK release notes v1.3.3
 
+- [Voyager SDK release notes v1.3.3](#voyager-sdk-release-notes-v133)
+  - [v1.3.3 Release Description](#v133-release-description)
+  - [Fixed issues (since v1.3.1)](#fixed-issues-since-v131)
+  - [New Features / Support](#new-features--support)
+  - [New and Updated Documentation](#new-and-updated-documentation)
 - [Voyager SDK release notes v1.3.1](#voyager-sdk-release-notes-v131)
-  - [Release Description](#release-description)
+  - [v1.3.1 Release Description](#v131-release-description)
     - [Release Qualification](#release-qualification)
     - [Host Environment](#host-environment)
-  - [New Features / Support](#new-features--support)
+  - [New Features / Support](#new-features--support-1)
     - [New Axelera AI Cards and Systems](#new-axelera-ai-cards-and-systems)
     - [New Platforms](#new-platforms)
     - [New Networks Supported](#new-networks-supported)
@@ -27,11 +32,40 @@
     - [Firmware](#firmware)
     - [Monitoring \[Beta\]](#monitoring-beta)
   - [Removed Features](#removed-features)
-  - [New and Updated Documentation](#new-and-updated-documentation)
+  - [New and Updated Documentation](#new-and-updated-documentation-1)
   - [Fixed issues (since v1.2.5)](#fixed-issues-since-v125)
   - [Known Issues \& Limitations](#known-issues--limitations)
 
-## Release Description
+## v1.3.3 Release Description
+
+This release addresses some of the issues found in v1.3.1 and improves documentation (detailed below).
+
+
+## Fixed issues (since v1.3.1)
+
+- Yolo11 (all sizes) not working when built locally using inference.py (SDK-6886, SDK-6977)
+- Unstable behaviour on axrunmodel executions(SDK-6875)
+- Remove trailing "<|end|>" string after each model response(SDK-6984)
+- Incorrect md5 for llama-3-1-8b-1024-static download (SDK-6985)
+- AxMonitor.md contains incorrect file location (SDK-6942)
+- Some LLM YAML are pointing to single-core model artifacts (SDK-6991)
+- Running inference with a small number of frames can cause segfault (SDK-6992)
+- Not getting all of the detections from the full size frame when using tiling (SDK-6994)
+
+## New Features / Support
+
+- Integrate PCI-SIG certification changes (SDK-6988)
+
+## New and Updated Documentation
+
+- Added support details to the end of several documents (SDK-6888)
+- Updated AxInferenceNet C++ example and tutorial (SDK-7081)
+
+---
+
+# Voyager SDK release notes v1.3.1
+
+## v1.3.1 Release Description
 
 This release expands the capabilities of Voyager SDK with new features, platform support and AI use cases. It is a public release which follows the same [installation](/docs/tutorials/install.md) and upgrade principles as v1.2.5, as well as the same [licensing](/LICENSE.txt) model. An upgrade of the boards' [firmware](#firmware) is strongly recommended, 
 
@@ -142,11 +176,11 @@ This release introduces support for running pre-compiled LLMs and provides a cha
 | :-------------------------------------------------------------------- | :---------------- | :---------- |
 | [Phi3-mini-512](/ax_models/zoo/llm/phi3-mini-512-static.yaml)         | Up to 512 tokens  | Precompiled |
 | [Phi3-mini-1024](/ax_models/zoo/llm/phi3-mini-1024-4core-static.yaml) | Up to 1024 tokens | Precompiled |
-| [Phi3-mini-2048](/ax_models/zoo/llm/phi3-mini-2048-static.yaml)       | Up to 2048 tokens | Precompiled |
+| [Phi3-mini-2048](/ax_models/zoo/llm/phi3-mini-2048-4core-static.yaml) | Up to 2048 tokens | Precompiled |
 | [Llama3.2-1B](/ax_models/zoo/llm/llama-3-2-1b-1024-4core-static.yaml) | Up to 1024 tokens | Precompiled |
 | [Llama3.2-3B](/ax_models/zoo/llm/llama-3-2-3b-1024-4core-static.yaml) | Up to 1024 tokens | Precompiled |
-| [Llama3.1-8B](/ax_models/zoo/llm/llama-3-1-8b-1024-static.yaml)       | Up to 1024 tokens | Precompiled |
-| [Velvet-2B](/ax_models/zoo/llm/velvet-2b-1024-static.yaml)            | Up to 1024 tokens | Precompiled |
+| [Llama3.1-8B](/ax_models/zoo/llm/llama-3-1-8b-1024-4core-static.yaml) | Up to 1024 tokens | Precompiled |
+| [Velvet-2B](/ax_models/zoo/llm/velvet-2b-1024-4core-static.yaml)      | Up to 1024 tokens | Precompiled |
 
 ## Supported models (not offered in Model Zoo)
 

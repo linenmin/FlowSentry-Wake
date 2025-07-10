@@ -3,14 +3,14 @@
 
 - [Deploy](#deploy)
   - [Configuration and Advanced Usage](#configuration-and-advanced-usage)
-    - [--build-root <path>](#--build-root-)
-    - [--data-root <path>](#--data-root-)
-    - [--model <model>, --models-only, --pipeline-only](#--model----models-only---pipeline-only)
-    - [--mode <mode>](#--mode-)
-    - [--pipe `<type>`](#--pipe-)
+    - [--build-root ](#--build-root-)
+    - [--data-root ](#--data-root-)
+    - [--model , --models-only, --pipeline-only](#--model----models-only---pipeline-only)
+    - [--mode ](#--mode-)
+    - [--pipe `<type>`](#--pipe-type)
     - [--export](#--export)
-    - [--aipu-cores `<core-count>`](#--aipu-cores-)
-    - [-num-cal-images <count>](#-num-cal-images-)
+    - [--aipu-cores `<core-count>`](#--aipu-cores-core-count)
+    - [-num-cal-images ](#-num-cal-images-)
 
 Axelera's deployment tool is used to and compile and deploy a given network, for the required
 system and pipeline. After deployment, the network can be used for inference or as part

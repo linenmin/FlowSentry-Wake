@@ -1,8 +1,21 @@
-## Compiler CLI
+![](/docs/images/Ax_Page_Banner_2500x168_01.png)
+
+# Compiler CLI
+
+- [Compiler CLI](#compiler-cli)
+  - [Basic Compilation](#basic-compilation)
+  - [Generating and Using a Custom Configuration](#generating-and-using-a-custom-configuration)
+  - [Quantize Only](#quantize-only)
+  - [Models with Dynamic Shapes](#models-with-dynamic-shapes)
+  - [Using Real Images for Calibration](#using-real-images-for-calibration)
+  - [Reusing CLI Arguments from a JSON File](#reusing-cli-arguments-from-a-json-file)
+  - [All Available Options](#all-available-options)
+  - [Compilation Artifacts](#compilation-artifacts)
+  - [Compilation errors](#compilation-errors)
 
 The Compiler CLI provides a command-line interface to compile and quantize models using the Axelera Compiler. It supports both ONNX models and pre-quantized models in the form of a manifest file. Model quantization can be performed using real or randomized image data.
 
-### Basic Compilation
+## Basic Compilation
 
 The simplest way to compile a model is:
 
@@ -15,7 +28,7 @@ This will:
 * Compile the ONNX model using **default compiler configuration**.
 * Save all output artifacts to the specified directory.
 
-### Generating and Using a Custom Configuration
+## Generating and Using a Custom Configuration
 
 You can generate a default compiler configuration file with:
 
@@ -30,7 +43,7 @@ compile -i /path/to/input/model.onnx --conf /path/to/configuration/file -o /path
 
 The list of all compiler configurations can be found in [`Compiler Configurations`](/docs/reference/compiler_configs_full.md).
 
-### Quantize Only
+## Quantize Only
 
 To perform quantization only and skip full compilation:
 
@@ -44,7 +57,7 @@ This produces quantized_model_manifest.json, which you can later pass to compile
 compile -i /path/to/quantized/model/quantized_model_manifest.json -o /path/to/output/directory
 ```
 
-### Models with Dynamic Shapes
+## Models with Dynamic Shapes
 
 If your input model has dynamic input shapes, use --input-shape to provide a static shape that will be used for compilation and during inference.
 
@@ -52,7 +65,7 @@ If your input model has dynamic input shapes, use --input-shape to provide a sta
 compile -i /path/to/input/model.onnx --input-shape 1,3,224,224 -o /path/to/output/directory
 ```
 
-### Using Real Images for Calibration
+## Using Real Images for Calibration
 
 To use real images for calibration instead of random data:
 
@@ -87,7 +100,7 @@ This function will be applied to each image during calibration. It must be imple
 
 Make sure your transformation logic correctly interprets the input image based on the backend and converts it to a properly shaped and normalized PyTorch tensor that the model expects.
 
-### Reusing CLI Arguments from a JSON File
+## Reusing CLI Arguments from a JSON File
 
 Every compilation automatically generates a cli_args.json file in the output directory. This file contains all command-line arguments used during that compilation and can be reused in future runs.
 
@@ -99,7 +112,7 @@ compile -i new_model.onnx --cli-args /path/to/previous_run/cli_args.json --outpu
 
 Note: Any CLI arguments passed in the current invocation will override values from the --cli-args file.
 
-### All Available Options
+## All Available Options
 
 To see a full list of available flags:
 
@@ -107,7 +120,7 @@ To see a full list of available flags:
 compile --help
 ```
 
-### Compilation Artifacts
+## Compilation Artifacts
 
 Compilation artifacts are saved to the output directory in the following structure:
 
@@ -145,7 +158,7 @@ Compilation artifacts are saved to the output directory in the following structu
 | `compilation_report.json`       | Compilation status report. In case of failed compilation store error message and information at which compilation step network failed. |
 | `compilation_log.txt`           | Full log output of the compilation process.                                                                                            |
 
-### Compilation errors
+## Compilation errors
 
 The `compilation_report.json` file includes a status field indicating the outcome of the compilation. Below is a list of possible statuses and their meanings:
 

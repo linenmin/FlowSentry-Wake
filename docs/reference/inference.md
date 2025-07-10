@@ -2,16 +2,16 @@
 # Inference
 
 - [Inference](#inference)
-  - [Configuration & Advanced Usage](#configuration--advanced-usage)
-    - [--pipe `<type>`](#--pipe-)
-    - [--frames `<frame-count>`](#--frames-)
+  - [Configuration \& Advanced Usage](#configuration--advanced-usage)
+    - [--pipe `<type>`](#--pipe-type)
+    - [--frames `<frame-count>`](#--frames-frame-count)
     - [--display/--no-display](#--display--no-display)
     - [--window-size](#--window-size)
-    - [--save-output `<path>`](#--save-output-)
+    - [--save-output `<path>`](#--save-output-path)
     - [--enable-hardware-codec](#--enable-hardware-codec)
     - [--enable/disable-vaapi, --enable/disable-opencl](#--enabledisable-vaapi---enabledisable-opencl)
     - [--enable/disable-opengl](#--enabledisable-opengl)
-    - [--aipu-cores `<core-count>`](#--aipu-cores-)
+    - [--aipu-cores `<core-count>`](#--aipu-cores-core-count)
     - [--show-host-fps, --show-stream-timing](#--show-host-fps---show-stream-timing)
 
 Axelera's inference tool can be used to measure the accuracy and performance of networks

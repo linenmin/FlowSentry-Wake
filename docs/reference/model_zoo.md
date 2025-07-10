@@ -16,6 +16,7 @@
     - [Image Enhancement Super Resolution](#image-enhancement-super-resolution)
     - [Large Language Model (LLM)](#large-language-model-llm)
   - [Next Steps](#next-steps)
+  - [Further support](#further-support)
 
 The Voyager model zoo provides a comprehensive set of industry-standard models for common tasks
 such as classification, object detection, segmentation and keypoint detection. It also provides
@@ -150,6 +151,10 @@ Additionally, you can modify the accuracy measurement command with the flag --pi
 The [benchmarking and performance evaluation guide](/docs/tutorials/benchmarking.md) explains how
 to verify these results and how to perform many other evaluation tasks on all supported platforms.
 
+> [!NOTE]  
+> Clicking on the model name in the table locates you to the model-card YAML file which contains full details of that model, including the model reference name (the `name:` field at the top of the file) which you need to refer to when using the model in the sdk. To list all model reference names, call `make` from the cmd-line once a voyager-sdk environment has been activated.
+
+
 ### Image Classification
 | Model                                                                                      | ONNX                                                                                      | Repo                                                             | Resolution | Dataset     | Ref FP32 Top1 | Accuracy loss | Ref PCIe FPS | Ref M.2 FPS | Model license |
 | :----------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------- | :--------------------------------------------------------------- | :--------- | :---------- | ------------: | ------------: | -----------: | ----------: | ------------: |
@@ -247,15 +252,15 @@ to verify these results and how to perform many other evaluation tasks on all su
 ### Large Language Model (LLM)
 For details of usage please see [SLM Inference on Axelera AI Platform](/docs/tutorials/llm.md).
 
-| Model                                                                                      | Max Context Window (tokens) |
-| :----------------------------------------------------------------------------------------- | --------------------------: |
-| [meta-llama/Llama-3.1-8B-Instruct](/ax_models/zoo/llm/llama-3-1-8b-1024-static.yaml)       | 1024                        |
-| [meta-llama/Llama-3.2-1B-Instruct](/ax_models/zoo/llm/llama-3-2-1b-1024-4core-static.yaml) | 1024                        |
-| [meta-llama/Llama-3.2-3B-Instruct](/ax_models/zoo/llm/llama-3-2-3b-1024-4core-static.yaml) | 1024                        |
-| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-512-static.yaml)           | 512                         |
-| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-1024-4core-static.yaml)    | 1024                        |
-| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-2048-static.yaml)          | 2048                        |
-| [Almawave/Velvet-2B](/ax_models/zoo/llm/velvet-2b-1024-static.yaml)                        | 1024                        |
+| Model                                                                                      | Max Context Window (tokens) | Required PCIe Card RAM |
+| :----------------------------------------------------------------------------------------- | --------------------------: | ---------------------: |
+| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-512-static.yaml)           | 512                         | 4 GB                   |
+| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-1024-4core-static.yaml)    | 1024                        | 16 GB                  |
+| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-2048-4core-static.yaml)    | 2048                        | 16 GB                  |
+| [meta-llama/Llama-3.2-1B-Instruct](/ax_models/zoo/llm/llama-3-2-1b-1024-4core-static.yaml) | 1024                        | 4 GB                   |
+| [meta-llama/Llama-3.2-3B-Instruct](/ax_models/zoo/llm/llama-3-2-3b-1024-4core-static.yaml) | 1024                        | 4 GB                   |
+| [meta-llama/Llama-3.1-8B-Instruct](/ax_models/zoo/llm/llama-3-1-8b-1024-4core-static.yaml) | 1024                        | 16 GB                  |
+| [Almawave/Velvet-2B](/ax_models/zoo/llm/velvet-2b-1024-4core-static.yaml)                  | 1024                        | 4 GB                   |
 
 ## Next Steps
 
@@ -265,3 +270,9 @@ the example commands given.
 
 You can also evaluate your own pretrained weights for most model zoo models by following the
 [custom weights tutorial](/docs/tutorials/custom_weights.md).
+
+## Further support
+
+For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+
+For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

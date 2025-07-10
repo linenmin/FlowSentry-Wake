@@ -1,12 +1,13 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 
 # AxRunModel
+
 - [AxRunModel](#axrunmodel)
-  - [Configuration & Advanced Usage](#configuration--advanced-usage)
-    - [-d `<devices>`, --devices `<devices>`](#-d----devices-)
-    - [--seconds `<seconds>`](#--seconds-)
-    - [--aipu-cores `<aipu_cores>`](#--aipu-cores-)
-    - [--throttle-fps `<throttle-fps>`](#--throttle-fps-)
+  - [Configuration \& Advanced Usage](#configuration--advanced-usage)
+    - [-d `<devices>`, --devices `<devices>`](#-d-devices---devices-devices)
+    - [--seconds `<seconds>`](#--seconds-seconds)
+    - [--aipu-cores `<aipu_cores>`](#--aipu-cores-aipu_cores)
+    - [--throttle-fps `<throttle-fps>`](#--throttle-fps-throttle-fps)
     - [--double-buffer, --no-double-buffer](#--double-buffer---no-double-buffer)
     - [--input-dmabuf, --no-input-dmabuf](#--input-dmabuf---no-input-dmabuf)
     - [--output-dmabuf, --no-output-dmabuf](#--output-dmabuf---no-output-dmabuf)
