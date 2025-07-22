@@ -147,7 +147,7 @@ venv-win\Scripts\activate.bat
 ```
 Install the Python package:
 ```cmd
-pip install "windows-packages\axelera_runtime-1.3.2-py3-none-any.whl"
+pip install "windows-packages\axelera_runtime-1.3.3-py3-none-any.whl"
 ```
 
 ## Step 5: Running Examples [Optional]
