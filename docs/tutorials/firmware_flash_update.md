@@ -1,5 +1,11 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 # Board firmware update procedure
+> [!WARNING]
+> **Before attempting any firmware updates, you must ensure that your board is enabled for updates.**
+> 
+> If you wish to enable firmware updates on your board, please carefully follow the steps in the [Enable Card Firmware Update Guide](/docs/tutorials/enable_updates.md) **before proceeding with any update attempts.**
+> 
+> Attempting to update the flash on boards without first enabling updates may result in a bricked board and render your hardware unusable. Always verify that update enablement has been completed successfully prior to flashing firmware. This procedure only needs to be done once for each board.
 
 > [!NOTE]  
 > The firmware update procedure is currently only supported on Linux systems. If you are using Windows, you will need to temporarily connect your board to a Linux host to perform the firmware update. After the update is complete, you can reconnect your board to your Windows system. This limitation will be addressed in a future release of the Voyager SDK.
@@ -19,7 +25,7 @@ source venv/bin/activate
 3. Download the board firmware to your development system.
 
 ```
-wget https://axelera-public.s3.eu-central-1.amazonaws.com/built_metis_firmware/voyager-sdk-v1.3.2/firmware_release_public_v1.3.2.tar.gz
+wget https://axelera-public.s3.eu-central-1.amazonaws.com/aipu_firmware/voyager-sdk-v1.3.2/firmware_release_public_v1.3.2.tar.gz
 ```
 
 4. Extract the board firmware to the current directory.
