@@ -82,11 +82,31 @@ class InferenceNet
   virtual ~InferenceNet() = default;
 };
 
+template <typename Frame>
+void
+forward(BlockingQueue<std::shared_ptr<Frame>> &queue, CompletedFrame &done)
+{
+  // We first check to see if inference is complete and in which case stop
+  // the ready queue to indicate to the main loop to exit.
+  if (done.end_of_input) {
+    queue.stop();
+  }
+  // If we have a valid inference result, we cast the buffer handle to our own
+  // Frame type and push it to the ready queue
+  auto frame = std::exchange(done.buffer_handle, {});
+  queue.push(std::static_pointer_cast<Frame>(frame));
+}
+inline void
+forward(InferenceNet &net, CompletedFrame &done)
+{
+  net.cascade_frame(done);
+}
+
 // Create an InferenceDoneCallback that will cascade the completed frame to the next InferenceNet
 inline InferenceDoneCallback
 forward_to(InferenceNet &next)
 {
-  return [&next](auto &done) { next.cascade_frame(done); };
+  return [&next](auto &done) { forward(next, done); };
 }
 
 // Create an InferenceDoneCallback callback that will push the completed frame to a BlockingQueue
@@ -94,18 +114,7 @@ template <typename Frame>
 InferenceDoneCallback
 forward_to(BlockingQueue<std::shared_ptr<Frame>> &queue)
 {
-  return [&queue](auto &done) {
-    // This function is called whenever an inference result is ready.
-    // We first check to see if inference is complete and in which case stop
-    // the ready queue to indicate to the main loop to exit.
-    if (done.end_of_input) {
-      queue.stop();
-    }
-    // If we have a valid inference result, we cast the buffer handle to our own
-    // Frame type and push it to the ready queue
-    auto frame = std::exchange(done.buffer_handle, {});
-    queue.push(std::static_pointer_cast<Frame>(frame));
-  };
+  return [&queue](auto &done) { forward(queue, done); };
 }
 
 /// Parse a stream for InferenceNetProperties. Properties are newline separated.

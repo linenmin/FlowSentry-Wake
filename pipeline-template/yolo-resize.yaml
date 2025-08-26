@@ -6,6 +6,8 @@ preprocess:
       height: ${{input_height}}
       interpolation: bilinear
   - torch-totensor:
+inference:
+  handle_all: False
 postprocess:
   - decodeyolo:
       box_format: xywh # box format of the model output

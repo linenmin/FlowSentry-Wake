@@ -13,10 +13,16 @@ from axelera.app import meta, operators
 
 MANIFEST = types.Manifest(
     'yolo',
-    [(0.003919653594493866, -128)],
-    [[0.08142165094614029, 70], [0.09499982744455338, 82], [0.09290479868650436, 66]],
     input_shapes=[(1, 320, 320, 64)],
+    input_dtypes=['uint8'],
     output_shapes=[[1, 20, 20, 256], [1, 40, 40, 256], [1, 80, 80, 256]],
+    output_dtypes=['float32', 'float32', 'float32'],
+    quantize_params=[(0.003919653594493866, -128)],
+    dequantize_params=[
+        [0.08142165094614029, 70],
+        [0.09499982744455338, 82],
+        [0.09290479868650436, 66],
+    ],
     n_padded_ch_inputs=[(0, 0, 0, 0, 0, 0, 0, 52)],
     n_padded_ch_outputs=[
         (0, 0, 0, 0, 0, 0, 0, 1),

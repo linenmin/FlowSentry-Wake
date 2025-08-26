@@ -5,25 +5,35 @@
 #include "AxOpUtils.hpp"
 #include "AxUtils.hpp"
 
+#include "AxMetaClassification.hpp"
 #include "AxMetaKptsDetection.hpp"
 #include "AxMetaObjectDetection.hpp"
 #include "AxMetaStreamId.hpp"
 #include "AxMetaTracker.hpp"
 #include "MultiObjTracker.hpp"
 #include "TrackerFactory.h"
+#include "cmc.hpp"
 
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <opencv2/opencv.hpp>
 #include <unordered_set>
+
 
 struct PerStreamTracker {
   std::unique_ptr<ax::MultiObjTracker> tracker;
   std::unordered_map<int, TrackingDescriptor> static_tracker_id_to_tracking_descriptor;
 
+  std::unique_ptr<CMCComputer> cmc_computer;
+
   PerStreamTracker(std::string algorithm, TrackerParams algo_params)
       : tracker(CreateMultiObjTracker(algorithm, algo_params))
   {
+    if (algo_params.contains("cmc_enabled")
+        && std::get<bool>(algo_params["cmc_enabled"]) == true) {
+      cmc_computer = std::make_unique<CMCComputer>();
+    }
   }
 };
 
@@ -84,7 +94,9 @@ struct tracker_properties {
   std::string input_meta_key{};
   std::string output_meta_key{};
   std::string streamid_meta_key{ "stream_id" };
+  std::string embeddings_meta_key{};
   size_t history_length{ 1 };
+  size_t max_lost{ 20 };
   std::string algorithm{ "oc-sort" };
   TrackerParams algo_params{};
   std::unordered_map<std::string, KeepBoxCallback> keep_box_callback_map;
@@ -94,9 +106,19 @@ struct tracker_properties {
 extern "C" const std::unordered_set<std::string> &
 allowed_properties()
 {
-  static const std::unordered_set<std::string> allowed_properties{ "tracker_meta_key",
-    "input_meta_key", "output_meta_key", "streamid_meta_key", "history_length", "algorithm",
-    "algo_params_json", "filter_callbacks", "determine_object_attribute_callbacks" };
+  static const std::unordered_set<std::string> allowed_properties{
+    "tracker_meta_key",
+    "input_meta_key",
+    "output_meta_key",
+    "streamid_meta_key",
+    "embeddings_meta_key",
+    "history_length", // Buffer size
+    "history_grace_period", // How long to keep after object loss
+    "algorithm",
+    "algo_params_json",
+    "filter_callbacks",
+    "determine_object_attribute_callbacks",
+  };
   return allowed_properties;
 }
 
@@ -113,8 +135,12 @@ init_and_set_static_properties(
       input, "output_meta_key", "tracker_properties", prop->output_meta_key);
   prop->streamid_meta_key = Ax::get_property(
       input, "streamid_meta_key", "tracker_properties", prop->streamid_meta_key);
+  prop->embeddings_meta_key = Ax::get_property(input, "embeddings_meta_key",
+      "tracker_properties", prop->embeddings_meta_key);
   prop->history_length = Ax::get_property(
       input, "history_length", "tracker_properties", prop->history_length);
+  prop->max_lost = Ax::get_property(
+      input, "history_grace_period", "tracker_properties", prop->max_lost);
   prop->algorithm
       = Ax::get_property(input, "algorithm", "tracker_properties", prop->algorithm);
 
@@ -158,9 +184,13 @@ create_box_meta(const std::string &output_meta_key,
     if (callback_ptr && !(*callback_ptr)(tracking_descriptor)) {
       continue;
     }
-    const auto &bbox
-        = tracking_descriptor.collection->get_frame(tracking_descriptor.frame_id)
-              .bbox;
+    const auto *element
+        = tracking_descriptor.collection->get_frame(tracking_descriptor.frame_id);
+    if (!element) {
+      throw std::logic_error("create_box_meta: No frame found for track_id "
+                             + std::to_string(track_id));
+    }
+    const auto &bbox = element->bbox;
     if (bbox.x2 < 0 || bbox.x1 >= width || bbox.y2 < 0 || bbox.y1 >= height) {
       continue;
     }
@@ -195,13 +225,8 @@ inplace(const AxDataInterface &data, const tracker_properties *prop,
     stream_id = stream_id_meta->stream_id;
   }
 
-  auto res = map.try_emplace(prop->tracker_meta_key,
-      std::make_unique<AxMetaTracker>(prop->history_length));
-  if (!res.second) {
-    logger(AX_ERROR) << "inplace_tracker: tracker_meta_key already exists" << std::endl;
-    throw std::runtime_error("inplace_tracker: tracker_meta_key already exists");
-  }
-  auto *tracker_meta = dynamic_cast<AxMetaTracker *>(res.first->second.get());
+  auto *tracker_meta = ax_utils::insert_meta<AxMetaTracker>(map, prop->tracker_meta_key,
+      "", subframe_index, number_of_subframes, prop->history_length);
 
   auto *box_meta = ax_utils::get_meta<AxMetaBbox>(prop->input_meta_key, map, "inplace_tracker");
   const auto *det_meta = dynamic_cast<const AxMetaObjDetection *>(box_meta);
@@ -217,10 +242,10 @@ inplace(const AxDataInterface &data, const tracker_properties *prop,
   for (int i = 0; i < box_meta->num_elements(); ++i) {
     const auto &[x1, y1, x2, y2] = box_meta->get_box_xyxy(i);
     auto &det = convertedDetections[i];
-    det.bbox.x1 = x1 / static_cast<float>(video_info.width);
-    det.bbox.y1 = y1 / static_cast<float>(video_info.height);
-    det.bbox.x2 = x2 / static_cast<float>(video_info.width);
-    det.bbox.y2 = y2 / static_cast<float>(video_info.height);
+    det.bbox.x1 = x1;
+    det.bbox.y1 = y1;
+    det.bbox.x2 = x2;
+    det.bbox.y2 = y2;
     if (det_meta) {
       det.class_id = det_meta->class_id(i);
       det.score = det_meta->score(i);
@@ -230,37 +255,121 @@ inplace(const AxDataInterface &data, const tracker_properties *prop,
     }
   }
 
+  std::vector<std::vector<float>> embeddings{};
+  if (!prop->embeddings_meta_key.empty()) {
+    auto embeddings_meta
+        = box_meta->get_submetas<AxMetaEmbeddings>(prop->embeddings_meta_key);
+    if (embeddings_meta.size() != convertedDetections.size()) {
+      throw std::runtime_error("inplace_tracker: embeddings_meta size mismatch, number of embeddings "
+                               + std::to_string(embeddings_meta.size()) + " != number of detections "
+                               + std::to_string(convertedDetections.size()));
+    }
+
+    for (int i = 0; i < embeddings_meta.size(); ++i) {
+      auto *embedding_meta = embeddings_meta[i];
+      if (!embedding_meta) {
+        throw std::runtime_error("inplace_tracker: embedding_meta is nullptr for index "
+                                 + std::to_string(i));
+      }
+      auto current_embedding = embedding_meta->get_embeddings();
+      if (current_embedding.size() != 1) {
+        throw std::runtime_error(
+            "inplace_tracker: embedding submeta contains more than one element");
+      }
+      embeddings.push_back(std::move(current_embedding[0]));
+    }
+  }
+
   auto &per_stream_tracker = stream_tracker_map
                                  .try_emplace(stream_id, prop->algorithm, prop->algo_params)
                                  .first->second;
 
-  std::vector<ax::TrackedObject> trackers
-      = per_stream_tracker.tracker->Update(convertedDetections);
-  for (const auto &tracker : trackers) {
-    const auto &xyxy = tracker.GetXyxy(video_info.width, video_info.height);
+  // Compute CMC transform if enabled
+  std::optional<Eigen::Matrix<float, 2, 3>> cmc_transform;
+  if (per_stream_tracker.cmc_computer) {
+    auto &input_video = std::get<AxVideoInterface>(data);
+    if (input_video.data == nullptr) {
+      logger(AX_WARN) << "inplace_tracker: Video data is NULL, CMC disabled for this frame"
+                      << std::endl;
+    } else {
+      logger(AX_DEBUG) << "inplace_tracker: Video data available, processing CMC. Format: "
+                       << static_cast<int>(input_video.info.format)
+                       << ", Size: " << input_video.info.width << "x"
+                       << input_video.info.height << std::endl;
 
-    auto [itr, success]
+      cv::Mat input_mat(cv::Size(input_video.info.width, input_video.info.height),
+          Ax::opencv_type_u8(input_video.info.format), input_video.data,
+          input_video.info.stride);
+
+      cv::Mat gray_frame;
+      if (video_info.format == AxVideoFormat::RGB || video_info.format == AxVideoFormat::RGBA) {
+        cv::cvtColor(input_mat, gray_frame, cv::COLOR_RGB2GRAY);
+      } else if (video_info.format == AxVideoFormat::BGR
+                 || video_info.format == AxVideoFormat::BGRA) {
+        cv::cvtColor(input_mat, gray_frame, cv::COLOR_BGR2GRAY);
+      } else {
+        // Assume already grayscale or use as is
+        gray_frame = input_mat;
+      }
+
+      // Create bounding box matrix from detections
+      Eigen::MatrixXf bbox_matrix(convertedDetections.size(), 4);
+      for (size_t i = 0; i < convertedDetections.size(); ++i) {
+        const auto &bbox = convertedDetections[i].bbox;
+        float *row = bbox_matrix.row(i).data();
+        row[0] = bbox.x1;
+        row[1] = bbox.y1;
+        row[2] = bbox.x2;
+        row[3] = bbox.y2;
+      }
+
+      try {
+        cmc_transform = per_stream_tracker.cmc_computer->compute_affine(gray_frame, bbox_matrix);
+
+        logger(AX_INFO) << "inplace_tracker: Computed CMC for stream "
+                        << stream_id << " with " << convertedDetections.size()
+                        << " detections" << std::endl;
+
+      } catch (const std::exception &e) {
+        logger(AX_WARN) << "inplace_tracker: CMC computation failed: " << e.what()
+                        << std::endl;
+      }
+    }
+  }
+
+  std::vector<ax::TrackedObject> trackers = per_stream_tracker.tracker->Update(
+      convertedDetections, embeddings, cmc_transform);
+
+  for (const auto &tracker : trackers) {
+    const auto &xyxy = tracker.GetXyxy();
+
+    auto [itr, new_entry_created]
         = per_stream_tracker.static_tracker_id_to_tracking_descriptor.try_emplace(
             tracker.track_id, tracker.track_id, tracker.class_id, tracker.score,
             tracker_meta->history_length, prop->determine_object_attribute_callback_map);
 
-    if (!success) {
+    if (!new_entry_created) {
+      itr->second.lost_since = 0;
       ++itr->second.frame_id;
     }
     itr->second.detection_meta_id = tracker.latest_detection_id;
     itr->second.collection->set_frame(itr->second.frame_id,
         TrackingElement{ BboxXyxy{ std::get<0>(xyxy), std::get<1>(xyxy),
-                             std::get<2>(xyxy), std::get<3>(xyxy) },
-            {} });
-    tracker_meta->track_id_to_tracking_descriptor.insert(*itr);
+            std::get<2>(xyxy), std::get<3>(xyxy) } });
+
+    tracker_meta->track_id_to_tracking_descriptor.try_emplace(tracker.track_id, itr->second);
   }
   for (auto itr = per_stream_tracker.static_tracker_id_to_tracking_descriptor.begin();
        itr != per_stream_tracker.static_tracker_id_to_tracking_descriptor.end();) {
-    if (tracker_meta->track_id_to_tracking_descriptor.count(itr->first)) {
-      ++itr;
-    } else {
-      itr = per_stream_tracker.static_tracker_id_to_tracking_descriptor.erase(itr);
+    if (!tracker_meta->track_id_to_tracking_descriptor.count(itr->first)) {
+      ++itr->second.frame_id;
+      ++itr->second.lost_since;
+      if (itr->second.lost_since > prop->max_lost) {
+        itr = per_stream_tracker.static_tracker_id_to_tracking_descriptor.erase(itr);
+        continue;
+      }
     }
+    ++itr;
   }
 
   if (!prop->output_meta_key.empty()) {
@@ -289,10 +398,12 @@ inplace(const AxDataInterface &data, const tracker_properties *prop,
           tracking_descriptor.detection_meta_id * kpts_per_box, kpts_per_box);
       float score = kpts_meta->score(tracking_descriptor.detection_meta_id);
 
+      std::vector<int> ids;
       tracking_descriptor.collection->set_frame_data_map(tracking_descriptor.frame_id,
           prop->input_meta_key,
-          std::make_shared<AxMetaKptsDetection>(std::vector<box_xyxy>(1), std::move(kpts),
-              std::vector<float>{ score }, kpts_shape, kpts_meta->get_decoder_name()));
+          std::make_unique<AxMetaKptsDetection>(std::vector<box_xyxy>(1),
+              std::move(kpts), std::vector<float>{ score }, ids, kpts_shape,
+              kpts_meta->get_decoder_name()));
     }
   }
 }

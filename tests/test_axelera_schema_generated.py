@@ -1,5 +1,6 @@
 # Copyright Axelera AI, 2025
 
+import re
 import tempfile
 
 import pytest
@@ -185,3 +186,30 @@ def test_operator_sentinel_when_disallowed():
         yaml_load(operator_yaml, compiled)
     assert "found arbitrary text" in str(e.value)
     assert "normalized_coord" in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "section, operator_name",
+    [
+        ("preprocess", "undeclared_operator"),
+        ("postprocess", "missing_decoder"),
+        ("cv_process", "tracker_missing"),
+        ("preprocess", "custom-missing-operator"),
+    ],
+)
+def test_undeclared_operators(section, operator_name):
+    compiled = _get_compiled('task', True)
+    operator_yaml = f'''\
+    test_task:
+        {section}:
+            - {operator_name}:
+                param1: test
+    '''
+    with pytest.raises(sy.exceptions.YAMLValidationError) as e:
+        yaml_load(operator_yaml, compiled)
+    exp_op_name = re.sub(
+        r'[-_]', '', operator_name
+    )  # Names are reported without dashes or underscores
+    error_msg = str(e.value)
+    assert f"unexpected key not in schema '{exp_op_name}'" in error_msg
+    assert f"did you forget to declare '{exp_op_name}' in the operators section" in error_msg

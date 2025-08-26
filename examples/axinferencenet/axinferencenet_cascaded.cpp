@@ -11,10 +11,8 @@
 #include <thread>
 #include <vector>
 
+#include "AxFilterDetections.hpp"
 #include "AxInferenceNet.hpp"
-#include "AxMetaKptsDetection.hpp"
-#include "AxMetaObjectDetection.hpp"
-#include "AxMetaSegmentsDetection.hpp"
 #include "AxOpenCVRender.hpp"
 #include "AxStreamerUtils.hpp"
 #include "AxUtils.hpp"
@@ -83,14 +81,15 @@ parse_args(int argc, char **argv)
         << "\n"
         << "The first step is to compile or download the required models:\n"
         << "\n"
-        << "  ./download_prebuilt.py fruit-demo\n"
+        << "  axdownloadmodel fruit-demo\n"
         << "\n"
         << "We then need to run inference.py. This can be done using any media file\n"
         << "for example the fakevideo source, and we need only inference 1 frame:\n"
         << "\n"
-        << "  ./inference.py yolov8s-coco-onnx fakevideo --frames=1 --no-display\n"
+        << "  ./inference.py fruit-demo fakevideo --frames=1 --no-display\n"
         << "\n"
-        << "This will create a file yolov8s-coco-onnx.axnet in the build directory:\n"
+        << "This will create yolov8s-fruit.axnet, yolov8lpose-coco-onnx.axnet, and \n"
+        << "yolov8sseg-coco-onnx.axnet in the build/fruit-demo directory:\n"
         << "\n"
         << "  examples/bin/axinferencenet_cascaded media/4K_fruit1.mp4" << std::endl;
     std::exit(1);
@@ -149,8 +148,20 @@ main(int argc, char **argv)
   // model and the main loop, and then chain the cascaded networks in reverse order
   Ax::BlockingQueue<std::shared_ptr<Frame>> ready;
   auto net2 = Ax::create_inference_net(props2, logger, Ax::forward_to(ready));
+  const Ax::FilterDetectionsProperties filter{
+    .input_meta_key = "master_detections",
+    .output_meta_key = "master_detections_adapted_as_input_for_segmentations",
+    .hide_output_meta = true,
+    .min_width = 50,
+    .min_height = 50,
+    .classes_to_keep{},
+    .score = 0.5f,
+    .which = Ax::Which::Center,
+    .top_k = 3,
+  };
   auto net1 = Ax::create_inference_net(props1, logger, Ax::forward_to(*net2));
-  auto net0 = Ax::create_inference_net(props0, logger, Ax::forward_to(*net1));
+  auto net0 = Ax::create_inference_net(
+      props0, logger, Ax::filter_detections_to(*net1, filter));
 
   // Start the reader thread which reads frames from the video source and pushes
   // them to the inference network
@@ -158,8 +169,13 @@ main(int argc, char **argv)
 
   // Use OpenCV window to display the results
   const std::string wndname = "AxInferenceNet Cascade Demo";
-  cv::namedWindow(wndname, cv::WINDOW_AUTOSIZE);
-  cv::setWindowProperty(wndname, cv::WND_PROP_ASPECT_RATIO, cv::WINDOW_KEEPRATIO);
+  const bool display_enabled = !Ax::get_env("DISPLAY", "").empty();
+  if (display_enabled) {
+    cv::namedWindow(wndname, cv::WINDOW_NORMAL);
+    cv::setWindowProperty(wndname, cv::WND_PROP_ASPECT_RATIO, cv::WINDOW_KEEPRATIO);
+  } else {
+    std::cout << "DISPLAY is not set, results will not be shown." << std::endl;
+  }
 
   Ax::OpenCV::RenderOptions render_options;
   render_options.labels = labels;
@@ -175,6 +191,8 @@ main(int argc, char **argv)
       // OpenCV is quite slow at rendering results, so we only render every 10th frame
       for (auto &&[name, meta] : frame->meta) {
         Ax::OpenCV::render(*meta, frame->bgr, render_options);
+      }
+      if (display_enabled) {
         cv::imshow(wndname, frame->bgr);
         cv::waitKey(1);
       }
@@ -195,5 +213,7 @@ main(int argc, char **argv)
   const auto taken = static_cast<float>(duration.count()) / 1e6;
   std::cout << "Executed " << num_frames << " frames in " << taken
             << "s : " << num_frames / taken << "fps" << std::endl;
-  cv::destroyWindow(wndname);
+  if (display_enabled) {
+    cv::destroyWindow(wndname);
+  }
 }

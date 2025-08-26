@@ -27,6 +27,11 @@ LOG = logging_utils.getLogger(__name__)
 
 SegmentationMask = tuple[int, int, int, int, int, int, int, int, np.ndarray]
 
+# Named Draw List layers for the most commonly used indexes
+USER = 0
+TOPMOST = -1
+SPEEDOS = -2
+
 
 def _read_new_data(wnds, queues):
     frames = {}
@@ -90,6 +95,7 @@ class CVApp(display.App):
         super().__init__(*args, **kwargs)
         self._stream_wnds = set()
         self._meta_cache = display.MetaCache()
+        self._speedometer_smoothing = collections.defaultdict(display.SpeedometerSmoothing)
         self._layers: dict[uuid.UUID, display._Layer] = collections.defaultdict()
 
     def _create_new_window(self, q, wndname, size):
@@ -114,15 +120,11 @@ class CVApp(display.App):
         Layers with a stream_id of -1 are global and will be rendered on all windows.
         Otherwise the layer will only be rendered on the window with the same stream_id.
         '''
-        now = time.time()
-        expired = [
-            k
-            for k, v in self._layers.items()
-            if v.fadeout_start and now - v.fadeout_start >= v.fadeout_duration
-        ]
+        _stream_ids = (stream_id, -1)
+        layers, expired = display._get_visible_and_expired_layers(self._layers, _stream_ids)
         for k in expired:
             self._layers.pop(k)
-        return [x for x in self._layers.values() if x.stream_id in [stream_id, -1]]
+        return layers
 
     def _run(self, interval=1 / 30):
         last_frame = time.time()
@@ -144,13 +146,6 @@ class CVApp(display.App):
                     if oldtitle != opts.title:
                         pending_titles[wndname] = options[wndname].title
                     continue
-                elif isinstance(msg, display._Delete):
-                    if msg.id in self._layers and not self._layers[msg.id].fadeout_start:
-                        self._layers[msg.id].fadeout_start = time.time()
-                        self._layers[msg.id].fadeout_duration = msg.fadeout
-                    else:
-                        LOG.trace(f'layer {msg.id} already deleted or fading out')
-                    continue
                 elif isinstance(msg, display._Layer):
                     self._layers[msg.id] = msg
                     continue
@@ -161,7 +156,10 @@ class CVApp(display.App):
                 if wndname not in self._wnds:
                     self._create_new_window(None, wndname, msg.image.size)
                 layers = self._get_layers(msg.stream_id)
-                draw = CVDraw(msg.image, layers, opts)
+                speedometer_smoothing = (
+                    self._speedometer_smoothing[wndname] if opts.speedometer_smoothing else None
+                )
+                draw = CVDraw(msg.image, layers, opts, speedometer_smoothing)
 
                 _, meta_map = self._meta_cache.get(msg.stream_id, msg.meta)
                 for m in meta_map.values():
@@ -172,6 +170,8 @@ class CVApp(display.App):
                     or msg.image.color_format == types.ColorFormat.RGBA
                 ):
                     bgr = msg.image.asarray(types.ColorFormat.BGRA)
+                elif msg.image.color_format == types.ColorFormat.GRAY:
+                    bgr = msg.image.asarray(types.ColorFormat.GRAY)
                 else:
                     bgr = msg.image.asarray(types.ColorFormat.RGBA)
                 if pending := pending_titles.pop(wndname, None):
@@ -234,7 +234,7 @@ def _normalize_anchor_point(
         y -= height / 2
     elif anchor_y == 'bottom':
         y -= height
-    return x, y
+    return int(x), int(y)
 
 
 class _DrawList(list):
@@ -245,69 +245,84 @@ class _DrawList(list):
         return _draw
 
 
+class _LayeredDrawList(collections.defaultdict):
+    def __init__(self):
+        super().__init__(_DrawList)
+
+    def __getattr__(self, name):
+        return getattr(self[USER], name)
+
+    def __iter__(self):
+        dlists = list(self.keys())
+        bottom = sorted([i for i in dlists if i >= 0])
+        top = sorted([i for i in dlists if i < 0])
+        for dlist in bottom + top:
+            yield from self[dlist]
+
+    def __len__(self):
+        return sum(len(layer) for layer in self.values())
+
+
 class CVDraw(display.Draw):
     def __init__(
-        self, image: types.Image, layers: list[display._Layer], options: CVOptions = CVOptions()
+        self,
+        image: types.Image,
+        layers: list[display._Layer],
+        options: CVOptions = CVOptions(),
+        speedometer_smoothing: display.SpeedometerSmoothing = None,
     ):
         self._canvas_size = (image.width, image.height)
         self._img = image
         rgb = image.asarray('RGB')
         self._pil = PIL.Image.fromarray(rgb_to_grayscale_rgb(rgb, options.grayscale))
         self._draw = PIL.ImageDraw.Draw(self._pil, "RGBA")
-        self._dlist = _DrawList()
+        self._dlist = _LayeredDrawList()
         self._font_cache = {}
         self._speedometer_index = 0
         self._options = options
+        self._speedometer_smoothing = speedometer_smoothing
 
-        now = time.time()
-        for l in layers:
-            if l.fadeout_start is None or l.fadeout_start > now:
-                fadeout_percent = 1.0
-            else:
-                fadeout_percent = max(
-                    0.0, 1.0 - ((now - l.fadeout_start) / float(l.fadeout_duration))
-                )
-
-            pt = l.position.as_px(self._canvas_size)
-            if isinstance(l, display._Text):
-                font = display.Font(size=l.font_size)
-                text_size = self.textsize(l.text, font)
+        for x in layers:
+            pt = x.position.as_px(self._canvas_size)
+            if isinstance(x, display._Text):
+                font = display.Font(size=x.font_size)
+                text_size = self.textsize(x.text, font)
                 pt = _normalize_anchor_point(
                     *pt,
                     text_size[0],
                     text_size[1],
-                    l.anchor_x,
-                    l.anchor_y,
+                    x.anchor_x,
+                    x.anchor_y,
                 )
-                color = l.color[:3] + (int(l.color[3] * fadeout_percent),)
-                bgcolor = l.bgcolor[:3] + (int(l.bgcolor[3] * fadeout_percent),)
+                color = x.color[:3] + (int(x.color[3] * x.visibility),)
+                bgcolor = x.bgcolor[:3] + (int(x.bgcolor[3] * x.visibility),)
                 txt = PIL.Image.new('RGBA', text_size, bgcolor)
                 txt_draw = PIL.ImageDraw.Draw(txt, "RGBA")
-                txt_draw.text((0, 0), l.text, color, self._load_font(font), "lt")
-                self._dlist.paste(txt, pt, txt)
-            elif isinstance(l, display._Image):
-                img = _load_pil_image_from_file(l.path)
-                if l.scale is None:
+                txt_draw.text((0, 0), x.text, color, self._load_font(font), "lt")
+                self._dlist[TOPMOST].paste(txt, pt, txt)
+            elif isinstance(x, display._Image):
+                img = _load_pil_image_from_file(x.path)
+                if x.scale is None:
                     scale = 1.0, 1.0
-                elif isinstance(l.scale, float):
-                    scale = l.scale, l.scale
+                elif isinstance(x.scale, float):
+                    scale = x.scale, x.scale
                 img = img.resize((int(scale[0] * img.width), int(scale[1] * img.height)))
-                if fadeout_percent < 1.0:
+                if x.visibility < 1.0:
                     img = img.convert("RGBA")
                     alpha = np.array(img.split()[-1])
-                    alpha = (alpha * fadeout_percent).astype(np.uint8)
+                    alpha = (alpha * x.visibility).astype(np.uint8)
                     img.putalpha(PIL.Image.fromarray(alpha))
                 pt = _normalize_anchor_point(
                     *pt,
                     img.width,
                     img.height,
-                    l.anchor_x,
-                    l.anchor_y,
+                    x.anchor_x,
+                    x.anchor_y,
                 )
 
-                self._dlist.paste(img, pt, img)
+                self._dlist[TOPMOST].paste(img, pt, img)
             else:
-                LOG.debug(f"Unknown layer type {l.__class__.__name__} ignoring...")
+                LOG.debug(f"Unknown layer type {x.__class__.__name__} ignoring...")
 
     def _pt_transform(self, pt: tuple[int | float, int | float]) -> tuple[int, int]:
         if type(pt[0]) is float:
@@ -322,26 +337,27 @@ class CVDraw(display.Draw):
     def canvas_size(self) -> display.Point:
         return self._canvas_size
 
-    @property
-    def _speedometer_dlist_calls(self):
-        return 4 * self._speedometer_index
-
     def draw_speedometer(self, metric: inf_tracers.TraceMetric):
-        text = display.calculate_speedometer_text(metric)
-        needle_pos = display.calculate_speedometer_needle_pos(metric)
+        if self._speedometer_smoothing:
+            self._speedometer_smoothing.update(metric)
+        text = display.calculate_speedometer_text(metric, self._speedometer_smoothing)
+        needle_pos = display.calculate_speedometer_needle_pos(metric, self._speedometer_smoothing)
         m = display.SpeedometerMetrics(self._canvas_size, self._speedometer_index)
         font = display.Font(size=m.text_size)
 
         speedometer = _get_speedometer(m.diameter)
         C = m.center
-        self._dlist.paste(speedometer, m.top_left, speedometer)
+        self._dlist[SPEEDOS].paste(speedometer, m.top_left, speedometer)
         pos = (C[0], C[1] + m.text_offset)
-        self._dlist.text(pos, text, m.text_color, self._load_font(font), "mb")
+        self._dlist[SPEEDOS].text(pos, text, m.text_color, self._load_font(font), "mb")
         font = dataclasses.replace(font, size=round(0.8 * font.size))
         pos = (C[0], C[1] + m.radius * 75 // 100)
-        self._dlist.text(pos, metric.title, m.text_color, self._load_font(font), "mb")
+        self._dlist[SPEEDOS].text(pos, metric.title, m.text_color, self._load_font(font), "mb")
         needle_coords = _coords(C, m.needle_radius)
-        self._dlist.pieslice(needle_coords, needle_pos - 2, needle_pos + 2, m.needle_color)
+        # Interpret RGB color as BGR in the OpenCV renderer, so there is clear
+        # visual feedback that we are rendering with OpenCV.
+        needle_color = m.needle_color[2::-1] + (m.needle_color[3],)
+        self._dlist[SPEEDOS].pieslice(needle_coords, needle_pos - 2, needle_pos + 2, needle_color)
 
         self._speedometer_index += 1
 
@@ -393,7 +409,7 @@ class CVDraw(display.Draw):
         if back_color is not None:
             w, h = self.textsize(text, font)
             self.rectangle(p, (p[0] + w, p[1] + h), back_color)
-        self._dlist.text(p, text, txt_color, self._load_font(font), "lt")
+        self._dlist.text(p, text, txt_color, self._load_font(font))
 
     def keypoint(
         self, p: display.Point, color: display.Color = (255, 255, 255, 255), size=2
@@ -409,12 +425,9 @@ class CVDraw(display.Draw):
             else:
                 getattr(self._draw, d[0])(*d[1:])
 
-        speedometers = self._dlist[: self._speedometer_dlist_calls]
-        for d in self._dlist[self._speedometer_dlist_calls :]:
+        for d in self._dlist:
             call_draw(d)
-        for d in speedometers:
-            call_draw(d)
-        self._img.update(pil=self._pil, color_format=self._img.color_format)
+        self._img.update(pil=self._pil, color_format=types.ColorFormat.RGBA)
 
     def heatmap(self, data: np.ndarray, color_map: np.ndarray):
         indices = np.clip((data * len(color_map) - 1).astype(int), 0, len(color_map) - 1)

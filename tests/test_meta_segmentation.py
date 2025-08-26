@@ -11,6 +11,12 @@ from axelera.app.meta import ClassificationMeta, InstanceSegmentationMeta
 from axelera.app.meta.segmentation import _translate_image_space_rect
 
 
+class MockTaskRenderConfig:
+    def __init__(self, show_labels=True, show_annotations=True):
+        self.show_labels = show_labels
+        self.show_annotations = show_annotations
+
+
 def mock_draw(width, height):
     image = Image.fromarray(np.zeros((height, width, 3), np.uint8))
     draw = Mock()
@@ -29,6 +35,9 @@ def mock_get_color(index):
 def test_draw_no_masks():
     draw, image = mock_draw(2, 2)
     meta = InstanceSegmentationMeta()
+    container_meta = create_container_with_render_config("segmentation_meta")
+    meta.set_container_meta(container_meta)
+    object.__setattr__(meta, 'meta_name', "segmentation_meta")
 
     with patch("axelera.app.meta.segmentation.LOG.warning") as mock_warning:
         with patch("axelera.app.display_cv.CVDraw", return_value=draw):
@@ -279,6 +288,21 @@ def test_box_conversions(method, expected):
 
 def test_draw_empty():
     meta = InstanceSegmentationMeta()
+
+    from axelera.app.config import RenderConfig
+    from axelera.app.meta import AxMeta
+
+    container_meta = AxMeta("test_image")
+    render_config = RenderConfig()
+    render_config.set_task(
+        "segmentation_meta", show_labels=True, show_annotations=True, force_register=True
+    )
+    container_meta.set_render_config(render_config)
+
+    # Set container_meta and meta_name properly
+    meta.set_container_meta(container_meta)
+    object.__setattr__(meta, 'meta_name', "segmentation_meta")
+
     draw_mock = Mock()
     with patch("axelera.app.meta.segmentation.LOG.warning") as mock_warning:
         meta.draw(draw_mock)
@@ -293,3 +317,26 @@ def test_translate_image_space_rect():
     bbox = 66, 102, 88, 120
     got = _translate_image_space_rect(bbox, input_roi, (160, 160))
     assert got == (1018, 617, 1053, 646)
+
+
+def create_container_with_render_config(meta_name, show_labels=True, show_annotations=True):
+    """Create a container meta with proper render config for testing.
+
+    Args:
+        meta_name: The name to register for the meta in the render config
+        show_labels: Whether to show labels in rendering
+        show_annotations: Whether to show annotations in rendering
+
+    Returns:
+        container_meta: The configured AxMeta container
+    """
+    from axelera.app.config import RenderConfig
+    from axelera.app.meta import AxMeta
+
+    container_meta = AxMeta("test_image")
+    render_config = RenderConfig()
+    render_config.set_task(
+        meta_name, show_labels=show_labels, show_annotations=show_annotations, force_register=True
+    )
+    container_meta.set_render_config(render_config)
+    return container_meta

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from pathlib import Path
 import re
 import sys
@@ -159,25 +160,89 @@ def _convert_to_tensors(data_input) -> torch.Tensor:
         raise ValueError(f"Unsupported data type {type(data_input)} in the list")
 
 
-def _reshape_to_target_shapes(data, output_shapes):
-    reshaped_data = []
+def _match_arrays_to_shapes(arrays, target_shapes, target_names=None):
+    """
+    Match arrays with target shapes based on element count.
+    Simplified version without zero-dimension handling.
+    """
+    if not isinstance(arrays, list):
+        arrays = [arrays]
 
-    for item, shape in zip(data, output_shapes):
-        # Convert item to a NumPy array if it's not already
-        if not isinstance(item, np.ndarray):
-            item = np.array(item)
+    np_arrays = []
+    for arr in arrays:
+        if not isinstance(arr, np.ndarray):
+            arr = np.array(arr)
+        np_arrays.append(arr)
 
-        # Check if the number of elements matches
-        if item.size == np.prod(shape):
-            reshaped_item = item.reshape(shape)
-            reshaped_data.append(reshaped_item)
-        else:
-            raise ValueError(
-                f"Cannot reshape data of shape {item.shape} "
-                f"to target shape {shape} due to mismatch in number of elements."
-            )
+    # Create dictionaries for efficient matching by element count
+    arrays_by_size = {}
+    for i, arr in enumerate(np_arrays):
+        size = arr.size
+        if size not in arrays_by_size:
+            arrays_by_size[size] = []
+        arrays_by_size[size].append((i, arr))
 
-    return reshaped_data
+    shapes_by_size = {}
+    for i, shape in enumerate(target_shapes):
+        size = np.prod(shape)
+        if size not in shapes_by_size:
+            shapes_by_size[size] = []
+        shapes_by_size[size].append((i, shape))
+
+    # Match arrays to shapes by element count
+    matched_arrays = []
+    used_array_indices = set()
+    used_shape_indices = set()
+
+    # Process each size that has both arrays and shapes
+    for size in set(arrays_by_size.keys()) & set(shapes_by_size.keys()):
+        available_arrays = arrays_by_size[size]
+        available_shapes = shapes_by_size[size]
+
+        # Match arrays to shapes until we run out of either
+        for (array_idx, array), (shape_idx, shape) in zip(available_arrays, available_shapes):
+            if array_idx not in used_array_indices and shape_idx not in used_shape_indices:
+                matched_arrays.append((array, shape, shape_idx))
+                used_array_indices.add(array_idx)
+                used_shape_indices.add(shape_idx)
+
+    unmatched_arrays = [arrays[i] for i in range(len(arrays)) if i not in used_array_indices]
+    unmatched_shape_indices = [i for i in range(len(target_shapes)) if i not in used_shape_indices]
+
+    if unmatched_shape_indices:
+        unmatched_shapes = [target_shapes[i] for i in unmatched_shape_indices]
+        LOG.warning(
+            f"Some target shapes have no matching array by element count: {unmatched_shapes}"
+        )
+    elif unmatched_arrays:
+        LOG.warning(f"Could not find matching target shapes for {len(unmatched_arrays)} arrays")
+
+    return matched_arrays, unmatched_arrays, unmatched_shape_indices
+
+
+def _reshape_to_target_shapes(arrays, target_shapes):
+    """
+    Reshape arrays to target shapes using element count matching.
+    Simplified version without zero-dimension handling.
+    """
+    if not isinstance(arrays, list):
+        arrays = [arrays]
+
+    matched, unmatched, unmatched_idx = _match_arrays_to_shapes(arrays, target_shapes)
+
+    if unmatched:
+        unmatched_shapes = [arr.shape for arr in unmatched]
+        raise ValueError(
+            f"Arrays with shapes {unmatched_shapes} couldn't be matched to any target shape "
+            f"in {target_shapes}. Element counts don't match."
+        )
+
+    reshaped_arrays = []
+    for arr, shape, _ in matched:
+        reshaped_arr = arr.reshape(shape)
+        reshaped_arrays.append(reshaped_arr)
+
+    return reshaped_arrays
 
 
 def convert_to_rgba(
@@ -251,53 +316,6 @@ def _determine_device(model):
     return 'aipu' if isinstance(model, types.Manifest) else torch_utils.device_name()
 
 
-def _get_io_shapes_from_tvm_mod(quant_model_file: Path):
-    """
-    Given a TVM IRModule file, this function extracts the input and output shapes.
-    """
-    import tvm
-    from tvm import relay
-
-    mod = tvm.ir.load_json(quant_model_file.read_text())
-    main_func = mod["main"]
-
-    input_shapes = []
-    for arg in main_func.params:
-        input_shapes.append([int(dim) for dim in arg.type_annotation.shape])
-
-    output_type = main_func.ret_type
-    if isinstance(output_type, relay.TensorType):
-        output_shape = [[int(dim) for dim in output_type.shape]]
-    elif isinstance(output_type, relay.TupleType):
-        output_shape = [[int(dim) for dim in typ.shape] for typ in output_type.fields]
-    else:
-        raise ValueError("The main function does not return a tensor or tuple of tensors")
-    return input_shapes, output_shape
-
-
-def _remove_trailing_singletons(shape_list):
-    """
-    Remove trailing singleton dimensions from each shape in a list of shapes.
-
-    Parameters:
-    - shape_list: list of list of ints, each inner list is a shape
-
-    Returns:
-    - adjusted_shapes: list of adjusted shapes with trailing singletons removed
-    """
-    adjusted_shapes = []
-
-    for shape in shape_list:
-        # Find the last dimension that is not 1 (i.e., not a singleton)
-        last_non_singleton_dim = next(
-            (i for i, size in reversed(list(enumerate(shape))) if size != 1), -1
-        )
-        # Include all dimensions up to the last non-singleton dimension
-        new_shape = shape[: last_non_singleton_dim + 1] if last_non_singleton_dim != -1 else shape
-        adjusted_shapes.append(new_shape)
-    return adjusted_shapes
-
-
 def build_onnx_inferencer(model: str):
     import onnxruntime as rt
 
@@ -364,109 +382,391 @@ def _get_model_path(model_root: Path, model_file) -> Path | None:
 
 
 @dataclasses.dataclass
-class InferenceConfig:
+class InferenceOpConfig:
     """
-    Configuration settings related to inference processing.
+    Configuration settings related to inference operator.
     Initialized from model info and potentially updated by a postprocess operator.
+
+    The 4 handle flags affect C++ pipeline only; for torch-aipu, the inference operator always
+    handles dequantization, depadding, transpose, and pre-/post-amble processing.
+
+    handle_all: Optional convenience parameter to set all 4 handle flags at once.
+            - If None (default): individual flags are used as specified
+            - If True: all 4 handle flags are set to True and the input/output will totally follow the source ONNX input/output nodes.
+              This simplifies integration but might not be optimal for performance in all cases.
+            - If False: all 4 handle flags are set to False
+
+    Performance considerations:
+        - For small models: Setting handle_all=False and moving operations to postprocessing may improve performance
+          through fusion optimizations
+        - For large models: Using handle_all=True typically doesn't impact performance significantly and simplifies integration
     """
 
-    # Field determined during initial creation from model info
-    cpp_focus_layer_on_host: bool = True
-    # Internal flags updated later by the operator
-    _cpp_decoder_does_dequantization_and_depadding: bool = dataclasses.field(
-        init=False, default=False
-    )
-    _cpp_decoder_does_transpose: bool = dataclasses.field(init=False, default=True)
-    _cpp_decoder_does_postamble: bool = dataclasses.field(init=False, default=False)
+    handle_all: Optional[bool] = None
 
-    def _validate_and_set_cpp_flags(self, depadding: bool, transpose: bool, postamble: bool):
-        """Validates the gst flags and sets the internal state.
-        If postamble is False, depadding and transpose must also be False (will warn and force).
-        If postamble is True, depadding and transpose can be either True or False.
+    # Individual handle flags - only used when handle_all is None
+    handle_dequantization_and_depadding: Optional[bool] = None
+    handle_transpose: Optional[bool] = None
+    handle_postamble: Optional[bool] = None
+    handle_preamble: Optional[bool] = None
+
+    # Other configuration options
+    dequantize_using_lut: bool = True
+    postamble_onnxruntime_intra_op_num_threads: int = 4
+    postamble_onnxruntime_inter_op_num_threads: int = 4
+    postamble_onnx: str = ''  # optional manual-cut postamble ONNX model path
+    postproc: list = dataclasses.field(default_factory=list)
+
+    def __post_init__(self):
+        """Validates the flags and sets the internal state.
+        If handle_all is set, individual flags must not be explicitly set.
+        If postamble is True, depadding and transpose must also be True (will warn and force).
         """
-        # TODO: Once manifest_postamble_graph is available, enable this logic.
-        # For classifier models, explicit transposition is unnecessary. Additionally, postamble is set to False but actually there is no postamble graph.
-        # if self._postamble_graph and not postamble:
-        #     if depadding or transpose:
-        #         LOG.warning(
-        #             "Configuration conflict: 'cpp_decoder_does_postamble' is False, "
-        #             "so 'cpp_decoder_does_dequantization_and_depadding' and 'cpp_decoder_does_transpose' "
-        #             "must also be False. Forcing both to False."
-        #         )
-        #     depadding = False
-        #     transpose = False
 
-        self._cpp_decoder_does_dequantization_and_depadding = depadding
-        self._cpp_decoder_does_transpose = transpose
-        self._cpp_decoder_does_postamble = postamble
+        decoder_handles_dequantization_and_depadding = False
+        decoder_handles_transpose = False
+        decoder_handles_postamble = False
+        if len(self.postproc) == 1:
+            decoder_handles_dequantization_and_depadding = self.postproc[
+                0
+            ].handles_dequantization_and_depadding()
+            decoder_handles_transpose = self.postproc[0].handles_transpose()
+            decoder_handles_postamble = self.postproc[0].handles_postamble()
 
-    @classmethod
-    def from_model_info(cls, model_info_kwargs: dict):  # Runtime model info
+        # Check for conflicting configuration
+        individual_flags_set = any(
+            [
+                self.handle_dequantization_and_depadding is not None,
+                self.handle_transpose is not None,
+                self.handle_postamble is not None,
+                self.handle_preamble is not None,
+            ]
+        )
+
+        if self.handle_all is not None and individual_flags_set:
+            raise ValueError(
+                "Cannot set both 'handle_all' and individual handle flags. "
+                "Use either 'handle_all' for convenience or set individual flags explicitly."
+            )
+
+        # Configure flags based on handle_all or set defaults for individual flags
+        if self.handle_all is not None:
+            self.handle_dequantization_and_depadding = self.handle_all
+            self.handle_transpose = self.handle_all
+            self.handle_postamble = self.handle_all
+            self.handle_preamble = self.handle_all
+        else:
+            # Set defaults for individual flags if not specified
+            # If the decoder must handle it then inference shall not handle it
+            if self.handle_dequantization_and_depadding is None:
+                self.handle_dequantization_and_depadding = (
+                    not decoder_handles_dequantization_and_depadding
+                )
+            if self.handle_transpose is None:
+                self.handle_transpose = not decoder_handles_transpose
+            if self.handle_postamble is None:
+                self.handle_postamble = not decoder_handles_postamble
+            if self.handle_preamble is None:
+                self.handle_preamble = True
+
+        # Validate dependencies between flags
+        if self.handle_postamble:
+            if not self.handle_dequantization_and_depadding:
+                LOG.warning(
+                    "Configuration conflict: 'handle_postamble' is True, "
+                    "so 'handle_dequantization_and_depadding' must also be True. Forcing it to True."
+                )
+                self.handle_dequantization_and_depadding = True
+            if not self.handle_transpose:
+                LOG.warning(
+                    "Configuration conflict: 'handle_postamble' is True, "
+                    "so 'handle_transpose' must also be True. Forcing it to True."
+                )
+                self.handle_transpose = True
+
+        # Check postamble_onnx exists if specified
+        if self.postamble_onnx:
+            postamble_onnx = Path(self.postamble_onnx).resolve()
+            if not postamble_onnx.is_file():
+                raise ValueError(
+                    f"Postamble ONNX model file {self.postamble_onnx} does not exist. "
+                    "Please provide a valid path to the postamble ONNX model."
+                )
+            self.postamble_onnx = str(postamble_onnx)
+
+        # Check if threads are reasonable
+        if self.postamble_onnxruntime_intra_op_num_threads < 1:
+            raise ValueError(
+                f"postamble_onnxruntime_intra_op_num_threads must be >= 1, got {self.postamble_onnxruntime_intra_op_num_threads}"
+            )
+        if self.postamble_onnxruntime_inter_op_num_threads < 1:
+            raise ValueError(
+                f"postamble_onnxruntime_inter_op_num_threads must be >= 1, got {self.postamble_onnxruntime_inter_op_num_threads}"
+            )
+
+        self._transpose_aipu_output = None
+
+        # Check conflicts between decoder and inference config
+        self._cpp_conflict_handle_all = False
+        self._cpp_conflict_dequantization_and_depadding = False
+        self._cpp_conflict_transpose = False
+        self._cpp_conflict_postamble = False
+
+        if (
+            decoder_handles_dequantization_and_depadding
+            and self.handle_dequantization_and_depadding
+        ):
+            self._cpp_conflict_dequantization_and_depadding = True
+        if decoder_handles_transpose and self.handle_transpose:
+            self._cpp_conflict_transpose = True
+        if decoder_handles_postamble and self.handle_postamble:
+            self._cpp_conflict_postamble = True
+        if self.handle_all is not None and (
+            self._cpp_conflict_dequantization_and_depadding
+            or self._cpp_conflict_transpose
+            or self._cpp_conflict_postamble
+        ):
+            self._cpp_conflict_handle_all = True
+
+    def assert_no_conflict(self):
+        handle_all_message = " (via handle_all)" if self._cpp_conflict_handle_all else str()
+        if self._cpp_conflict_dequantization_and_depadding:
+            raise ValueError(
+                "Conflict in configuration of inference detected: dequantization and depadding must be handled by the decoder but it is set for inference"
+                + handle_all_message
+            )
+        if self._cpp_conflict_transpose:
+            raise ValueError(
+                "Conflict in configuration of inference detected: transpose must be handled by the decoder but it is set for inference"
+                + handle_all_message
+            )
+        if self._cpp_conflict_postamble:
+            raise ValueError(
+                "Conflict in configuration of inference detected: postamble must be handled by the decoder but it is set for inference"
+                + handle_all_message
+            )
+
+    @property
+    def transpose_aipu_output(self):
+        if self._transpose_aipu_output is None:
+            raise ValueError(
+                "transpose_aipu_output is not set. Please call reconcile_manifest() "
+                "after configuring the InferenceOpConfig with a manifest."
+            )
+        return self._transpose_aipu_output
+
+    @staticmethod
+    def _is_scalar_output(output_shape: list) -> bool:
         """
-        Creates an InferenceConfig instance based solely on model information.
-        The cpp_* flags related to the operator will be default until updated.
+        Determine if an output shape represents a scalar/classifier output.
 
-        TODO: add manifest_postamble_graph; ideally, when we build AxTask, we should know if the model has been deployed or not; if deployed, we should take manifest to determine how we want to configure the inference config
+        Scalar outputs (1x1 spatial dimensions) typically come from:
+        - Classification models (e.g., ResNet, EfficientNet)
+        - Feature extraction models
+        - Global pooling outputs
+
+        These outputs generally don't require transpose operations.
 
         Args:
-            model_info_kwargs: Dictionary containing model-specific information.
-        """
-        instance = cls()  # Create an instance with default values for all fields
+            output_shape: List representing tensor shape [N, H, W, C] or similar
 
-        # --- Determine settings SOLELY from model_info ---
-        instance.cpp_focus_layer_on_host = bool(
-            model_info_kwargs.get('YOLO', {}).get('focus_layer_replacement', True)
-        )
-        return instance
-
-    def update_from_decoder_op(self, postprocess_op: AxOperator | None):
+        Returns:
+            bool: True if this is a scalar output (1x1 spatial dimensions)
         """
-        Updates the GST-related flags based on the postprocess operator.
-        This should be called after the instance is created, typically
-        once the specific postprocess operator is known.
+        if len(output_shape) < 3:
+            return False
+        h, w = output_shape[1], output_shape[2]
+        return h == w == 1
+
+    def _determine_transpose_from_output_info(
+        self,
+        output_info: types.OutputInfo,
+        manifest_output_shape: list,
+        model_info: types.ModelInfo,
+        output_index: int,
+    ) -> bool:
+        """
+        Determine if transpose is needed based on OutputInfo and manifest output shape.
 
         Args:
-            postprocess_op: The postprocessing operator instance (or None).
+            output_info: The OutputInfo containing original model output shape and metadata
+            manifest_output_shape: The actual output shape from the compiled manifest
+            model_info: Model information for context
+
+        Returns:
+            bool: True if transpose is needed, False otherwise
         """
-        if not postprocess_op:
-            return
-        elif postprocess_op.cpp_decoder_does_all:
-            self._validate_and_set_cpp_flags(True, True, True)
-            return
+        from .. import compile
 
-        depadding = getattr(
-            postprocess_op,
-            "cpp_decoder_does_dequantization_and_depadding",
-            self._cpp_decoder_does_dequantization_and_depadding,
-        )
-        if depadding is None:
-            depadding = self._cpp_decoder_does_dequantization_and_depadding
+        manifest = model_info.manifest
+        if not manifest or not manifest.n_padded_ch_outputs:
+            # Fallback to simple heuristic if no padding info available
+            return not self._is_scalar_output(manifest_output_shape)
 
-        transpose = getattr(
-            postprocess_op, "cpp_decoder_does_transpose", self._cpp_decoder_does_transpose
-        )
-        if transpose is None:
-            transpose = self._cpp_decoder_does_transpose
+        if output_index >= len(manifest.n_padded_ch_outputs):
+            # Fallback to simple heuristic
+            return not self._is_scalar_output(manifest_output_shape)
 
-        postamble = getattr(
-            postprocess_op, "cpp_decoder_does_postamble", self._cpp_decoder_does_postamble
-        )
-        if postamble is None:
-            postamble = self._cpp_decoder_does_postamble
+        try:
+            depadded_shapes = compile.get_original_shape(
+                output_shapes=(tuple(manifest_output_shape),),
+                n_padded_ch=(manifest.n_padded_ch_outputs[output_index],),
+                current_layout="NHWC",  # Manifest output is in NHWC format
+                expected_layout="NHWC",
+            )
+            depadded_shape = depadded_shapes[0]
 
-        self._validate_and_set_cpp_flags(depadding, transpose, postamble)
+            # Compare depadded shape with original output shape (excluding batch dimension)
+            output_info_shape = output_info.shape
+            if len(output_info_shape) == len(depadded_shape):
+                # Same number of dimensions, compare all except batch (index 0)
+                return depadded_shape[1:] != output_info_shape[1:]
+            else:
+                # Different structure, fallback to heuristic
+                return not self._is_scalar_output(manifest_output_shape)
+
+        except Exception as e:
+            LOG.warning(
+                f"Failed to determine transpose from output info: {e}, falling back to heuristic"
+            )
+            return not self._is_scalar_output(manifest_output_shape)
+
+    def reconcile_manifest(self, model_info: types.ModelInfo):
+        """Reconcile the configuration with the compiled manifest."""
+        manifest = model_info.manifest
+        if self.handle_postamble and self.postamble_onnx:
+            if manifest.postprocess_graph:
+                LOG.warning(
+                    f"Duplicated postamble configuration detected. The ONNX postamble model "
+                    f"'{self.postamble_onnx}' will be used, overriding the one specified in "
+                    f"the manifest '{manifest.postprocess_graph}'."
+                )
+            else:
+                if Path(self.postamble_onnx).is_file():
+                    LOG.info(f"Found custom postamble ONNX model '{self.postamble_onnx}'.")
+                else:
+                    raise ValueError(
+                        f"Custom postamble ONNX model '{self.postamble_onnx}' does not exist."
+                    )
+            manifest.postprocess_graph = self.postamble_onnx
+
+        if self.handle_transpose and manifest.output_shapes:
+            self._transpose_aipu_output = []
+
+            if model_info.output_info and len(model_info.output_info) == len(
+                manifest.output_shapes
+            ):
+                for i, (output_info, manifest_output_shape) in enumerate(
+                    zip(model_info.output_info, manifest.output_shapes)
+                ):
+                    needs_transpose = self._determine_transpose_from_output_info(
+                        output_info, manifest_output_shape, model_info, i
+                    )
+                    self._transpose_aipu_output.append(needs_transpose)
+            else:
+                # DEPRECATED: Fallback to legacy heuristic method
+                # TODO: Remove this fallback after 2 releases - all models should use explicit transpose metadata
+                LOG.warning(
+                    "Using deprecated heuristic transpose detection. Redeploy the model to include explicit output info"
+                )
+
+                for output_shape in manifest.output_shapes:
+                    # Legacy heuristic logic:
+                    # - Scalar outputs (1x1): typically classifiers/feature extractors, no transpose needed
+                    # - Full-size outputs (matching input dims): image processing tasks, no transpose needed
+                    is_scalar_output = self._is_scalar_output(output_shape)
+                    is_fullsize_output = (
+                        output_shape[1] == model_info.input_height
+                        and output_shape[2] == model_info.input_width
+                    )
+
+                    needs_transpose = not is_scalar_output and not is_fullsize_output
+                    self._transpose_aipu_output.append(needs_transpose)
+        else:
+            self._transpose_aipu_output = [False] * len(manifest.output_shapes)
+
+    @staticmethod
+    def from_yaml_dict(
+        phases: dict[str, Any],
+        template: dict[str, Any],
+        postproc: list = {},
+    ):
+        """Create InferenceOpConfig from YAML dictionaries with priority order.
+
+        Priority order (highest to lowest):
+        1. phases - highest priority, overrides everything
+        2. template - overrides defaults
+        3. defaults - class default values
+
+        Configuration logic:
+        - If phases has 'handle_all', it takes precedence and individual flags are ignored
+        - If phases doesn't have 'handle_all' but has individual flags, they override template's 'handle_all'
+        - Otherwise, template's 'handle_all' is used if present
+
+        Args:
+            phases: Phase-specific configuration (highest priority)
+            template: Template configuration (medium priority)
+
+        Returns:
+            InferenceOpConfig instance with merged configuration
+        """
+        config_kwargs = {}
+
+        # Individual flag keys
+        individual_flag_keys = {
+            'handle_dequantization_and_depadding',
+            'handle_transpose',
+            'handle_postamble',
+            'handle_preamble',
+        }
+
+        # Step 1: Apply template configuration
+        template = template or {}
+        phases = phases or {}
+
+        # Check if phases has handle_all or individual flags
+        phases_has_handle_all = "handle_all" in phases
+        phases_has_individual_flags = any(key in phases for key in individual_flag_keys)
+
+        # Determine configuration strategy
+        if phases_has_handle_all:
+            # Phases handle_all takes precedence, ignore all individual flags
+            config_kwargs["handle_all"] = phases["handle_all"]
+
+            # Apply non-flag settings from template first, then phases
+            for key, value in template.items():
+                if key != "handle_all" and key not in individual_flag_keys:
+                    config_kwargs[key] = value
+
+            for key, value in phases.items():
+                if key != "handle_all" and key not in individual_flag_keys:
+                    config_kwargs[key] = value
+
+        elif phases_has_individual_flags:
+            # Phases has individual flags, don't use handle_all from anywhere
+            # Apply all template settings except handle_all
+            for key, value in template.items():
+                if key != "handle_all":
+                    config_kwargs[key] = value
+
+            # Apply phases settings (overrides template)
+            for key, value in phases.items():
+                config_kwargs[key] = value
+
+        else:
+            # No handle_all or individual flags in phases, use template as-is
+            for key, value in template.items():
+                config_kwargs[key] = value
+
+            # Apply phases settings (overrides template)
+            for key, value in phases.items():
+                config_kwargs[key] = value
+
+        return InferenceOpConfig(**config_kwargs, postproc=postproc)
 
     @property
     def cpp_decoder_does_dequantization_and_depadding(self) -> bool:
         return self._cpp_decoder_does_dequantization_and_depadding
-
-    @property
-    def cpp_decoder_does_transpose(self) -> bool:
-        return self._cpp_decoder_does_transpose
-
-    @property
-    def cpp_decoder_does_postamble(self) -> bool:
-        return self._cpp_decoder_does_postamble
 
 
 class Inference:
@@ -483,13 +783,13 @@ class Inference:
         compiled_model_dir: Path,
         model_name: str,
         model: Union[types.Manifest, types.Model],
-        input_tensor_layout: Optional[types.TensorLayout],
-        inference_op_config: InferenceConfig,
+        model_info: types.ModelInfo,
+        inference_op_config: InferenceOpConfig,
     ):
         self.compiled_model_dir = compiled_model_dir
         self.model_name = model_name
         self.model = model
-        self.input_tensor_layout = input_tensor_layout
+        self.model_info = model_info
         self._output_shape0 = []
         self._permute_op = None
         self._device_man = device_man
@@ -498,9 +798,11 @@ class Inference:
         self._axr_modeli: runtime.ModelInstance = None
         self._inf_config = inference_op_config
         self.pre_ort_sess, self.post_ort_sess = None, None
+        self._core_model_output_shapes_cached = None
         self.devices = []
 
         self.device = _determine_device(self.model)
+        input_tensor_layout = model_info.input_tensor_layout
         if model := self._try_load_quantized_model(self.model):
             self.model = model
         elif self.device == 'aipu':
@@ -512,20 +814,20 @@ class Inference:
             self.model.eval()
             self.model.to_device(torch.device(self.device))
 
-            if self.input_tensor_layout and self.input_tensor_layout != types.TensorLayout.NCHW:
+            if input_tensor_layout and input_tensor_layout != types.TensorLayout.NCHW:
                 self._permute_op = PermuteChannels(
                     input_layout=types.TensorLayout.NCHW,
-                    output_layout=self.input_tensor_layout,
+                    output_layout=input_tensor_layout,
                 )
         elif isinstance(self.model, types.ONNXModel):
             self.ort_sess, self.input_names, self.output_names, _ = build_onnx_inferencer(
                 self.model.onnx_model.SerializeToString()
             )
 
-            if self.input_tensor_layout and self.input_tensor_layout != types.TensorLayout.NCHW:
+            if input_tensor_layout and input_tensor_layout != types.TensorLayout.NCHW:
                 self._permute_op = PermuteChannels(
                     input_layout=types.TensorLayout.NCHW,
-                    output_layout=self.input_tensor_layout,
+                    output_layout=input_tensor_layout,
                 )
         else:
             raise ValueError(f'Unsupported model type {type(self.model)}')
@@ -565,23 +867,18 @@ class Inference:
         return None
 
     def _get_core_model_output_shapes(self):
-        try:
-            return self._core_model_output_shapes
-        except AttributeError:
-            pass
-        output_shapes = None
-        try:
-            quant_model_file = self.compiled_model_dir / self.model.quantized_model_file
-            _, output_shapes = _get_io_shapes_from_tvm_mod(quant_model_file)
-
-            # this is for classification but not for other models; simply check if len(output_shapes)==1
-            if len(output_shapes) == 1:
-                output_shapes = _remove_trailing_singletons(output_shapes)
-            LOG.debug(f"Expected core model output shape: {output_shapes}")
-        except Exception as e:
-            LOG.warning(f"Failed to get input and output shapes from TVM IRModule file: {e}")
-        self._core_model_output_shapes = output_shapes
-        return output_shapes
+        if self._core_model_output_shapes_cached:
+            return self._core_model_output_shapes_cached
+        elif self.model.manifest_version == '1.1':
+            self._core_model_output_shapes_cached = self.model.output_shapes_original
+        else:
+            # backward compatibility for manifest version 1.0; default to using output_info shapes
+            LOG.warning(
+                "We highly recommend redeploying the model as the manifest version will be deprecated soon. Run `make NN=<model_name> clean` to clean the build directory and redeploy the model."
+            )
+            output_shapes = [output_info.shape for output_info in self.model_info.output_info]
+            self._core_model_output_shapes_cached = output_shapes
+        return self._core_model_output_shapes_cached
 
     def _init_pre_and_post(self):
         self.pre_ort_sess, self.post_ort_sess = None, None
@@ -601,6 +898,7 @@ class Inference:
                 self.post_output_names,
                 self.post_input_shapes,
             ) = build_onnx_inferencer(self.compiled_model_dir / self.model.postprocess_graph)
+
             LOG.trace("Expected input for postprocess graph:")
             LOG.trace(
                 [f"{input.name}: {input.shape}" for input in self.post_ort_sess.get_inputs()]
@@ -651,12 +949,24 @@ class Inference:
         from ..pipe.gst import generate_padding
 
         padding = generate_padding(self.model)
-        if self.config.cpp_focus_layer_on_host and self.check_focus_layer_on_host():
-            gst.axtransform(
-                lib='libtransform_yolopreproc.so',
-                options=f'padding:{padding}',
-                batch=self._model_cores,
-            )
+        if self.check_focus_layer_on_host():
+            # Currently, we only handle a single special case involving 'preamble.onnx'.
+            # TODO: Refactor and generalize preamble handling, similar to our approach for postamble
+            if self.config.handle_preamble:
+                gst.axtransform(
+                    lib='libtransform_yolopreproc.so',
+                    options=f'padding:{padding}',
+                    batch=self._model_cores,
+                )
+            else:
+                LOG.warning(
+                    "Preamble handling is not enabled, but focus layer should be run on host."
+                )
+                gst.axtransform(
+                    lib='libtransform_padding.so',
+                    options=f'padding:{padding};fill:{0}',
+                    batch=self._model_cores,
+                )
         else:
             gst.axtransform(
                 lib='libtransform_padding.so',
@@ -665,6 +975,7 @@ class Inference:
             )
 
     def build_inference_gst(self, gst: gst_builder.Builder, num_cores: int):
+        self._inf_config.assert_no_conflict()
         self._do_pads_or_preproc(gst)
 
         num_children = 0
@@ -685,16 +996,23 @@ class Inference:
 
         name = f'inference-task{self._taskn}'
         options = _build_mock_options()
+        if config.env.low_latency:
+            LOG.info("Enabling low latency mode for inference, at the cost of performance")
+            double_buffer = False
+            dmabuf_outputs = False
+        else:
+            double_buffer = config.env.use_double_buffer
+            dmabuf_outputs = config.env.UseDmaBuf.OUTPUTS in config.env.use_dmabuf
         inf = dict(
             name=name,
             model=str(model),
             devices=','.join(d.name for d in self.devices),
-            double_buffer=config.env.use_double_buffer,
+            double_buffer=double_buffer,
             dmabuf_inputs=config.env.UseDmaBuf.INPUTS in config.env.use_dmabuf,
-            dmabuf_outputs=config.env.UseDmaBuf.OUTPUTS in config.env.use_dmabuf,
+            dmabuf_outputs=dmabuf_outputs,
             num_children=num_children,
         )
-        if gst.tile:
+        if gst.tiling:
             inf['meta'] = 'axelera-tiles-internal'
         if options:
             inf['options'] = options
@@ -704,7 +1022,7 @@ class Inference:
 
     def exec_torch(self, image, result, meta):
         # result is the input tensor which changes in-place
-        result = _add_batch_channel(result, self.input_tensor_layout)
+        result = _add_batch_channel(result, self.model_info.input_tensor_layout)
         if isinstance(self.model, torch.nn.Module):
             if self._permute_op:
                 result = self._permute_op.exec_torch(result)
@@ -715,7 +1033,7 @@ class Inference:
             result = result.to(self.device)
             with torch.no_grad():
                 result = self.model(result)
-            result = self._run_post_processing(result)
+            result = self._process_model_outputs(result)
         elif isinstance(self.model, types.ONNXModel):
             if self._permute_op:
                 input_array = self._permute_op.exec_torch(result).numpy()
@@ -726,7 +1044,6 @@ class Inference:
             )
             result = _convert_to_tensors(result if len(result) > 1 else result[0])
         elif isinstance(self.model, types.Manifest):
-            # pipe==torch-aipu
             if self._axr_conn is None:
                 from axelera import runtime
 
@@ -776,59 +1093,76 @@ class Inference:
             if True:  # was self.need_padding_and_layout_transform_of_inputs_outputs
                 # this should be factored out into a different fn
                 if self.model.n_padded_ch_outputs:
+                    # Convert from padded NHWC to NCHW with padding removed
                     outputs = _convert_output_arrays(
                         outputs,
                         self.model.n_padded_ch_outputs,
                         self.model.input_tensor_layout,
                         "NCHW",
                     )
-                    # reshape the output tensors according to the expected shapes
-                    if out_shapes := self._get_core_model_output_shapes():
-                        outputs = _reshape_to_target_shapes(outputs, out_shapes)
+
+                # Dequantize before reshaping to work with float values
                 outputs = dequantize(outputs, self.model.dequantize_params)
-                result = self._run_post_processing(outputs)
+
+                # Process outputs - either with post-processing or just reshaping
+                result = self._process_model_outputs(outputs)
 
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
         return image, result, meta
 
-    def _run_post_processing(self, outputs):
+    def _process_model_outputs(self, outputs):
+        """
+        Process model outputs by applying post-processing or reshaping.
+
+        This method handles two main cases:
+        1. If post-processing is needed, it matches outputs with the right shapes
+           and runs them through the post-processing ONNX model
+        2. If only reshaping is needed, it uses _reshape_to_target_shapes
+
+        Parameters:
+        - outputs: List of output arrays from model inference
+
+        Returns:
+        - Processed outputs, converted to tensors
+        """
         if not isinstance(outputs, list):
             outputs = [outputs]
 
-        # Create a mapping of shapes to arrays
-        shape_to_array = {tuple(arr.shape): arr for arr in outputs}
-        unused_shapes = set(shape_to_array.keys())
-
-        # Run post-processing if applicable
         if self.post_ort_sess:
-            # Reorder arrays based on post-processing input shapes
-            reordered_array_list = []
-            for shape in self.post_input_shapes:
-                shape_tuple = tuple(shape)
-                try:
-                    reordered_array_list.append(shape_to_array[shape_tuple])
-                    unused_shapes.remove(shape_tuple)
-                except KeyError:
-                    LOG.warning(f"Expected shape {shape} not found in model outputs")
-
-            post_processed_result = _run_onnx_session(
-                self.post_ort_sess,
-                self.post_input_names,
-                self.post_output_names,
-                reordered_array_list,
+            matched_outputs, unmatched_outputs, _ = _match_arrays_to_shapes(
+                outputs, self.post_input_shapes, self.post_input_names
             )
-            result = post_processed_result
-        else:
-            result = []
 
-        # Add unused arrays to the result
-        unused_arrays = [shape_to_array[shape] for shape in unused_shapes]
-        if unused_arrays:
-            LOG.trace(f"Found {len(unused_arrays)} unused output arrays")
-            result = result if isinstance(result, list) else [result]
-            result.extend(unused_arrays)
-        return _convert_to_tensors(result if len(result) > 1 else result[0])
+            post_inputs = [None] * len(self.post_input_shapes)
+            for array, shape, idx in matched_outputs:
+                post_inputs[idx] = array.reshape(shape)
+
+            for i in range(len(post_inputs)):
+                if post_inputs[i] is None and unmatched_outputs:
+                    array = unmatched_outputs.pop(0)
+                    if array.size == np.prod(self.post_input_shapes[i]):
+                        post_inputs[i] = array.reshape(self.post_input_shapes[i])
+
+            post_inputs = [inp for inp in post_inputs if inp is not None]
+
+            result = _run_onnx_session(
+                self.post_ort_sess, self.post_input_names, self.post_output_names, post_inputs
+            )
+
+            if unmatched_outputs:
+                result = result if isinstance(result, list) else [result]
+                result.extend(unmatched_outputs)
+        elif isinstance(self.model, types.Manifest) and (
+            out_shapes := self._get_core_model_output_shapes()
+        ):
+            result = _reshape_to_target_shapes(outputs, out_shapes)
+        else:
+            result = outputs
+
+        return _convert_to_tensors(
+            result if isinstance(result, list) and len(result) > 1 else result[0]
+        )
 
 
 def _calculate_tensor_selection_plan(model, postprocess_graph_path, compiled_model_dir=None):
@@ -846,29 +1180,25 @@ def _calculate_tensor_selection_plan(model, postprocess_graph_path, compiled_mod
     Returns:
         List of tensor indices to use for ONNX postamble input
     """
-    import os
-
-    import onnx
-
     # Default to empty plan if no postprocess graph
     if not postprocess_graph_path:
         return []
 
     try:
-        # Determine the full path to the ONNX model
-        model_path = postprocess_graph_path
-        if compiled_model_dir and not os.path.isabs(postprocess_graph_path):
-            model_path = os.path.join(compiled_model_dir, postprocess_graph_path)
+        import onnx
+
+        if compiled_model_dir and not Path(postprocess_graph_path).is_absolute():
+            model_path = Path(compiled_model_dir) / postprocess_graph_path
+        else:
+            model_path = Path(postprocess_graph_path)
 
         # Check if the file exists
-        if not os.path.exists(model_path):
+        if not model_path.exists():
             LOG.warning(f"Postprocess graph not found at: {model_path}")
             return []
 
-        # Load ONNX model to get input shapes
-        onnx_model = onnx.load(model_path)
+        onnx_model = onnx.load(str(model_path))
 
-        # Get expected input shapes from the ONNX model
         postamble_inputs = []
         for input_info in onnx_model.graph.input:
             postamble_inputs.append(input_info.name)
@@ -913,12 +1243,13 @@ def _generate_depadding(manifest: types.Manifest) -> str:
 @builtin
 class AxeleraDequantize(AxOperator):
     model: Union[types.Manifest, types.Model]
-    inference_op_config: InferenceConfig
+    inference_op_config: InferenceOpConfig
     num_classes: int
     task_category: types.TaskCategory
     assigned_model_name: str
     manifest_dir: Path
     taskn: int = 0
+    transpose: bool = False
 
     def _post_init(self):
         self._model_name = self.assigned_model_name
@@ -929,41 +1260,46 @@ class AxeleraDequantize(AxOperator):
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         connections = dict(src=f'decoder_task{self.taskn}{stream_idx}.sink_1')
 
-        # If all post-processing is handled by the decoder, nothing to do here.
-        if (
-            self.inference_op_config.cpp_decoder_does_dequantization_and_depadding
-            and self.inference_op_config.cpp_decoder_does_transpose
-            and self.inference_op_config.cpp_decoder_does_postamble
-        ):
+        # Check if any post-processing is needed in this operator
+        all_handled_by_decoder = not any(
+            [
+                self.inference_op_config.handle_dequantization_and_depadding,
+                self.inference_op_config.handle_transpose,
+                self.inference_op_config.handle_postamble,
+            ]
+        )
+
+        if all_handled_by_decoder:
             return
+
         deq_scales, deq_zeropoints = zip(*self.model.dequantize_params)
         scales = ','.join(str(s) for s in deq_scales)
         zeros = ','.join(str(s) for s in deq_zeropoints)
 
+        if self.inference_op_config.handle_transpose:
+            transpose_str = ','.join(
+                str(int(t)) for t in self.inference_op_config.transpose_aipu_output
+            )
+        else:
+            transpose_str = ','.join('0' for _ in deq_scales)
+
         # If postamble is not handled by the decoder, but a postprocess graph exists,
         # we must add all transforms: depadding, dequantize+transpose, and postamble.
-        if (
-            not self.inference_op_config.cpp_decoder_does_postamble
-            and self.model.postprocess_graph
-        ):
+        if self.inference_op_config.handle_postamble and self.model.postprocess_graph:
             if stream_idx:
                 gst.queue(name=f'stream_queue{stream_idx}')
-            if self.model.n_padded_ch_outputs and any(self.model.n_padded_ch_outputs):
-                gst.axtransform(
-                    lib='libtransform_paddingdequantize.so',
-                    options=f'padding:{_generate_depadding(self.model)};'
-                    f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:1',
-                )
-            else:
-                gst.axtransform(
-                    lib=f'libtransform_dequantize.so',
-                    options=f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:1',
-                    connections=connections,
-                )
+
             tensor_selection_plan = _calculate_tensor_selection_plan(
                 self.model, self.model.postprocess_graph, self.manifest_dir
             )
-            options = f'onnx_path:{self.manifest_dir / self.model.postprocess_graph}'
+
+            options = (
+                f'onnx_path:{self.manifest_dir / self.model.postprocess_graph};'
+                f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:{transpose_str};'
+                f'padding:{_generate_depadding(self.model)};'
+                f'dequant_lut:{int(self.inference_op_config.dequantize_using_lut)}'
+            )
+
             if tensor_selection_plan:
                 options += f';tensor_selection_plan:{",".join(map(str, tensor_selection_plan))}'
             LOG.debug(f"Using tensor selection plan for postamble: {tensor_selection_plan}")
@@ -980,20 +1316,23 @@ class AxeleraDequantize(AxOperator):
         deq_scales, deq_zeropoints = zip(*self.model.dequantize_params)
         scales = ','.join(str(s) for s in deq_scales)
         zeros = ','.join(str(s) for s in deq_zeropoints)
+
         # Only add dequantize if not handled by decoder
-        if not self.inference_op_config.cpp_decoder_does_dequantization_and_depadding:
+        if self.inference_op_config.handle_dequantization_and_depadding:
             if self.model.n_padded_ch_outputs and any(self.model.n_padded_ch_outputs):
 
                 gst.axtransform(
                     lib='libtransform_paddingdequantize.so',
                     options=f'padding:{_generate_depadding(self.model)};'
-                    f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:{int(not self.inference_op_config.cpp_decoder_does_transpose)}',
+                    f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:{transpose_str};'
+                    f'dequant_lut:{int(self.inference_op_config.dequantize_using_lut)}',
                     connections=connections,
                 )
             else:
                 gst.axtransform(
                     lib=f'libtransform_dequantize.so',
-                    options=f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:{int(not self.inference_op_config.cpp_decoder_does_transpose)}',
+                    options=f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:{transpose_str};'
+                    f'dequant_lut:{int(self.inference_op_config.dequantize_using_lut)}',
                     connections=connections,
                 )
 
@@ -1005,14 +1344,8 @@ def has_focus_layer_onnx(onnx_model_path):
     """
     try:
         import onnx
-        import onnx.numpy_helper
-    except ImportError:
-        # ONNX is not installed; cannot analyze focus layer; this is for passing CI runtime tests.
-        # Ideally, this step belongs to ahead of time AxInferenceNet generation, so runtime won't need this function.
-        LOG.warning("ONNX is not installed; skipping focus layer analysis.")
-        return False
-    try:
-        model = onnx.load(onnx_model_path)
+
+        model = onnx.load(str(onnx_model_path))
         graph = model.graph
         if not graph.input:
             return False

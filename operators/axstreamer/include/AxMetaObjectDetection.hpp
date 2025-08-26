@@ -10,100 +10,9 @@ class AxMetaObjDetection : public AxMetaBbox
   public:
   AxMetaObjDetection() = default;
   AxMetaObjDetection(std::vector<box_xyxy> boxes, std::vector<float> scores,
-      std::vector<int> classes, std::vector<int> ids = {})
-      : AxMetaBbox(std::move(boxes), std::move(ids)),
-        scores_(std::move(scores)), classes_(std::move(classes))
+      std::vector<int> class_ids, std::vector<int> ids = {})
+      : AxMetaBbox(std::move(boxes), std::move(scores), std::move(class_ids), std::move(ids))
   {
-    if (num_elements() != scores_.size()
-        || (num_elements() != classes_.size() && !classes_.empty())) {
-      throw std::logic_error(
-          "AxMetaObjDetection: scores and classes must have the same size as boxes");
-    }
-  }
-
-  void extend(const std::vector<box_xyxy> &boxes,
-      const std::vector<float> &scores, std::vector<int> &classes)
-  {
-    AxMetaBbox::extend(boxes);
-    scores_.insert(scores_.end(), scores.begin(), scores.end());
-    classes_.insert(classes_.end(), classes.begin(), classes.end());
-  }
-
-  void extend(const AxMetaObjDetection &other)
-  {
-    AxMetaBbox::extend(other);
-    scores_.insert(scores_.end(), other.scores_.begin(), other.scores_.end());
-    classes_.insert(classes_.end(), other.classes_.begin(), other.classes_.end());
-  }
-
-  ///
-  /// @brief Update class_id and score of bbox
-  /// @param idx - Index of the requested element
-  //  @param score - Detection score
-  //  @class_id - Class id
-  ///
-  void update_detection(int idx, float score, int class_id)
-  {
-    scores_.at(idx) = score;
-    classes_.at(idx) = class_id;
-  }
-
-  ///
-  /// @brief Get the elements score at the given index. If index is out of
-  /// bounds std::out_of_range is thrown.
-  /// @param idx - Index of the requested element
-  /// @return The score of the given element
-  ///
-  float score_at(size_t idx) const
-  {
-    return scores_.at(idx);
-  }
-
-  ///
-  /// @brief Get the elements score at the given index. No bounds checking is
-  /// performed. The behaviour is undefined if idx is out of range
-  /// @param idx - Index of the requested element
-  /// @return The score of the given element
-  ///
-  float score(size_t idx) const
-  {
-    return scores_[idx];
-  }
-
-  void set_score(size_t idx, float score)
-  {
-    scores_[idx] = score;
-  }
-
-  ///
-  /// @brief Get the class id of the given element. If idx is out of bounds
-  /// std::out_of_range is thrown.
-  /// @param idx - Index of the requested element
-  /// @return The class id of the given element
-  ///
-  int class_id_at(size_t idx) const
-  {
-    return classes_.empty() ? -1 : classes_.at(idx);
-  }
-
-  ///
-  /// @brief Get the class id of the given element. No boubds checking is
-  /// performed. The behaviour is undefined if idx is out of range
-  /// @param idx - Index of the requested element
-  /// @return The class id of the given element
-  ///
-  int class_id(size_t idx) const
-  {
-    return classes_.empty() ? -1 : classes_[idx];
-  }
-
-  ///
-  /// @brief Check if we have more than a single class
-  /// @return True if we have more than a single class
-  ///
-  bool is_multi_class() const
-  {
-    return !classes_.empty();
   }
 
   std::vector<extern_meta> get_extern_meta() const override
@@ -130,8 +39,4 @@ class AxMetaObjDetection : public AxMetaBbox
   {
     return classes_.data();
   }
-
-  private:
-  std::vector<float> scores_;
-  std::vector<int> classes_;
 };

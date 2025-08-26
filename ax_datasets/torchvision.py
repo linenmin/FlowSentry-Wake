@@ -12,7 +12,7 @@ import torch
 import torchvision
 
 from axelera import types
-from axelera.app import config, data_utils, eval_interfaces, logging_utils
+from axelera.app import config, data_utils, eval_interfaces, logging_utils, utils
 import axelera.app.yaml as YAML
 from axelera.app.yaml import MapYAMLtoFunction
 
@@ -209,7 +209,25 @@ class LFWPairs(torchvision.datasets.LFWPairs):
         )
         image_set = yargs.get_arg('image_set')
         download = yargs.get_arg('download')
-        super().__init__(root, transform=transform, download=download, image_set=image_set)
+        try:
+            import urllib
+
+            super().__init__(root, transform=transform, download=download, image_set=image_set)
+        except (Exception, urllib.error.URLError) as e:
+            if image_set == 'deepfunneled':
+                LOG.debug(f"Standard download failed: {e}. Using custom download method...")
+                data_utils.check_and_download_dataset(
+                    'LFWPairs',
+                    root,
+                    'val',
+                    is_private=False,
+                )
+                utils.extract(root / 'lfw-py/lfw-deepfunneled.tgz', dest=root / 'lfw-py')
+                super().__init__(root, transform=transform, download=False, image_set=image_set)
+            else:
+                raise RuntimeError(
+                    f"Failed to download LFWPairs dataset with image_set '{image_set}': {e}"
+                ) from e
 
     def __getitem__(self, index: int) -> Tuple[Any, Any, int, str]:
         """
@@ -333,9 +351,6 @@ class TorchvisionDataAdapter(types.DataAdapter):
         self.DatasetClass = globals()[dataset_class]
 
     def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
-        if repr_dataloader := self.check_representative_images(transform, batch_size, **kwargs):
-            return repr_dataloader
-
         if self.DatasetClass == ImageFolder:
             kwargs['split'] = 'cal'
         else:
@@ -344,6 +359,7 @@ class TorchvisionDataAdapter(types.DataAdapter):
             self._get_dataset_class(transform, root, kwargs),
             batch_size=batch_size,
             shuffle=True,
+            generator=kwargs.get('generator'),
             collate_fn=lambda x: x,
             num_workers=0,
         )

@@ -166,7 +166,7 @@ $ axdevice --set-pvt-warning-threshold 85
 
 ### 5.1. Operating Range
 
-For PCIe and M.2 boards (REV1.1, SDK v1.3.2):
+For PCIe and M.2 boards (REV1.1, SDK v1.3.0):
 - Operating range: [-20°C, +70°C]
 - No loss of function, performance, or lifetime expected in this range
 

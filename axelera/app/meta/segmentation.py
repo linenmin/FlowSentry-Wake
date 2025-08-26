@@ -62,6 +62,8 @@ class SemanticSegmentationMeta(AxTaskMeta):
         raise NotImplementedError("Haven't implemented in-house evaluator yet")
 
     def draw(self, draw: display.Draw):
+        if not self.task_render_config.show_annotations:
+            return
         # TODO only class_map drawing is supported for now
         draw.class_map_mask(self.class_map, get_rgba_cmap(colormap, 125, True))
 
@@ -181,14 +183,10 @@ class InstanceSegmentationMeta(AxTaskMeta):
             raise ValueError("class_ids must be a 1D numpy array")
         if scores.ndim != 1:
             raise ValueError("scores must be a 1D numpy array")
-        if (
-            class_ids.size != boxes.shape[0]
-            or class_ids.size != len(masks_data)
-            or class_ids.size != scores.size
-        ):
+        if boxes.shape[0] != len(masks_data) or boxes.shape[0] != scores.size:
             raise ValueError(
-                f"Inconsistend data: class_ids={class_ids.size} scores={scores.size} boxes={boxes.shape[0]} masks={len(masks_data)}"
-            )
+                f"Inconsistent data: scores={scores.size} boxes={boxes.shape[0]} masks={len(masks_data)}"
+            )  # model like FastSAM has no class_ids, so we don't check it
         self._masks.extend(masks_data)
         self._boxes.extend(boxes)
         self._class_ids.extend(class_ids)
@@ -251,12 +249,18 @@ class InstanceSegmentationMeta(AxTaskMeta):
             )
 
     def draw(self, draw: display.Draw):
-        if len(self.masks) == 0:
+        if len(self.masks) == 0 or not self.task_render_config.show_annotations:
             return
+
+        draw_bounding_boxes(
+            self,
+            draw,
+            self.task_render_config.show_labels,
+            self.task_render_config.show_annotations,
+        )
         for i, cls in enumerate(self.class_ids):
             color = class_as_color(self, draw, int(cls), alpha=125)
             draw.segmentation_mask(self.get_mask(i), color)
-        draw_bounding_boxes(self, draw)
 
     @classmethod
     def decode(cls, data: Dict[str, Union[bytes, bytearray]]) -> InstanceSegmentationMeta:

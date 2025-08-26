@@ -124,10 +124,12 @@ class ObjectDetectionMeta(AxTaskMeta):
         return convert(self.boxes, types.BoxFormat.XYXY, types.BoxFormat.LTWH)
 
     def draw(self, draw: display.Draw):
-        import os
-
-        show_class = os.environ.get("AXELERA_SHOW_CLASS", "1") == "1"
-        draw_bounding_boxes(self, draw, show_class=show_class, show_score=show_class)
+        draw_bounding_boxes(
+            self,
+            draw,
+            self.task_render_config.show_labels,
+            self.task_render_config.show_annotations,
+        )
 
     def to_evaluation(self):
         if not (ground_truth := self.access_ground_truth()):

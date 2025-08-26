@@ -63,3 +63,66 @@ def test_window_creation_with_data():
         call("test", ANY),
     ]
     np.testing.assert_equal(mcv.imshow.call_args_list[1].args[1], exp)
+
+
+def test_layered_draw_list():
+    dlist = display_cv._LayeredDrawList()
+    dlist[0].text((10, 10), "Layer 0", (255, 255, 255, 255))
+    dlist[1].rectangle(((20, 20), (30, 30)), (255, 0, 0, 255))
+    dlist[2].line([40, 40, 50, 50], (0, 255, 0, 255), 2)
+    dlist[-1].ellipse(((60, 60), (70, 70)), (0, 0, 255, 255))
+    dlist[-2].paste("mock_img", (80, 80), "mock_mask")
+    assert len(dlist) == 5
+    expected = ["text", "rectangle", "line", "paste", "ellipse"]
+    actual = [op[0] for op in dlist]
+    assert actual == expected
+    assert sorted(dlist.keys()) == [-2, -1, 0, 1, 2]
+
+
+def test_layered_draw_list_access():
+    dlist = display_cv._LayeredDrawList()
+    dlist.text((10, 10), "Default", (255, 255, 255, 255))
+    dlist[1].rect((20, 20, 30, 30), (255, 0, 0, 255))
+    assert len(dlist[0]) == 1
+    assert len(dlist[1]) == 1
+    assert dlist[0][0][0] == "text"
+    assert dlist[1][0][0] == "rect"
+    assert len(dlist) == 2
+
+
+def test_layered_draw_list_empty():
+    dlist = display_cv._LayeredDrawList()
+    assert list(dlist) == []
+    assert len(dlist) == 0
+
+
+def test_layered_draw_list_order():
+    dlist = display_cv._LayeredDrawList()
+    dlist[-5].op1(1)
+    dlist[3].op2(2)
+    dlist[0].op3(3)
+    dlist[-2].op4(4)
+    dlist[1].op5(5)
+    expected = ["op3", "op5", "op2", "op1", "op4"]
+    actual = [op[0] for op in dlist]
+    assert actual == expected
+
+
+def test_layered_draw_list_multiple_ops():
+    dlist = display_cv._LayeredDrawList()
+    dlist[0].op1(1)
+    dlist[0].op2(2)
+    dlist[1].op3(3)
+    dlist[1].op4(4)
+    dlist[2].op5(5)
+    dlist[-2].op6(6)
+    dlist[-2].op7(7)
+    dlist[-1].op8(8)
+    dlist[-1].op9(9)
+    expected = ["op1", "op2", "op3", "op4", "op5", "op6", "op7", "op8", "op9"]
+    actual = [op[0] for op in dlist]
+    assert actual == expected
+    assert len(dlist) == 9
+    assert len(dlist[0]) == 2
+    assert len(dlist[1]) == 2
+    assert len(dlist[-1]) == 2

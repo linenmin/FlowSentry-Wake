@@ -1,16 +1,18 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
+
 # CompilerConfig
 
 - [CompilerConfig](#compilerconfig)
   - [Properties](#properties)
   - [Definitions](#definitions)
-    - [CompilerMode](#compilermode)
-    - [DPUAllocationAlgorithm](#dpuallocationalgorithm)
-    - [GraphCleanerCondition](#graphcleanercondition)
-    - [GraphCleanerNode](#graphcleanernode)
-    - [MulticoreMode](#multicoremode)
-    - [ProfilingLevel](#profilinglevel)
-    - [QuantizationScheme](#quantizationscheme)
+      - [CompilerMode](#compilermode)
+      - [DPUAllocationAlgorithm](#dpuallocationalgorithm)
+      - [GraphCleanerCondition](#graphcleanercondition)
+      - [GraphCleanerNode](#graphcleanernode)
+      - [MulticoreMode](#multicoremode)
+      - [ProfilingLevel](#profilinglevel)
+      - [QuantizationScheme](#quantizationscheme)
+
 
 *The Configuration for the Axelera AI Compiler.*
 
@@ -21,6 +23,8 @@
 - **`apply_pword_padding`** *(boolean)*: Applies a graph transformation to ensure that all inputs have the channel number a multiple of the PWORD. This is a requirement of the hardware and needs to be done as part of compilation. Default: `true`.
 
 - **`rewrite_concat_to_resadd`** *(boolean)*: Converts concatenation operations to binary addition. The hardware does not have native support for concatenation. It is achieved by padding and shifting inputs and adding them together. This modification makes the graph legal by converting concatenation ops. Default: `true`.
+
+- **`rewrite_dense_to_conv2d`** *(boolean)*: Instances of nn.dense are canonicalized to conv2d with kernel size 1x1. Native support for dense operations will come in upcoming changes. Default: `true`.
 
 - **`remove_io_padding_and_layout_transform`** *(boolean)*: After compilation, the graph is modified such that the inputs are padded and their layouts has changed. Provided that inputs will be padded and transposed in a pre-processing step on the host, such operations should be removed from the graph. This step should always run when using the SDK and its preprocessing elements. Default: `true`.
 
@@ -44,21 +48,23 @@
 
 - **`model_name`** *(string)*: Name of the model to run. This is used in logging, as well as to determine the model-specific configuration, ie a set of optimal settings for a particular model that the compiler can not yet determine on its own. Default: `""`.
 
+- **`onnx_opset_version`** *(integer)*: ONNX opset version used during PyTorch to ONNX conversion, which is a required step in the quantization pipeline for model deployment. PyTorch models must be converted to the ONNX format before quantization and compilation for edge devices. . Minimum: `17`. Default: `17`.
+
 - **`quantization_debug`** *(boolean)*: Debugging mode for quantization. Dumps the model after quantization for accuracy measurement and debugging. Default: `false`.
 
-- **`ptq_scheme`**: The type of quantization to use for post-training quantization. Default: `"per_tensor_histogram"`.
+- **`quantization_scheme`**: The type of quantization to use for post-training quantization. Default: `"per_tensor_histogram"`.
 
   - **All of**
 
     - Refer to [QuantizationScheme](#quantizationscheme)
 
-- **`quantized_model_debug_save_dir`** *(string, format: path)*: Directory to store the quantized/optimized model for debugging.
+- **`model_debug_save_dir`** *(string, format: path)*: Directory to store the quantized/optimized model for debugging.
 
 - **`quantize_dw_channel_wise`** *(boolean)*: Quantize depthwise convolution channel-wise. Default: `false`.
 
 - **`quantized_graph_export`** *(boolean)*: Export the quantized graph to json file. Default: `true`.
 
-- **`remove_io_quantization`** *(boolean)*: Remove quantization/dequantization of inputs/outputs from the graph. Default: `true`.
+- **`remove_io_quantization`** *(boolean)*: Remove quantization/dequantization of inputs/outputs from the graph. Default: `false`.
 
 - **`run_graph_cleaner`** *(boolean)*: Whether to run the ONNX graph cleaner. Default: `true`.
 
@@ -200,7 +206,7 @@
 
 - **`mvm_utilization_limit`** *(number)*: The utilization limit for the MVM array. This can be used to reduce the power consumption of the MVM array by reducing the number of active MACs. Reducing the utilization limit can lead to some features, such as swICR, being automatically disabled. If that is the case, a warning message will be shown. Minimum: `0.125`. Maximum: `1.0`. Default: `1.0`.
 
-- **`in_core_replication`** *(boolean)*: Enable In-Core Replication (ICR) for layers with small output-channel counts. This can be used to improve the performance of layers with small output-channel counts. Default: `true`.
+- **`enable_icr`** *(boolean)*: Enable In-Core Replication (ICR) for layers with small output-channel counts. This can be used to improve the performance of layers with small output-channel counts. Default: `true`.
 
 - **`icrx_force`** *(integer)*: Force a specific In-Core Replication (ICR) factor. Useful for debugging purposes. If set to -1, the factor will be automatically determined and not forced. Default: `-1`.
 
@@ -224,9 +230,9 @@
 
 - **`frequency`** *(integer)*: The clock frequency of the device in Hz. Minimum: `20000000`. Maximum: `800000000`. Default: `800000000`.
 
-- **`aipu_cores`** *(integer)*: The number of AIPU the compiler will compile for. Minimum: `1`. Maximum: `4`. Default: `1`.
+- **`aipu_cores_used`** *(integer)*: The number of AIPU the compiler will compile for. Minimum: `1`. Maximum: `4`. Default: `1`.
 
-- **`resources`** *(number)*: The fraction of (memory) resources that the compiled model is allowed to use. Exclusive minimum: `0.0`. Maximum: `1.0`. Default: `1.0`.
+- **`resources_used`** *(number)*: The fraction of (memory) resources that the compiled model is allowed to use. Exclusive minimum: `0.0`. Maximum: `1.0`. Default: `1.0`.
 
 - **`multicore_mode`**: The mode for multicore execution. Default: `"multiprocess"`.
 
@@ -264,8 +270,6 @@
 
 - **`device_dir`** *(string, format: path)*: The directory for the device.
 
-- **`resources_max`** *(number)*: The total amount/fraction of (memory) resources that the AIPU has. 'resources_used' should be less than or equal to this value. Default: `1.0`.
-
 - **`trace_tvm_passes`** *(boolean)*: Whether to trace TVM passes. Enabling this flag collects execution details for each TVM pass, including start/end timestamps, parent-child relationships, optimization levels, etc. This information is written to the pass_dependency_graph.json file. Default: `false`.
 
 - **`propagate_span_information`** *(boolean)*: Whether to propagate span information through the compiler. Default: `true`.
@@ -283,25 +287,25 @@
 ## Definitions
 
 
-### CompilerMode
+#### CompilerMode
   *(string)*: The operational mode of the compiler. Must be one of: `["quantize_and_lower", "quantize_only", "lower_only"]`.
 
-### DPUAllocationAlgorithm
-  *(string)*: The DPU register-allocation algorithm to use. Must be one of: `["graph", "lazy", "backjump", "try_all"]`.
+#### DPUAllocationAlgorithm
+  *(string)*: The DPU register-allocation algorithm to use. Must be one of: `["graph", "lazy", "backjump_recursive", "try_all"]`.
 
-### GraphCleanerCondition
+#### GraphCleanerCondition
   *(string)*: Available conditions for ONNX graph cleaning. Must be one of: `["maximum_weight_tensor_size", "maximum_weight_tensor_first_dimension_size"]`.
 
-### GraphCleanerNode
+#### GraphCleanerNode
   *(string)*: Available node types for graph cleaning. Must be one of: `["MatMul", "Gemm", "Clip"]`.
 
-### MulticoreMode
+#### MulticoreMode
   *(string)*: Multicore mode for multicore execution. Must be one of: `["multiprocess", "multithread", "batch", "cooperative", "pipeline"]`.
 
-### ProfilingLevel
+#### ProfilingLevel
   *(string)*: Levels used to identify the type of trace line in the trace file. Must be one of: `["[?]", "[B]", "[PB]", "[PE]", "[K]", "[M]", "[T]"]`.
 
-### QuantizationScheme
+#### QuantizationScheme
   *(string)*: Symbolic names for the quantization scheme.<br>  Attributes:
     - PER_TENSOR_HISTOGRAM: Quantizes activations per-tensor with a histogram observer,
         and weights per-channel with a minmax observer.

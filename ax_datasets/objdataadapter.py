@@ -51,6 +51,75 @@ from axelera.app.torch_utils import torch
 
 LOG = logging_utils.getLogger(__name__)
 
+# Predictable calibration tracking file location
+def _get_calibration_temp_file():
+    """Get the predictable temporary file for tracking calibration images."""
+    # Use a predictable filename based on process ID and current working directory
+    import tempfile
+
+    temp_dir = tempfile.gettempdir()
+    # Create a deterministic filename that can be found by other processes
+    cwd_hash = hashlib.md5(os.getcwd().encode()).hexdigest()[:8]
+    temp_file = os.path.join(temp_dir, f"axelera_calibration_images_{cwd_hash}.txt")
+    return temp_file
+
+
+def _track_calibration_image(image_path: str):
+    """Track a calibration image by appending to temporary file."""
+    temp_file = _get_calibration_temp_file()
+    try:
+        # Use append mode and flush immediately to ensure persistence
+        with open(temp_file, 'a') as f:
+            f.write(f"{image_path}\n")
+            f.flush()
+            os.fsync(f.fileno())  # Force write to disk
+    except Exception as e:
+        LOG.warning(f"Failed to track calibration image {image_path}: {e}")
+
+
+def save_calibration_images_to_file(output_path):
+    """Save the list of calibration images used to a text file."""
+    temp_file = _get_calibration_temp_file()
+
+    if not os.path.exists(temp_file):
+        LOG.warning("No calibration images were tracked")
+        return
+
+    try:
+        # Read all tracked images and remove duplicates while preserving order
+        unique_images = []
+        seen = set()
+
+        with open(temp_file, 'r') as f:
+            for line in f:
+                image_path = line.strip()
+                if image_path and image_path not in seen:
+                    unique_images.append(image_path)
+                    seen.add(image_path)
+
+        if unique_images:
+            with open(output_path, 'w') as f:
+                for img_path in sorted(unique_images):  # Sort for consistent output
+                    f.write(f"{img_path}\n")
+            LOG.info(f"Saved {len(unique_images)} calibration image paths to {output_path}")
+        else:
+            LOG.warning("No calibration images were tracked")
+
+    except Exception as e:
+        LOG.error(f"Failed to save calibration images to {output_path}: {e}")
+
+
+def clear_calibration_images_tracking():
+    """Clear the calibration images tracking."""
+    temp_file = _get_calibration_temp_file()
+    if os.path.exists(temp_file):
+        try:
+            os.unlink(temp_file)
+            LOG.debug(f"Removed calibration tracking temp file: {temp_file}")
+        except Exception as e:
+            LOG.warning(f"Failed to remove calibration tracking temp file: {e}")
+
+
 # Get orientation exif tag
 for k, v in ExifTags.TAGS.items():
     if v == "Orientation":
@@ -414,7 +483,7 @@ class UnifiedDataset(torch_data.Dataset):
     """Unified dataset class for object detection, segmentation, and keypoint detection."""
 
     # labels caching version; bump up when changing labeling or caching method
-    cache_version = 0.3
+    cache_version = 0.4
 
     def __init__(
         self,
@@ -503,6 +572,10 @@ class UnifiedDataset(torch_data.Dataset):
         path = self.img_paths[idx]
         img_id = self.image_ids[idx]
 
+        # Track calibration images used during training split (calibration)
+        if self.split == 'train':
+            _track_calibration_image(str(path))
+
         # Load image
         img = self._load_image(path)
         raw_w, raw_h = img.size
@@ -512,6 +585,7 @@ class UnifiedDataset(torch_data.Dataset):
 
         sample["image"] = img
         sample["image_id"] = img_id
+        # print(f"image_id: {img_id}")
 
         # Handle labels if in training or validation mode
         if self.split in ["train", "val"]:
@@ -873,20 +947,30 @@ class UnifiedDataset(torch_data.Dataset):
         def exif_size(img):
             # Returns exif-corrected PIL size
             s = img.size  # (width, height)
-            im_exif = img._getexif()
-            if im_exif and ORIENTATION in im_exif:
-                rotation = im_exif[ORIENTATION]
-                if rotation in [6, 8]:  # rotation 270 or 90
-                    s = (s[1], s[0])
+            try:
+                im_exif = img._getexif()
+                if im_exif and ORIENTATION in im_exif:
+                    rotation = im_exif[ORIENTATION]
+                    if rotation in [6, 8]:  # rotation 270 or 90
+                        s = (s[1], s[0])
+            except (AttributeError, TypeError):
+                # Handle cases where _getexif() is not available or returns None
+                pass
             return s
 
         try:
+            # First: verify image integrity (must be called directly after open)
             img = Image.open(img_path)
             img.verify()
+
+            # Second: get format and size info with fresh image object
+            img = Image.open(img_path)
+            img_format = img.format
             w, h = exif_size(img)
+
             assert (w > 9) and (h > 9), f"Image w:{w} or h:{h} <10 pixels"
-            assert img.format.lower() in IMG_FORMATS, f"Invalid image format {img.format}"
-            if img.format.lower() in ("jpg", "jpeg"):
+            assert img_format.lower() in IMG_FORMATS, f"Invalid image format {img_format}"
+            if img_format.lower() in ("jpg", "jpeg"):
                 with open(img_path, "rb") as f:
                     f.seek(-2, 2)
                     if f.read() != b"\xff\xd9":  # corrupt JPEG
@@ -928,7 +1012,10 @@ class UnifiedDataset(torch_data.Dataset):
                     _, idx = np.unique(lb, axis=0, return_index=True)
                     if len(idx) < len(lb):  # if duplicate row
                         lb = lb[idx]  # remove duplicates
-                        print(f"Warning: {lb_path}: {len(lb) - len(idx)} duplicate labels removed")
+                        if len(lb) - len(idx) > 0:
+                            LOG.warning(
+                                f"{lb_path}: {len(lb) - len(idx)} duplicate labels removed"
+                            )
 
                     # Convert to specified output format
                     if self.output_format == "ltwh":
@@ -1036,14 +1123,21 @@ class ObjDataAdapter(types.DataAdapter):
 
         # Additional validation for custom datasets
         if self.label_type not in (SupportedLabelType.COCO2017, SupportedLabelType.COCO2014):
-            if 'cal_data' not in dataset_config and 'repr_imgs_dir_name' not in dataset_config:
+            # Check if any of the required data sources are provided
+            has_cal_data = 'cal_data' in dataset_config
+            has_repr_imgs = 'repr_imgs_dir_name' in dataset_config
+            has_ultralytics_yaml = 'ultralytics_data_yaml' in dataset_config
+
+            if not (has_cal_data or has_repr_imgs or has_ultralytics_yaml):
                 raise ValueError(
-                    f"Please specify either 'repr_imgs_dir_name' or 'cal_data' for {self.__class__.__name__} "
+                    f"Please specify either 'repr_imgs_dir_name', 'cal_data', or 'ultralytics_data_yaml' for {self.__class__.__name__} "
                     f"if you want to deploy with your custom data, or use a standard dataset like COCO2017 by setting 'label_type: COCO2017'"
                 )
-            if 'val_data' not in dataset_config:
+
+            # For validation, we need val_data unless using ultralytics (which should provide it)
+            if not has_ultralytics_yaml and 'val_data' not in dataset_config:
                 raise ValueError(
-                    f"Please specify 'val_data' for {self.__class__.__name__} "
+                    f"Please specify 'val_data' or 'ultralytics_data_yaml' for {self.__class__.__name__} "
                     f"if you want to evaluate with your custom data, or use a standard dataset like COCO2017"
                 )
 
@@ -1069,13 +1163,11 @@ class ObjDataAdapter(types.DataAdapter):
 
     def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
         """Create a data loader for calibration."""
-        if repr_dataloader := self.check_representative_images(transform, batch_size, **kwargs):
-            return repr_dataloader
-
         return torch.utils.data.DataLoader(
             self._get_dataset_class(transform, root, 'train', kwargs),
             batch_size=batch_size,
             shuffle=True,
+            generator=kwargs.get('generator'),
             collate_fn=lambda x: x,
             num_workers=0,
         )

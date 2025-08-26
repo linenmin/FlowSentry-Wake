@@ -1,3 +1,13 @@
+DanceTrack:
+  description: DanceTrack multi-object tracking dataset
+  download_hint: Dataset is downloaded automatically into the ./data/dancetrack folder.
+    This is an already preprocessed dataset. See more details in the Data section
+    https://github.com/GerardMaggiolino/Deep-OC-SORT/tree/main?tab=readme-ov-file
+  splits:
+    val:
+    - drop_dirs: 0
+      file: dancetrack.zip
+      name: val
 ImageNet:
   description: ImageNet is a large-scale image dataset for image recognition.
   download_hint: "To download the dataset, it is necessary to register at https://image-net.org/download-images.\n\
@@ -17,7 +27,10 @@ ImageNet:
     train:
     - drop_dirs: 0
       file: ILSVRC2012_devkit_t12.tar.gz
-    - drop_dirs: 0
+    - check_files:
+      - train/n01443537
+      - train/n01518878/ILSVRC2012_val_00010594.JPEG
+      drop_dirs: 0
       file: ILSVRC2012_img_train.tar
       sub_dir: train
     val:
@@ -61,6 +74,21 @@ MMLab-Cityscapes:
       - leftImg8bit/val/frankfurt/frankfurt_000001_000538_leftImg8bit.png
       drop_dirs: 0
       file: leftImg8bit_val.zip
+MSMT17ReIdDataset:
+  description: MSMT17 for person re-identification
+  download_hint: 'MSMT17 is a large-scale person re-identification dataset.
+
+    Please follow https://kaiyangzhou.github.io/deep-person-reid/datasets.html#msmt17-msmt17
+
+    to download and prepare the dataset. Please place it in the ./data/reid/msmt17
+    folder.
+
+    '
+  splits:
+    val:
+    - drop_dirs: 0
+      file: ReID_msmt17.zip
+      name: val
 WiderFace:
   description: YOLO format WiderFace dataset for face detection
   download_hint: "WiderFace is with Creative Common License (cc by-nc-nd).\nPlease\

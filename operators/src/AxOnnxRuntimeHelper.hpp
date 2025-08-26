@@ -14,7 +14,8 @@ namespace ax_onnxruntime
 class OnnxRuntimeInference
 {
   public:
-  explicit OnnxRuntimeInference(const std::string &model_path, Ax::Logger &logger);
+  explicit OnnxRuntimeInference(const std::string &model_path, Ax::Logger &logger,
+      int intra_op_num_threads = 4, int inter_op_num_threads = 4);
   // Old operator() kept for potential compatibility, but new method is preferred
   std::vector<Ort::Value> operator()(const std::vector<Ort::Value> &input_tensors);
 
@@ -41,6 +42,7 @@ class OnnxRuntimeInference
 
   std::vector<ONNXTensorElementDataType> get_input_node_types() const;
   std::vector<ONNXTensorElementDataType> get_output_node_types() const;
+  std::vector<size_t> get_input_node_ranks() const;
 
   private:
   Ort::Env env;

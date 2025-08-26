@@ -331,19 +331,20 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolov8_decode::proper
     }
   }
 
+  std::vector<int> ids;
   if (prop->kpts_shape[0] > 0) {
     auto [boxes, kpts, scores] = ax_utils::remove_empty_boxes(
         pixel_boxes, pixel_kpts, predictions.scores, prop->kpts_shape[0]);
     ax_utils::insert_and_associate_meta<AxMetaKptsDetection>(map,
         prop->meta_name, prop->master_meta, subframe_index, number_of_subframes,
         prop->association_meta, std::move(boxes), std::move(kpts),
-        std::move(scores), prop->kpts_shape, prop->decoder_name);
+        std::move(scores), ids, prop->kpts_shape, prop->decoder_name);
   } else {
     auto [boxes, scores, class_ids] = ax_utils::remove_empty_boxes(
         pixel_boxes, predictions.scores, predictions.class_ids);
     ax_utils::insert_and_associate_meta<AxMetaObjDetection>(map, prop->meta_name,
         prop->master_meta, subframe_index, number_of_subframes, prop->association_meta,
-        std::move(boxes), std::move(scores), std::move(class_ids));
+        std::move(boxes), std::move(scores), std::move(class_ids), ids);
   }
 
   auto end_time = std::chrono::high_resolution_clock::now();

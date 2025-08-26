@@ -303,6 +303,7 @@ decode_to_meta(const AxTensorsInterface &tensors,
     kpts.insert(kpts.end(), kpts_i.begin(), kpts_i.end());
   }
 
+  std::vector<int> ids;
   map[prop->meta_key] = std::make_unique<AxMetaKptsDetection>(std::move(boxes),
-      std::move(kpts), std::move(scores), std::vector<int>{ 5, 3 }, prop->decoder_name);
+      std::move(kpts), std::move(scores), ids, std::vector<int>{ 5, 3 }, prop->decoder_name);
 }

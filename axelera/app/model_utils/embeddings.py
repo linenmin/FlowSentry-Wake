@@ -13,7 +13,7 @@ import numpy as np
 
 
 class DistanceMetric(enum.Enum):
-    euclidean_distance = enum.auto()
+    euclidean_distance = 1
     squared_euclidean_distance = enum.auto()
     cosine_distance = enum.auto()
     cosine_similarity = enum.auto()
@@ -102,6 +102,8 @@ class JSONEmbeddingsFile(EmbeddingsFile):
                 self.embedding_dict = json.load(f)
             except json.JSONDecodeError:
                 self.embedding_dict = {}
+        self._has_original = bool(self.embedding_dict)
+        self._original_keys = set(self.embedding_dict.keys())
 
     def update(self, embedding: np.ndarray, image_id: str):
         if image_id not in self.embedding_dict:
@@ -110,12 +112,27 @@ class JSONEmbeddingsFile(EmbeddingsFile):
 
     def commit(self):
         if self._dirty:
+            # Safety check: don't commit if embeddings became empty
+            if not self.embedding_dict and self._has_original:
+                with self.path.open('r') as f:
+                    try:
+                        self.embedding_dict = json.load(f)
+                    except json.JSONDecodeError:
+                        self.embedding_dict = {}
+                self._dirty = False
+                return False
+
             with self.path.open('w') as f:
                 json.dump(self.embedding_dict, f)
             self._dirty = False
+            # Update original state tracking after successful commit
+            self._has_original = bool(self.embedding_dict)
+            self._original_keys = set(self.embedding_dict.keys())
+            return True
+        return False
 
     def read_labels(self, labels: Optional[List[str]] = None) -> List[str]:
-        return list(map(str, self.embedding_dict.keys()))
+        return list(self.embedding_dict.keys())
 
     def load_embeddings(self) -> np.ndarray:
         if not self.embedding_dict:
@@ -134,6 +151,7 @@ class NumpyEmbeddingsFile(EmbeddingsFile):
         else:
             self.embedding_array = np.empty((0, 0))
             self.labels = []
+        self._had_original_data = self.embedding_array.size > 0
 
     def _read_labels(self):
         if self.label_file.exists():
@@ -150,16 +168,27 @@ class NumpyEmbeddingsFile(EmbeddingsFile):
             else:
                 self.embedding_array = np.vstack((self.embedding_array, embedding))
             self.labels.append(image_id)
-            with self.label_file.open('a') as f:
-                f.write(f"{image_id}\n")
             self._dirty = True
 
     def commit(self):
         if self._dirty:
+            # Safety check: don't commit if embeddings became empty unexpectedly
+            if self.embedding_array.size == 0 and self._had_original_data:
+                if self.path.exists():
+                    self.embedding_array = np.load(self.path)
+                    self.labels = self._read_labels()
+                self._dirty = False
+                return False
+
             np.save(self.path, self.embedding_array)
             with self.label_file.open('w') as f:
                 f.write('\n'.join(self.labels) + '\n')
             self._dirty = False
+
+            # Update the tracking of original data
+            self._had_original_data = self.embedding_array.size > 0
+            return True
+        return False
 
     def read_labels(self, labels: Optional[List[str]] = None) -> List[str]:
         return labels if labels is not None else self.labels

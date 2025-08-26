@@ -21,12 +21,12 @@ from . import (
     config,
     constants,
     data_utils,
+    format_converters,
     logging_utils,
     operators,
     pipeline,
     schema,
     utils,
-    yaml_parser,
 )
 from .torch_utils import torch
 
@@ -386,7 +386,10 @@ class ModelInfos:
                 )
 
         desired = overrides.get('aipu_cores', execution_cores)
-        max_compiler = overrides.get('max_compiler_cores', config.env.max_compiler_cores)
+        if config.env.low_latency:
+            max_compiler = 1
+        else:
+            max_compiler = overrides.get('max_compiler_cores', config.env.max_compiler_cores)
         max_exec = overrides.get('max_execution_cores', config.DEFAULT_MAX_EXECUTION_CORES)
         ncores = min(desired, max_compiler)
         if max_compiler < desired:
@@ -456,14 +459,22 @@ class ModelInfos:
                         LOG.warning(f"Failed to create enum for dataset {mi.dataset}: {e}")
                         continue
 
-                    try:
-                        e = utils.FrozenIntEnum(
-                            f"{utils.ident(mi.dataset)}", utils.create_enumerators(labels)
+                    if not labels:
+                        LOG.warning(
+                            f"Failed to create enum for dataset {mi.dataset}: no labels found"
                         )
+                        # since an empty enum is truthy, use an empty list,
+                        # the cache doesn't actually care what it is caching
+                        e = []
+                    else:
+                        try:
+                            e = utils.FrozenIntEnum(
+                                f"{utils.ident(mi.dataset)}", utils.create_enumerators(labels)
+                            )
 
-                    except ValueError as e:
-                        LOG.warning(f"Failed to create enum for dataset {mi.dataset}: {e}")
-                        continue
+                        except ValueError as e:
+                            LOG.warning(f"Failed to create enum for dataset {mi.dataset}: {e}")
+                            continue
                     self._enum_cache[mi.dataset] = e
                 else:
                     e = self._enum_cache[mi.dataset]
@@ -740,7 +751,54 @@ def _provisional_model_info_from_yaml(name, yaml_props) -> types.ModelInfo:
     return obj
 
 
-def parse_and_validate_datasets(datasets: Optional[dict], data_root: Optional[Path]) -> None:
+def _create_temporary_labels_file(labels, dataset_name):
+    """
+    Creates a temporary file containing labels when labels are provided as a list.
+
+    Args:
+        labels: List of label strings
+        dataset_name: Name of the dataset for error reporting
+
+    Returns:
+        Path to the temporary labels file
+
+    Raises:
+        ValueError: If the labels file couldn't be created
+    """
+    import tempfile
+
+    labels_file = tempfile.NamedTemporaryFile(
+        mode='w+', prefix='ax_labels_', suffix='.txt', delete=False
+    )
+    temp_path = Path(labels_file.name)
+
+    try:
+        for label in labels:
+            labels_file.write(f"{label}\n")
+        labels_file.close()
+        LOG.debug(f"Created temporary labels file at {temp_path} for dataset {dataset_name}")
+        return temp_path
+    except Exception as e:
+        temp_path.unlink(missing_ok=True)
+        raise ValueError(f"Failed to create labels file for dataset {dataset_name}: {e}")
+
+
+def _download_default_representative_images(dataset: dict, data_root: Optional[Path]) -> None:
+    data_path = data_root / 'coco2017_repr400'
+    if not (data_path.exists() and any(data_path.iterdir())):
+        utils.download_and_extract_asset(
+            'https://media.axelera.ai/artifacts/data/coco/coco2017_repr416.zip',
+            data_root / 'coco2017_repr416.zip',
+            md5='a923038acd372907e8b4b811e6c069bc',
+            drop_dirs=1,
+            dest_path=data_path,
+        )
+    return data_path
+
+
+def parse_and_validate_datasets(
+    datasets: Optional[dict], data_root: Optional[Path], default_representative_images: bool
+) -> None:
     """
     This function is used to parse and validate the datasets section in the yaml file.
     It will also set the data_dir_path according to the data_dir_name or repr_imgs_dir_path.
@@ -749,11 +807,22 @@ def parse_and_validate_datasets(datasets: Optional[dict], data_root: Optional[Pa
     if datasets is not None:
         for dataset_name, dataset in datasets.items():
             if 'data_dir_path' in dataset:
-                raise ValueError(f"data_dir_path is a reserved keyword for YAML dataset section")
+                raise ValueError(f"data_dir_path is a reserved keyword for dataset {dataset_name}")
+
+            has_custom_repr_imgs = (
+                'repr_imgs_dir_path' in dataset or 'repr_imgs_dir_name' in dataset
+            )
+            if default_representative_images and not has_custom_repr_imgs:
+                data_root = config.env.data_root if data_root is None else data_root
+                dataset['repr_imgs_dir_path'] = _download_default_representative_images(
+                    dataset, data_root
+                )
+
             if 'class' in dataset:
                 if dataset['class'] == 'DataAdapter':
                     LOG.debug(f"Using the default DataAdapter")
                     dataset.setdefault('data_dir_path', data_root)
+
                     if 'repr_imgs_dir_path' in dataset:
                         dataset['repr_imgs_dir_path'] = Path(dataset['repr_imgs_dir_path'])
                         if 'repr_imgs_dataloader_color_format' in dataset:
@@ -813,7 +882,15 @@ def parse_and_validate_datasets(datasets: Optional[dict], data_root: Optional[Pa
                             f"Correcting labels_path from {original_labels_path} to {correct_labels_path}"
                         )
             elif 'labels' in dataset:
-                dataset['labels_path'] = data_root / dataset['data_dir_name'] / dataset['labels']
+                # Handle labels as a list or string
+                if isinstance(dataset['labels'], list):
+                    temp_path = _create_temporary_labels_file(dataset['labels'], dataset_name)
+                    dataset['labels_path'] = temp_path
+                else:
+                    # If labels is a string (path to a file), use it to construct the labels_path
+                    dataset['labels_path'] = (
+                        data_root / dataset['data_dir_name'] / dataset['labels']
+                    )
 
             if 'label_filter' in dataset:
                 # label_filter may be a list or a comma-separated list of labels
@@ -844,18 +921,32 @@ def parse_and_validate_datasets(datasets: Optional[dict], data_root: Optional[Pa
                     )
 
             if data_root and 'dataset_url' in dataset:
-                try:
-                    data_utils.download_custom_dataset(
-                        data_root / dataset['data_dir_name'], **dataset
+                dataset_dir = data_root / dataset['data_dir_name']
+                # Only download if the dataset directory doesn't exist
+                if not dataset_dir.exists() or not any(dataset_dir.iterdir()):
+                    try:
+                        data_utils.download_custom_dataset(dataset_dir, **dataset)
+                    except Exception as e:
+                        raise ValueError(
+                            f"Failed to download dataset {dataset_name} to {dataset_dir}: {e}"
+                        ) from e
+                else:
+                    LOG.debug(
+                        f"Dataset {dataset_name} already exists at {dataset_dir}, skipping download"
                     )
-                except Exception as e:
-                    raise ValueError(
-                        f"Failed to download dataset {dataset_name} to {data_root / dataset['data_dir_name']}: {e}"
-                    ) from e
+
+            # Process Ultralytics data YAML after dataset download
+            if 'ultralytics_data_yaml' in dataset:
+                format_converters.process_ultralytics_data_yaml(dataset, dataset_name, data_root)
 
 
 def _parse_network(
-    path, yaml, eval_mode: bool, data_root: Optional[Path], from_deploy: bool
+    path,
+    yaml,
+    eval_mode: bool,
+    data_root: Optional[Path],
+    from_deploy: bool,
+    default_representative_images: bool,
 ) -> AxNetwork:
     pipeline_tasks = yaml.get('pipeline', []) or []
     if not pipeline_tasks:
@@ -950,8 +1041,12 @@ def _parse_network(
 
     network.datasets = yaml.get('datasets', None)
     try:
-        parse_and_validate_datasets(network.datasets, data_root)
+        parse_and_validate_datasets(network.datasets, data_root, default_representative_images)
     except Exception as e:
+        import traceback
+
+        tb = traceback.format_exc()
+        LOG.error(f"Failed to parse datasets section in {path}: {e}\n{tb}")
         raise type(e)(f"{network.name}: {str(e)}") from None
 
     internal_model_card_deps = yaml.get('internal-model-card', {}).get('dependencies', [])
@@ -1020,7 +1115,11 @@ def _has_template(path):
 
 
 def parse_network_from_path(
-    path: str, eval_mode: bool = False, data_root: Optional[Path] = None, from_deploy: bool = False
+    path: str,
+    deploy_config: config.DeployConfig = config.DeployConfig(),
+    eval_mode: bool = False,
+    data_root: Optional[Path] = None,
+    from_deploy: bool = False,
 ) -> AxNetwork:
     """Parse YAML pipeline to Network object, returns the network and the yaml."""
     # First create network and ensure all models are deployed
@@ -1046,7 +1145,9 @@ def parse_network_from_path(
             else:
                 yaml['models'][model_name] = yaml_from_cache['models'][model_name]
     utils.make_paths_in_dict_absolute(base, yaml)
-    return _parse_network(path, yaml, eval_mode, data_root, from_deploy)
+    return _parse_network(
+        path, yaml, eval_mode, data_root, from_deploy, deploy_config.default_representative_images
+    )
 
 
 def _collapse_compiler_overrides(
@@ -1151,6 +1252,11 @@ def read_deployed_model_infos(
             # # fill manifest with dummy values for non-aipu pipelines, it
             # # will be overwritten by the manifest file if it exists
             # model_info.manifest = types.Manifest("", (), ())
+
+            # Fields that should be dynmaically set from YAML
+            model_info.dataset = model_info_from_yaml.dataset
+            # TODO: support labels loading on the fly but not from model info
+            # model_info.labels = model_info_from_yaml.labels
         except Exception as e:
             msg = f"Failed to load model info from {_rel(model_json)}: {e}"
             model_infos.add_error(i, name, msg, LOG.exception)

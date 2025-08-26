@@ -5,7 +5,7 @@ name: t3-simplest-pytorch-with-pipeline
 description: Pytorch Tutorial-2 - A example of showing how to deploy a E2E pipeline with Pytorch model
 
 pipeline:
-  - classifier:
+  - classifications:
       model_name: model1
       input:
           type: image

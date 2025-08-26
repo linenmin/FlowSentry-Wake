@@ -8,6 +8,7 @@ pkg_check_modules(OpenCL OpenCL)
 pkg_check_modules(axruntime axruntime)
 
 set(SOURCE_FILES
+    src/AxFilterDetections.cpp
     src/AxInference.cpp
     src/AxInferenceAxRuntime.cpp
     src/AxInferenceNet.cpp

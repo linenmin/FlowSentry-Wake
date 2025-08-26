@@ -313,14 +313,14 @@ def _create_completion_stamp(
 
 
 def _check_dataset_status(
-    dataset_root: Path, dataset_name: str, split: str, config: DatasetConfig
+    dataset_root: Path, dataset_name: str, split: str, config: DatasetConfig, is_private: bool
 ) -> Tuple[DatasetStatus, str]:
     if not dataset_root.exists():
         return DatasetStatus.NOT_FOUND, f"Dataset directory {dataset_root} does not exist."
 
     # As we already have Imagenet locally, we don't want to redownload it.
     # If there is no local ImageNet, we will still download it due to lack of verified files.
-    if dataset_name == 'ImageNet':
+    if dataset_name == 'ImageNet' and not is_private:
         return DatasetStatus.IGNORE_CHECK, "Ignore the check for ImageNet."
     elif dataset_name.startswith('Customer.'):
         return DatasetStatus.IGNORE_CHECK, "Ignore the check for Customer dataset."
@@ -456,7 +456,7 @@ def check_and_download_dataset(
     # TODO: when release, we check if assets of public dataset are available in S3 public bucket
 
     dataset_status, status_message = _check_dataset_status(
-        data_root_dir, dataset_name, split, config
+        data_root_dir, dataset_name, split, config, is_private
     )
 
     if dataset_status == DatasetStatus.COMPLETE:

@@ -3,6 +3,7 @@
 # which return a list of Axelera Image and meta.
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -158,7 +159,7 @@ class InputFromROI(AxOperator):
             model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
         # for cascade models, we know the input color format passed from the upstream model
-        self._need_color_convert = context.color_format != self.color_format
+        self._need_color_convert = context.pipeline_input_color_format != self.color_format
         context.color_format = self.color_format
         if self.where != self._where:
             raise ValueError(f"where is not equal to _where: {self.where} vs {self._where}")
@@ -206,6 +207,9 @@ class InputFromROI(AxOperator):
                 f'{classes_to_keep_str}',
             )
 
+        if self._need_color_convert:
+            utils.insert_color_convert(gst, self.color_format)
+
         gst.start_axinference()
         gst.distributor(meta=str(self._association))
         gst.axtransform(
@@ -220,9 +224,6 @@ class InputFromROI(AxOperator):
         if result is None and axmeta is None:
             image = _convert_image_to_types_image_for_deploy(image, self.color_format)
             return _deploy_cascade_model(image, self.color_format)
-
-        if self.image_processing_on_roi:
-            raise NotImplementedError("Please implement image_processing_on_roi in exec_torch")
 
         assert self._need_color_convert == (
             self.color_format != image.color_format
@@ -281,7 +282,25 @@ class InputFromROI(AxOperator):
             if x2 == x1 or y2 == y1:
                 continue
             cropped_image = image.asarray()[y1:y2, x1:x2]
-            result.append(types.Image.fromarray(cropped_image, image.color_format))
+            roi_image = types.Image.fromarray(cropped_image, image.color_format)
+
+            if self.image_processing_on_roi:
+                for op in self.image_processing_on_roi:
+                    try:
+                        match = op.stream_check_match(stream_id)
+                        if match:
+                            # Check if the operator's exec_torch accepts metadata
+                            sig = inspect.signature(op.exec_torch)
+                            if len(sig.parameters) > 1 and 'meta' in sig.parameters:
+                                roi_image = op.exec_torch(roi_image, axmeta)
+                            else:
+                                roi_image = op.exec_torch(roi_image)
+                    except Exception as e:
+                        raise ValueError(
+                            f"Operator {op.__class__.__name__} failed to process ROI due to: {str(e)}"
+                        )
+
+            result.append(roi_image)
             axmeta[self.where].add_secondary_frame_index(self.task_name, idx)
         return image, result, axmeta
 
@@ -350,17 +369,21 @@ class InputWithImageProcessing(AxOperator):
         )
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        for op in self.image_processing:
-            match = op.stream_check_match(int(stream_idx))
-            if match:
-                op.build_gst(gst, stream_idx)
+        pass
 
-    def _process_image(self, image: types.Image, stream_id: int) -> types.Image:
+    def _process_image(self, image: types.Image, stream_id: int, meta=None) -> types.Image:
         for op in self.image_processing:
             try:
                 match = op.stream_check_match(stream_id)
                 if match:
-                    image = op.exec_torch(image)
+                    # Check if the operator's exec_torch accepts metadata
+                    import inspect
+
+                    sig = inspect.signature(op.exec_torch)
+                    if len(sig.parameters) > 1 and 'meta' in sig.parameters and meta is not None:
+                        image = op.exec_torch(image, meta)
+                    else:
+                        image = op.exec_torch(image)
             except Exception as e:
                 raise ValueError(
                     f"Operator {op.__class__.__name__} failed to process types.Image due to: {str(e)}"
@@ -373,13 +396,13 @@ class InputWithImageProcessing(AxOperator):
             return _deploy_cascade_model(image, self.color_format)
 
         if isinstance(image, types.Image):
-            result = [self._process_image(image, stream_id)]
+            result = [self._process_image(image, stream_id, meta)]
         elif isinstance(image, list):
             new_images = []
             for im in image:
                 if not isinstance(im, types.Image):
                     raise ValueError("Input must be a list of types.Image")
-                new_images.append(self._process_image(im, stream_id))
+                new_images.append(self._process_image(im, stream_id, meta))
             result = new_images
         else:
             raise ValueError("Input must be an types.Image or a list of types.Image")

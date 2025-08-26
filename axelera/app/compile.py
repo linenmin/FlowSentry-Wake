@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import contextlib
+import enum
 import json
 import logging
 from pathlib import Path
 import resource
 import shutil
 import tempfile
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import numpy as np
@@ -89,10 +90,10 @@ def load_manifest_from_file(manifest_json: Path) -> types.Manifest:
 
 def load_prequant_manifest(output_path: Path) -> types.Manifest:
     # Prequantized TVM model must have the following 2 files
-    quantized_model_json = output_path / constants.K_MODEL_QUANTIZED_FILE_NAME
+    quantized_model_file = output_path / constants.K_MODEL_QUANTIZED_FILE_NAME
     manifest_json = output_path / constants.K_MANIFEST_FILE_NAME
-    if not quantized_model_json.exists():
-        raise FileNotFoundError(f"Failed to find {quantized_model_json}")
+    if not quantized_model_file.exists():
+        raise FileNotFoundError(f"Failed to find {quantized_model_file}")
     if not manifest_json.exists():
         raise FileNotFoundError(f"Failed to find {manifest_json}")
     with open(manifest_json) as quantized_meta:
@@ -162,6 +163,8 @@ class ManifestEncoder(json.JSONEncoder):
     def default(self, obj):
         import tvm
 
+        if isinstance(obj, enum.Enum):
+            return obj.name
         if isinstance(obj, tvm.tir.IntImm):
             return int(obj)
         if isinstance(obj, np.ndarray):
@@ -222,42 +225,10 @@ def prepare_build_directory(output_path: Path, deploy_mode: config.DeployMode):
             else:
                 item.unlink()
 
-    if deploy_mode == config.DeployMode.QUANTIZE:
-        manage_quantized_directory(output_path)
-
     if output_path.is_dir():
         _clear_dir(output_path)
     else:
         output_path.mkdir(parents=True, exist_ok=True)
-
-
-def manage_quantized_directory(dir_path: Path):
-    if not dir_path.is_dir():
-        return
-
-    existing_dirs = sorted(
-        [
-            p
-            for p in dir_path.parent.glob(f"{dir_path.name}_*")
-            if p.is_dir() and p.name[len(dir_path.name) + 1 :].isdigit()
-        ],
-        key=lambda p: int(p.name[len(dir_path.name) + 1 :]),
-        reverse=True,
-    )
-
-    # Move existing directories down the sequence
-    for existing_dir in existing_dirs:
-        counter = int(existing_dir.name[len(dir_path.name) + 1 :])
-        if counter > 9:
-            LOG.warning(f"There are over 10 quantized dir, removing {existing_dir}")
-            shutil.rmtree(str(existing_dir))
-        else:
-            new_dir = Path(f"{dir_path}_{counter+1}")
-            shutil.move(str(existing_dir), str(new_dir))
-
-    # Move the main directory
-    new_dir_path = Path(f"{dir_path}_1")
-    shutil.move(str(dir_path), str(new_dir_path))
 
 
 def _write_manifest(manifest, output_path):
@@ -422,6 +393,7 @@ def compile(
     deploy_mode: config.DeployMode,
     metis: config.Metis,
     decoration_flags: str,
+    dump_core_model: bool,
 ) -> types.Manifest:
     from axelera.compiler import top_level
 
@@ -446,6 +418,8 @@ def compile(
     }:
         prepare_build_directory(output_path, deploy_mode)
         compilation_cfg.quantized_model_debug_save_dir = Path(output_path)
+        if dump_core_model:
+            compilation_cfg.graph_cleaner_dump_core_onnx = constants.K_MODEL_DUMP_CORE_MODEL
         _save_compilation_config(
             compilation_cfg,
             output_path,
@@ -516,6 +490,23 @@ def compile(
         exported_root.mkdir(parents=True, exist_ok=True)
         suffix = {config.DeployMode.QUANTIZE: '-prequantized'}.get(deploy_mode, '')
         export_path = exported_root / f"{model_name}{suffix}.zip"
+
+        # Save calibration images used to a text file
+        try:
+            from ax_datasets.objdataadapter import (
+                clear_calibration_images_tracking,
+                save_calibration_images_to_file,
+            )
+
+            calibration_images_file = (
+                output_path.parent.parent / f"{model_name}_calibration_images.txt"
+            )
+            save_calibration_images_to_file(calibration_images_file)
+            # Clear the tracking for the next run
+            clear_calibration_images_tracking()
+        except Exception as e:
+            LOG.warning(f"Failed to save calibration images list: {e}")
+
         utils.zipdir(output_path.parent.parent, export_path)
         LOG.info(f"Exported to {export_path}")
     return the_manifest

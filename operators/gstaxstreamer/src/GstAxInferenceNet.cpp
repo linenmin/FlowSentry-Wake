@@ -30,11 +30,12 @@ GST_DEBUG_CATEGORY_STATIC(gst_axinferencenet_debug);
 GST_ELEMENT_REGISTER_DEFINE(
     axinferencenet, "axinferencenet", GST_RANK_NONE, GST_TYPE_AXINFERENCENET);
 
-static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink_%u", GST_PAD_SINK,
-    GST_PAD_REQUEST, GST_STATIC_CAPS("video/x-raw,format={RGBA,BGRA,RGB,BGR}"));
+static GstStaticPadTemplate sink_template
+    = GST_STATIC_PAD_TEMPLATE("sink_%u", GST_PAD_SINK, GST_PAD_REQUEST,
+        GST_STATIC_CAPS("video/x-raw,format={RGBA,BGRA,RGB,BGR,GRAY8}"));
 
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC,
-    GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw,format={RGBA,BGRA,RGB,BGR}"));
+    GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw,format={RGBA,BGRA,RGB,BGR,GRAY8}"));
 
 
 G_DEFINE_TYPE_WITH_CODE(GstAxInferenceNet, gst_axinferencenet, GST_TYPE_ELEMENT,
@@ -555,7 +556,7 @@ static void
 axnet_on_pad_linked(GstPad *pad, GstPad *peer, gpointer user_data)
 {
   auto *inf = GST_AXINFERENCENET(gst_pad_get_parent_element(pad));
-  GST_DEBUG_OBJECT(inf, "pad connected %s:%s", GST_DEBUG_PAD_NAME(pad));
+  GST_INFO_OBJECT(inf, "pad connected %s:%s", GST_DEBUG_PAD_NAME(pad));
   auto stream_id = -1;
   // find axinplace stream_id element by walking the sink pads upstream
   auto *upstream = gst_pad_get_parent_element(peer);
@@ -579,6 +580,7 @@ axnet_on_pad_linked(GstPad *pad, GstPad *peer, gpointer user_data)
     GST_WARNING_OBJECT(inf, "new sink pad added %s:%s but could not find stream_id",
         GST_DEBUG_PAD_NAME(pad));
   }
+  gst_object_unref(inf);
 }
 
 
@@ -657,7 +659,7 @@ static void
 gst_axinferencenet_finalize(GObject *object)
 {
   auto *inf = GST_AXINFERENCENET(object);
-  GST_DEBUG_OBJECT(object, "dispose\n");
+  GST_INFO_OBJECT(object, "finalizing");
   net(inf).stop();
   inf->net.reset();
   inf->properties.reset();

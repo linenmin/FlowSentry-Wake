@@ -15,16 +15,13 @@ pipeline:
             height: ${{input_height}}
             scaleup: True
         - torch-totensor:
+      inference:
+        handle_all: True
       postprocess:
         - get-raw-tensor:
-            # Each flag controls whether the corresponding transform is handled by AxInferenceNet or left for the user:
-            # - If a flag is True, AxInferenceNet will perform the transform before returning the tensor to the user.
-            # - If a flag is False, the user is responsible for handling that transform after receiving the tensor.
-            # - If postamble_processed is True, dequantized_and_depadded and transposed will also be enabled automatically,
-            #   so the output tensor will fully align with the source ONNX model's output nodes.
-            dequantized_and_depadded: True
-            transposed: True
-            postamble_processed: True
+            # Get raw tensor output that matches your original ONNX/PyTorch model.
+            # handle_all: True (above) ensures the output tensor is fully processed -
+            # dequantized, with correct dimensions and layout.
 
 models:
   yolov8n-output-tensor:
@@ -40,13 +37,10 @@ models:
     num_classes: 80
     dataset: CocoDataset-COCO2017
 
-datasets: # Python dataloader
+datasets:
   CocoDataset-COCO2017:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
     label_type: COCO2017
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa

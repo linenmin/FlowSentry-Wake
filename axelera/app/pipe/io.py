@@ -5,24 +5,22 @@ from __future__ import annotations
 import abc
 import dataclasses
 import enum
-import errno
 import os
 from pathlib import Path
 import re
-import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Optional, Tuple
 import urllib
 
 import cv2
+import numpy as np
 
 from axelera import types
 
 from .. import config, display, display_cv, gst_builder, logging_utils, utils
-from ..operators.utils import insert_color_convert
 
 if TYPE_CHECKING:
-    from . import frame_data
-    from .. import inf_tracers, network
+    from . import base, frame_data
+    from .. import network
 
 LOG = logging_utils.getLogger(__name__)
 
@@ -32,42 +30,50 @@ FrameInputGenerator = Generator[types.FrameInput, None, None]
 
 class PipeInput(abc.ABC):
     def __init__(self) -> None:
-        self.location: str = ''
-        '''Source of input. One of (device path|image path|video path|url|url|"measurement")'''
-
-        self.format: str = ''
-        '''Type of input.  One of (usb|image|images|video|rtsp|hls|"dataset")'''
-
         self.number_of_frames: int = 0
         '''Number of frames in the input, or 0 if unbounded.'''
 
         self.batched_data_reformatter: Optional[UnifyDataFormat] = None
         '''For a dataset input this determines how to unify the data format.'''
 
+    @property
+    def sources(self) -> list[config.Source]:
+        '''Sources of input.'''
+        raise NotImplementedError()
+
     @abc.abstractmethod
     def frame_generator(self) -> FrameInputGenerator:
         """Generates input data to a torch/torch-aipu pipe or dataset pipes in gst.
 
-        This function should yield FrameInputs with the stream_id set.  It is only called
-        from torch/torch-aipu pipe, or gst pipe when performing dataset evaluation.
+        This function should yield FrameInputs with the stream_id set.
         """
 
     @abc.abstractmethod
     def build_input_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        """generate gst pipeline representation"""
+        """Build the gst pipeline representation for the input element."""
 
     @abc.abstractmethod
     def stream_count(self) -> int:
         """Number of input streams, 1 for most, N for MultiplexPipeInput."""
 
     def add_source(
-        self, source: str, rtsp_latency: int | None = None, specified_frame_rate: int | None = None
+        self,
+        source: config.Source,
+        source_id: int,
+        rtsp_latency: int | None = None,
+        specified_frame_rate: int | None = None,
     ) -> PipeInput:
         """Add a new source to the input.  This is used for multiplex input."""
         del source
+        del source_id
         del rtsp_latency
         del specified_frame_rate
         raise NotImplementedError(f"{type(self).__name__} does not support add_source()")
+
+    @property
+    def inputs(self) -> dict[int, PipeInput]:
+        """Iterate over the inputs.  This is used for multiplex input."""
+        return {self._sid: self}
 
 
 @dataclasses.dataclass
@@ -83,7 +89,6 @@ def get_validation_components(
     task_name: str,
     data_root: str,
     dataset_split: str,
-    batch_size: int,
     validation_settings: Optional[dict] = None,
 ) -> ValidationComponents:
     if network is None or model_info is None:
@@ -147,92 +152,55 @@ def get_validation_components(
     return ValidationComponents(dataloader, reformatter, evaluator)
 
 
+def _build_data_loader(gst):
+    gst.appsrc(
+        {
+            'name': 'axelera_dataset_src',
+            'is-live': True,
+            'do-timestamp': True,
+            'format': 3,  # GST_FORMAT_TIME
+        }
+    )
+    gst.queue(name='queue_axelera_dataset')
+
+
 class DatasetInput(PipeInput):
     def __init__(
         self,
+        src: config.Source,
         data_loader: types.DataLoader,
         reformatter: Callable[[Any], List[types.FrameInput]],
-        color_format: types.ColorFormat = types.ColorFormat.RGB,
-        limit_frames: int = 0,
-        hardware_caps: Optional[dict] = None,
+        limit_frames: int,
+        hardware_caps: Optional[dict],
+        stream_id: int,
     ):
         super().__init__()
-        self.location = 'measurement'
-        self.format = 'dataset'
-        self.hardware_caps = hardware_caps or {}
+        self._hwcaps = hardware_caps or {}
+        self._src = src
         self.batched_data_reformatter = reformatter
-        # TODO: handle batching: len(self.dataloader) * batch_size
         self.dataloader = (
             utils.LimitedLengthDataLoader(data_loader, limit_frames)
             if limit_frames
             else data_loader
         )
         self.number_of_frames = len(self.dataloader)
-        self.color_format = color_format
+        self._sid = stream_id
+
+    @property
+    def sources(self) -> list[config.Source]:
+        '''Sources of input'''
+        return [self._src]
 
     def frame_generator(self) -> FrameInputGenerator:
-        return self.dataloader
+        for frame in self.dataloader:
+            yield frame
 
     def stream_count(self):
         return 1
 
     def build_input_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        assert stream_idx == '0'
-        gst.appsrc(
-            {
-                'name': 'axelera_dataset_src',
-                'is-live': True,
-                'do-timestamp': True,
-                'format': 3,  # GST_FORMAT_TIME
-            }
-        )
-        gst.queue(name='queue_axelera_dataset')
-        gst.axinplace(
-            name=f'axinplace-addstreamid{stream_idx or 0}',
-            lib='libinplace_addstreamid.so',
-            mode='meta',
-            options=f'stream_id:{stream_idx or 0}',
-        )
-        vaapi = gst.getconfig() is not None and gst.getconfig().vaapi
-        opencl = gst.getconfig() is not None and gst.getconfig().opencl
-        insert_color_convert(gst, vaapi, opencl, format=f'{self.color_format.name.lower()}')
-
-
-def server_reformatter(data):
-    return [data]
-
-
-class ServerInput(PipeInput):
-    def __init__(
-        self,
-        limit_frames: int = 0,
-        hardware_caps: Optional[dict] = None,
-        server_loader: Optional[types.ServerLoader] = None,
-    ):
-        super().__init__()
-        self.format = 'server'
-        self.hardware_caps = hardware_caps or {}
-        self.batched_data_reformatter = server_reformatter
-        self.dataloader = server_loader
-        self.number_of_frames = limit_frames
-
-    def frame_generator(self) -> FrameInputGenerator:
-        return self.dataloader
-
-    def stream_count(self):
-        return 1
-
-    def build_input_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        assert stream_idx == '0'
-        gst.appsrc(
-            {
-                'name': 'axelera_server_src',
-                'is-live': True,
-                'do-timestamp': True,
-                'format': 3,  # GST_FORMAT_TIME
-            }
-        )
-        gst.queue(name='queue_axelera_dataset')
+        assert stream_idx == '0', repr(stream_idx)
+        _build_data_loader(gst)
         gst.axinplace(
             name=f'axinplace-addstreamid{stream_idx or 0}',
             lib='libinplace_addstreamid.so',
@@ -252,45 +220,7 @@ def _parse_livestream_location(location: str) -> Tuple[str, str, str]:
     return username, password, urllib.parse.urlunparse(res)
 
 
-def _is_youtube_url(url):
-    """Check if the URL is a YouTube URL."""
-    youtube_domains = ['youtube.com', 'youtu.be']
-    return any(domain in url for domain in youtube_domains)
-
-
-def _is_hls_url(url):
-    """Check if the URL is an HLS URL."""
-    return url.endswith('.m3u8')
-
-
-def _get_youtube_stream_url(youtube_url):
-    """Get the direct stream URL from a YouTube video URL."""
-    import subprocess
-
-    try:
-        cmd = ["your_parser", youtube_url]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            import json
-
-            stream_data = json.loads(result.stdout)
-            return stream_data.get("url", youtube_url)
-        else:
-            LOG.warning(
-                f"Unable to parse {youtube_url} as a YouTube URL; proceeding as a standard URL."
-            )
-            return youtube_url
-    except FileNotFoundError as e:
-        raise logging_utils.UserError(
-            f"""\
-            Youtube url is not directly supported. You have to implement your parser
-            to get the direct stream url if want to use youtube url as input.
-            """
-            + f'\n{e}'
-        ) from None
-
-
-def _determine_max_camera_resolution(cap: cv2.VideoCapture):
+def _set_max_camera_resolution(cap: cv2.VideoCapture):
     # Get the resolution of the video stream to the maximum supported by the camera
     common_resolutions = [(640, 480), (1280, 720), (1920, 1080), (3840, 2160)]
     max_resolution = None
@@ -301,6 +231,8 @@ def _determine_max_camera_resolution(cap: cv2.VideoCapture):
             max_resolution = resolution
         elif max_resolution is None:
             raise RuntimeError("Unable to find a supported resolution")
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, max_resolution[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, max_resolution[1])
     return max_resolution
 
 
@@ -316,32 +248,29 @@ def build_decodebin(gst: gst_builder.Builder, allow_hardware_codec, stream_idx):
     gst.decodebin(props)
 
 
-def build_gst_repr_by_usb_cam(
-    gst: gst_builder.Builder,
-    location,
-    codec,
-    allow_hardware_codec,
-    vaapi_enabled,
-    stream_idx,
-    width=0,
-    height=0,
-    fps=0,
-):
-    if codec not in ('yuyv', 'mjpg'):
-        raise NotImplementedError(f"codec {codec} not supported in usb cam")
+def _build_gst_usb(gst: gst_builder.Builder, src: config.Source, allow_hardware_codec, stream_idx):
+    codec = src.codec or 'mjpg'  #
+    codecs = {
+        'mjpg': 'image/jpeg',
+        'image/jpeg': 'image/jpeg',
+        'yuyv': 'video/x-raw,format=YUY2',
+    }
+    if codec not in codecs:
+        raise NotImplementedError(f"codec {codec!r} not supported in usb cam")
+    caps = codecs[codec]
 
-    gst.v4l2src(device=location)
-    dimensions = f'width={width},height={height}' if width and height else ''
-    framerate = f'framerate={fps}/1' if fps else ''
+    loc = f"/dev/video{src.location!s}" if re.match(r'\d+$', src.location) else src.location
+    gst.v4l2src(device=loc)
+    dimensions = f'width={src.width},height={src.height}' if src.width and src.height else ''
+    framerate = f'framerate={src.fps}/1' if src.fps else ''
     extras = ''.join(f',{x}' for x in [dimensions, framerate] if x)
-    if codec == 'yuyv':
-        gst.capsfilter(caps=f'video/x-raw,format=YUY2{extras}')
-    else:  # codec == 'mjpg':
-        gst.capsfilter(caps=f'image/jpeg{extras}')
+    LOG.info("Using v2l caps=%s", f'{caps}{extras}')
+    gst.capsfilter(caps=f'{caps}{extras}')
+    if 'jpeg' in caps:
         build_decodebin(gst, allow_hardware_codec, stream_idx)
 
 
-def build_gst_repr_by_rtsp(gst: gst_builder.Builder, location: str, stream_idx: str, latency=500):
+def _build_gst_rtsp(gst: gst_builder.Builder, location: str, stream_idx: str, latency=500):
     username, password, location = _parse_livestream_location(location)
     gst.rtspsrc(
         {
@@ -357,288 +286,164 @@ def build_gst_repr_by_rtsp(gst: gst_builder.Builder, location: str, stream_idx: 
     gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
 
 
-@dataclasses.dataclass
-class SourceInfo:
-    format: str
-    location: str
-    width: int = 0
-    height: int = 0
-    images: Optional[List[Path]] = None
-    usb_device: Optional[int] = None
-    fps: int = 0
+def _usb_device_path(src: config.Source) -> str:
+    # TODO Win32
+    return f"/dev/video{src.location}" if re.match(r'\d+$', src.location) else src.location
 
 
-def parse_source(source: str) -> SourceInfo:
-    if m_usb := re.match(r'usb(?::(\d+))?(?::(/dev/\w+))?(?::(\d+)x(\d+))?(?:@(\d+))?$', source):
-        if m_usb.group(2):
-            usb_device = None
-            location = m_usb.group(2)
-        else:
-            usb_device = int(m_usb.group(1) or 0)
-            location = f'/dev/video{usb_device}'
-
-        width = int(m_usb.group(3)) if m_usb.group(3) else 0
-        height = int(m_usb.group(4)) if m_usb.group(4) else 0
-        fps = int(m_usb.group(5)) if m_usb.group(5) else 0
-        return SourceInfo('usb', location, width, height, usb_device=usb_device, fps=fps)
-    elif source.startswith(('http://', 'https://')):
-        if _is_youtube_url(source):
-            stream_url = _get_youtube_stream_url(source)
-        else:
-            if not _is_hls_url(source):
-                LOG.warning(
-                    f"Unrecognised http/https format, assuming the format is HLS: {source}"
-                )
-            stream_url = source
-        return SourceInfo('hls', stream_url)
-    elif source.startswith(('rtsp://')):
-        return SourceInfo('rtsp', source)
-    elif m_fakevideo := re.match(r'fakevideo(?::(\d+)x(\d+))?$', source):
-        if m_fakevideo.group(1) and m_fakevideo.group(2):
-            width = int(m_fakevideo.group(1))
-            height = int(m_fakevideo.group(2))
-        else:  # default with 720P
-            width = 1280
-            height = 720
-        return SourceInfo('video', 'fake', width, height)
-    else:
-        path = Path(source).resolve()
-        images = None
-        if path.is_file():
-            format = utils.get_media_type(path)  # image or video
-            if format == 'image':
-                images = [str(path)]
-        elif path.is_dir():  # search images under dir
-            format = 'images'
-            images = [x for x in path.iterdir() if x.suffix in utils.IMAGE_EXTENSIONS]
-            if not images:
-                raise RuntimeError(f"Failed to locate any images in {path}")
-        else:
-            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), source)
-        return SourceInfo(format, str(path), images=images)
-
-
-def is_placeholder(format: str, location: str) -> bool:
-    return format == 'rtsp' and location == 'rtsp://placeholder'
-
-
-def build_tile_options(gst, input_shape):
-    options = (
-        f'meta_key:axelera-tiles-internal;'
-        f'tile_size:{gst.tile.get("tile", "default")};'
-        f'tile_overlap:{gst.tile.get("tile_overlap", 0)};'
-        f'tile_position:{gst.tile.get("tile_position", "none")};'
-        f'model_width: {input_shape[3]};'
-        f'model_height: {input_shape[2]}'
-    )
-    return options
+def _open_cap(src: config.Source) -> cv2.VideoCapture:
+    c = cv2.VideoCapture(int(src.location) if re.match(r'\d+$', src.location) else src.location)
+    if not c.isOpened():
+        raise RuntimeError(f"Failed to open video device: {src.location}")
+    return c
 
 
 class SinglePipeInput(PipeInput):
     def __init__(
         self,
         pipe_type: str,
-        source: str,
+        src: config.Source,
         hardware_caps: config.HardwareCaps = config.HardwareCaps.NONE,
         allow_hardware_codec=True,
-        color_format: types.ColorFormat = types.ColorFormat.RGB,
         rtsp_latency=500,
         specified_frame_rate=0,
-        model_info=None,
+        source_id: int = 0,
     ):
-        """
-        Input arguments:
-        pipe_type:    pipe route  (gst|torch|torch-aipu)
-        source:  input argument      (usb|file|rtsp|hls)
-
-        Member variables:
-        fps:      int  (frames per second)
-        """
         super().__init__()
-        self.hardware_caps = hardware_caps
-        self.fps = 0
-        self.allow_hardware_codec = allow_hardware_codec
-        self.color_format = color_format
-        self.rtsp_latency = rtsp_latency
-        info = parse_source(source)
-        self.format = info.format
-        self.location = info.location
-        self.width, self.height = 0, 0
-        self.model_info = model_info
-        self.codec = 'mjpg' if self.format == 'usb' else 'unknown'
-        if (self.format == 'video' and self.location == 'fake') or self.format == 'usb':
-            self.width, self.height = info.width, info.height
-        elif self.format in ('image', 'images'):
-            self.images = info.images
-            self.number_of_frames = len(self.images)
-        self.specified_frame_rate = specified_frame_rate
-        # Get video properties
-        # For GST path, we need source w/h and fps to construct the pipeline
-        if pipe_type == 'gst' and self.format == 'usb':
-            self.fps = info.fps
-        elif pipe_type == 'gst' and self.format in ('rtsp', 'hls'):
-            pass  # don't interrogate the stream
-        elif self.format == 'video' and self.location == 'fake':
-            # a super high one, may not achieve due to different resolutions and patterns
-            self.fps = 3000
-        elif self.format not in ('image', 'images'):
-            if (
-                pipe_type == 'gst'
-                and self.format == 'usb'
-                and self.width != 0
-                and self.height != 0
-            ):
-                LOG.info(
-                    f"Use user specified resolution: {self.width}x{self.height} for usbcam {self.location}"
-                )
-            elif not is_placeholder(self.format, self.location):
-                cap = cv2.VideoCapture(
-                    self.location if info.usb_device is None else info.usb_device
-                )
-                if not cap.isOpened():
-                    raise RuntimeError(
-                        f"Failed to open video device: {self.format}, {self.location}"
-                    )
-
-                if self.format == 'usb':
-                    if self.width == 0 and self.height == 0:
-                        max_resolution = _determine_max_camera_resolution(cap)
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, max_resolution[0])
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, max_resolution[1])
-                        self.width, self.height = max_resolution
-
-                self._get_video_attributes(cap)
-
-                if pipe_type == 'gst':
-                    cap.release()
-                else:  # torch
-                    self.cap = cap
-        else:
-            # this is here merely to give a nice early error for a bad path
-            i = cv2.imread(str(self.images[0]))
+        self._cap = None
+        self._hwcaps = hardware_caps
+        self._allow_hardware_codec = allow_hardware_codec
+        self._rtsp_latency = rtsp_latency
+        self._specified_frame_rate = specified_frame_rate
+        self._src = src
+        self._sid = source_id
+        t = self._src.type
+        if t == config.SourceType.IMAGE_FILES:
+            self.number_of_frames = len(self._src.images)
+            self.batched_data_reformatter = lambda data: [data]
+            i = cv2.imread(str(self._src.images[0]))
             if i is None:
-                raise RuntimeError(f"Failed to read image: {self.images[0]}")
+                raise RuntimeError(f"Failed to read image: {self._src.images[0]}")
+        elif t == config.SourceType.DATA_SOURCE:
+            self.number_of_frames = 0
+            self.batched_data_reformatter = lambda data: [data]
+        elif pipe_type == 'gst' and t == config.SourceType.VIDEO_FILE:
+            if not os.access(self._src.location, os.F_OK | os.R_OK | os.W_OK):
+                raise RuntimeError(f"Cannot access video file: {self._src.location}")
+        elif pipe_type == 'gst' and t == config.SourceType.USB:
+            # with gst we want to do a very light touch, just check the device is there
+            path = _usb_device_path(self._src)
+            if path and not os.access(path, os.F_OK | os.R_OK | os.W_OK):
+                raise RuntimeError(f"Cannot access device at {self._src.location}")
+        elif pipe_type != 'gst' and t != config.SourceType.FAKE_VIDEO:
+            # not gst and not fake, we will need to open the device
+            self._cap = _open_cap(self._src)
+            if t == config.SourceType.USB and (self._src.width == 0 and self._src.height == 0):
+                self._src.width, self._src.height = _set_max_camera_resolution(self._cap)
+            self._get_video_attributes(self._cap)
+
+    @property
+    def source_id(self) -> int:
+        """The source ID of this input."""
+        return self._sid
+
+    @property
+    def sources(self) -> list[config.Source]:
+        '''Sources of input'''
+        return [self._src]
 
     def stream_count(self):
         return 1
 
     def __del__(self):
-        if hasattr(self, 'cap') and self.cap:
-            self.cap.release()
+        if c := getattr(self, '_cap', None):
+            c.release()
+
+    @property
+    def fps(self) -> int:
+        return self._src.fps
 
     def _get_video_attributes(self, cap: cv2.VideoCapture):
         try:
             self.number_of_frames = max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0)
-            self.fps = int(cap.get(cv2.CAP_PROP_FPS))
-            LOG.debug(f"FPS of {self.location}: {self.fps}")
+            self._src.fps = int(cap.get(cv2.CAP_PROP_FPS))
+            LOG.debug(f"FPS of {self._src.location}: {self._src.fps}")
         except Exception as e:
             LOG.error(f"Failed to get video capabilities: {e}")
             raise RuntimeError(f"Failed to get video capabilities: {e}") from None
 
     def frame_generator(self) -> FrameInputGenerator:
-        if hasattr(self, 'images'):
+        if self._src.type == config.SourceType.IMAGE_FILES:
             LOG.debug("Create image generator from a series of images")
-            for image in self.images:
-                frame = cv2.imread(str(image))
-                yield types.FrameInput(
-                    img=types.Image.fromarray(frame, types.ColorFormat.BGR),
-                    img_id=Path(image).name,
-                    ground_truth=None,
-                )
-        elif self.format == 'video' and self.location == 'fake':
+            for image in self._src.images:
+                if (frame := cv2.imread(str(image))) is None:
+                    raise RuntimeError(f"Failed to read image: {image}")
+                img = types.Image.fromarray(frame, types.ColorFormat.BGR)
+                img_id = os.path.relpath(str(image), os.getcwd())
+                yield types.FrameInput(img=img, img_id=img_id, stream_id=self._sid)
+
+        elif self._src.type == config.SourceType.DATA_SOURCE:
+            LOG.debug("Create image generator from a python generator of images")
+            for frame in self._src.reader:
+                try:
+                    img = types.Image.fromany(frame, types.ColorFormat.BGR)
+                except TypeError:
+                    raise RuntimeError(
+                        f"Failed to convert data source output {frame} to axelera.types.Image"
+                    )
+                yield types.FrameInput(img=img, stream_id=self._sid)
+
+        elif self._src.type == config.SourceType.FAKE_VIDEO:
             x = cv2.imread(display.ICONS[192])
-            x = cv2.resize(x, (self.width, self.height))
+            x = cv2.resize(x, (self._src.width, self._src.height))
             while 1:
-                yield types.FrameInput(
-                    img=types.Image.fromarray(x, types.ColorFormat.BGR),
-                    img_id='',
-                    ground_truth=None,
-                )
+                img = types.Image.fromarray(x, types.ColorFormat.BGR)
+                yield types.FrameInput(img=img, stream_id=self._sid)
+
         else:
             LOG.debug("Create image generator from VideoCapture")
             try:
                 while True:
-                    ret, frame = self.cap.read()
+                    ret, frame = self._cap.read()
                     if not ret:
                         break
-                    yield types.FrameInput(
-                        img=types.Image.fromarray(frame, types.ColorFormat.BGR),
-                        img_id='',
-                        ground_truth=None,
-                    )
+                    img = types.Image.fromarray(frame, types.ColorFormat.BGR)
+                    yield types.FrameInput(img=img, stream_id=self._sid)
             finally:
-                self.cap.release()
+                self._cap.release()
 
     def build_input_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        if self.format == 'usb':
-            if not os.access(self.location, os.F_OK | os.R_OK | os.W_OK):
-                raise RuntimeError(f"Cannot access device at {self.location}")
-            build_gst_repr_by_usb_cam(
-                gst,
-                self.location,
-                self.codec,
-                self.allow_hardware_codec,
-                bool(self.hardware_caps.vaapi),
-                stream_idx,
-                width=self.width,
-                height=self.height,
-                fps=self.fps,
-            )
-
-        elif self.format == 'rtsp':
-            build_gst_repr_by_rtsp(
-                gst,
-                self.location,
-                stream_idx,
-                latency=self.rtsp_latency,
-            )
-
-        elif self.format == 'hls':
-            gst.playbin(uri=self.location)
-
-        elif self.format in ('image', 'video'):
-            if self.location == 'fake':
-                gst.videotestsrc(is_live=True, pattern=0)
-                gst.capsfilter(
-                    caps=f'video/x-raw,width={self.width},height={self.height},format=NV12,framerate={self.fps}/1',
-                )
-            else:
-                gst.filesrc(location=self.location)
+        requires_decodebin = False
+        if self._src.type == config.SourceType.USB:
+            _build_gst_usb(gst, self._src, self._allow_hardware_codec, stream_idx)
+        elif self._src.type == config.SourceType.RTSP:
+            _build_gst_rtsp(gst, self._src.location, stream_idx, latency=self._rtsp_latency)
+            requires_decodebin = True
+        elif self._src.type == config.SourceType.HLS:
+            gst.playbin(uri=self._src.location)
+        elif self._src.type == config.SourceType.FAKE_VIDEO:
+            gst.videotestsrc(is_live=True, pattern=0)
+            dims = f"width={self._src.width},height={self._src.height}"
+            gst.capsfilter(caps=f'video/x-raw,{dims},format=NV12,framerate={self._src.fps}/1')
+            requires_decodebin = True  # but does, it really?
+        elif self._src.type in (config.SourceType.IMAGE_FILES, config.SourceType.DATA_SOURCE):
+            _build_data_loader(gst)
+            gst.images = [os.path.relpath(str(i), os.getcwd()) for i in self._src.images]
+        elif self._src.type == config.SourceType.VIDEO_FILE:
+            gst.filesrc(location=self._src.location)
+            requires_decodebin = True
         else:
-            raise NotImplementedError(
-                f"{self.format} format not supported in gst pipe ({self.location})"
-            )
+            raise NotImplementedError(f"{self._src.type} format not supported in gst pipe")
 
-        if self.format == 'image':
-            build_decodebin(gst, False, stream_idx)
-            gst.axinplace(
-                name=f'decodebin-link{stream_idx or 0}',
-                lib='libinplace_addstreamid.so',
-                mode='meta',
-                options=f'stream_id:{stream_idx or 0}',
-            )
-            insert_color_convert(
-                gst,
-                self.hardware_caps.vaapi,
-                self.hardware_caps.opencl,
-                f'{self.color_format.name.lower()}',
-            )
-            if gst.tile:
-                input_shape = self.model_info.input_tensor_shape
-                gst.axinplace(
-                    lib="libinplace_addtiles.so", options=build_tile_options(gst, input_shape)
-                )
-            return
-
-        if self.format not in ['usb', 'hls']:
-            build_decodebin(gst, self.allow_hardware_codec, stream_idx)
+        if requires_decodebin:
+            build_decodebin(gst, self._allow_hardware_codec, stream_idx)
 
         # Ensure elements are named so that the upstream connects with the correct one
         decodebin_link = f'decodebin-link{stream_idx or 0}'
         axinplace_name = decodebin_link
-        if self.specified_frame_rate:
+        if self._specified_frame_rate:
             gst.videorate(name=decodebin_link)
-            gst.capsfilter(caps=f'video/x-raw,framerate={self.specified_frame_rate}/1')
+            gst.capsfilter(caps=f'video/x-raw,framerate={self._specified_frame_rate}/1')
             axinplace_name = f'axinplace-addstreamid{stream_idx or 0}'
 
         gst.axinplace(
@@ -648,27 +453,6 @@ class SinglePipeInput(PipeInput):
             options=f'stream_id:{stream_idx or 0}',
         )
 
-        if method := self.hardware_caps.opencl and config.env.videoflip:
-            gst.axtransform(
-                lib="libtransform_colorconvert.so",
-                options=f'format:{self.color_format.name.lower()}a;flip_method:{method}',
-            )
-        else:
-            insert_color_convert(
-                gst,
-                self.hardware_caps.vaapi,
-                self.hardware_caps.opencl,
-                f'{self.color_format.name.lower()}',
-            )
-            if method:
-                gst.videoflip(method=method)
-
-        if gst.tile:
-            input_shape = self.model_info.input_tensor_shape
-            gst.axinplace(
-                lib="libinplace_addtiles.so", options=build_tile_options(gst, input_shape)
-            )
-
 
 def _all_same(things):
     return len(things) == 1 or all(x == things[0] for x in things[1:])
@@ -677,47 +461,55 @@ def _all_same(things):
 class MultiplexPipeInput(PipeInput):
     def __init__(
         self,
-        pipe_type: str,
-        sources: List[str],
-        hardware_caps: config.HardwareCaps = config.HardwareCaps(),
-        allow_hardware_codec=True,
-        color_format: types.ColorFormat = types.ColorFormat.RGB,
-        rtsp_latency=500,
-        specified_frame_rate=0,
-        model_info=None,
+        sources: list[config.Source],
+        system_config: config.SystemConfig,
+        pipeline_config: config.PipelineConfig,
+        id_allocator: base.SourceIdAllocator,
     ):
         super().__init__()
-        self._pipe_type = pipe_type
-        self._hwcaps = hardware_caps
-        self._allow_hardware_codec = allow_hardware_codec
-        self._color_format = color_format
-        self._rtsp_latency = rtsp_latency
-        self._specified_frame_rate = specified_frame_rate
-        self.inputs = [
+        self._pipe_type = pipeline_config.pipe_type
+        self._hwcaps = system_config.hardware_caps
+        self._allow_hardware_codec = system_config.allow_hardware_codec
+        self._rtsp_latency = pipeline_config.rtsp_latency
+        self._specified_frame_rate = pipeline_config.specified_frame_rate
+        self._inputs = [
             SinglePipeInput(
-                pipe_type,
+                self._pipe_type,
                 source,
-                hardware_caps,
-                allow_hardware_codec,
-                color_format=color_format,
-                rtsp_latency=rtsp_latency,
-                specified_frame_rate=specified_frame_rate,
-                model_info=model_info,
+                self._hwcaps,
+                self._allow_hardware_codec,
+                self._rtsp_latency,
+                self._specified_frame_rate,
+                id_allocator.allocate(),
             )
             for source in sources
         ]
-        formats = [input.format for input in self.inputs]
-        if not _all_same(formats):
-            LOG.warning(f'Not all input sources have the same format: {formats}')
-        self.format = formats[0]
-        self.codec = 'mjpg' if self.format == 'usb' else 'unknown'
+
+        types = [input.sources[0].type for input in self._inputs]
+        if not _all_same(types):
+            stypes = ', '.join(t.name for t in types)
+            LOG.warning(f'Not all input sources have the same format: {stypes}')
         # TODO we currently and maybe always restrict to the shortest stream,
-        num_frames = [i.number_of_frames for i in self.inputs]
+        num_frames = [i.number_of_frames for i in self._inputs]
         self.number_of_frames = 0 if any(n == 0 for n in num_frames) else sum(num_frames)
-        self.batched_data_reformatter = None  # we do not support multiplex dataset.
+        self.batched_data_reformatter = self._inputs[0].batched_data_reformatter
+
+    @property
+    def sources(self) -> list[config.Source]:
+        '''Sources of input'''
+        return [i.sources[0] for i in self._inputs]
+
+    @property
+    def inputs(self) -> dict[int, PipeInput]:
+        """Return dict of source_id: PipeInput for all the inputs"""
+        return {i.source_id: i for i in self._inputs}
 
     def add_source(
-        self, source: str, rtsp_latency: int | None = None, specified_frame_rate: int | None = None
+        self,
+        source: config.Source,
+        source_id: int,
+        rtsp_latency: int | None = None,
+        specified_frame_rate: int | None = None,
     ) -> PipeInput:
         if rtsp_latency is None:
             rtsp_latency = self._rtsp_latency
@@ -728,50 +520,48 @@ class MultiplexPipeInput(PipeInput):
             source,
             self._hwcaps,
             self._allow_hardware_codec,
-            color_format=self._color_format,
-            rtsp_latency=rtsp_latency,
-            specified_frame_rate=specified_frame_rate,
+            rtsp_latency,
+            specified_frame_rate,
+            source_id,
         )
-        self.inputs.append(new_pipe)
+        self._inputs.append(new_pipe)
         return new_pipe
 
     def remove_source(self, source: str) -> None:
         idx = -1
-        for i, input in enumerate(self.inputs):
+        for i, input in enumerate(self._inputs):
             if input.location == source:
                 idx = i
                 break
         if idx != -1:
-            del self.inputs[idx]
+            del self._inputs[idx]
 
     def build_input_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        idx = int(stream_idx) if stream_idx else 0
-        self.inputs[idx].build_input_gst(gst, stream_idx)
+        raise NotImplementedError(f"MultiplexPipeInput does not support build_input_gst()")
 
     def stream_count(self):
-        return len(self.inputs)
+        return len(self._inputs)
 
     @property
     def fps(self):
-        fps = [input.fps for input in self.inputs]
+        fps = [input.fps for input in self._inputs]
         if not _all_same(fps):
             LOG.warning(f'Not all input sources have the same fps: {fps}')
         return min(fps)
 
     def frame_generator(self) -> FrameInputGenerator:
-        active = {sid: input.frame_generator() for sid, input in enumerate(self.inputs)}
+        active = {i.source_id: i.frame_generator() for i in self._inputs}
         while 1:
             dead = []
-            for stream_id, gen in active.items():
+            for sid, gen in active.items():
                 try:
                     inp = next(gen)
                 except StopIteration:
-                    dead.append(stream_id)
+                    dead.append(sid)
                 else:
-                    inp.stream_id = stream_id
                     yield inp
-            for stream_id in dead:
-                del active[stream_id]
+            for sid in dead:
+                del active[sid]
             if not active:
                 return
 
@@ -824,13 +614,23 @@ class _ImageWriter(_NullWriter):
 
     def write(self, image: types.Image, input_filename: str, stream_id: int):
         del stream_id
-        if input_filename:
+
+        is_directory_pattern = (
+            '%' in self._location.name
+            and self._location.name.startswith('output_')
+            and self._location.name.endswith('.jpg')
+        )
+
+        if is_directory_pattern and input_filename:
+            # Directory output with input filename: use input filename
             filename = Path(input_filename)
             stem, suffix = filename.stem, filename.suffix
             name = str(self._location.parent.joinpath(f'output_{stem}{suffix}'))
         elif '%' in self._location.name:
+            # User pattern or directory pattern without input filename: use pattern
             name = _resolve_output_index(self._location, self._index)
         elif self._index == 0:
+            # Single image output: use exact specified filename
             name = str(self._location)
         else:
             raise ValueError(
@@ -854,7 +654,7 @@ class _VideoWriter:
         else:
             self._location = [location]
             self._fps = [input.fps]
-        self._writer = None
+        self._writer: list[cv2.VideoWriter] = []
 
     def write(self, image: types.Image, input_filename: str, stream_id: int):
         del input_filename
@@ -876,10 +676,8 @@ class _VideoWriter:
             w.release()
 
 
-@dataclasses.dataclass
 class PipeOutput:
-    save_output: str = ''
-    '''If given then the output is saved to the specified location.
+    '''Used to save the rendered output of a pipe.
 
     Location may be:
 
@@ -903,52 +701,39 @@ class PipeOutput:
     Output images/video will include the inference results overlaid on the original input image.
     '''
 
-    tracers: List[inf_tracers.Tracer] = dataclasses.field(default_factory=list, repr=False)
-
-    def __post_init__(self):
-        self._mode, self._parsed_location = _determine_output_mode(self.save_output)
-        self._writer = _NullWriter()
-        self._results = []
-
-    def initialize_writer(self, input: PipeInput):
+    def __init__(
+        self,
+        save_output: str,
+        input: PipeInput,
+        render_config: config.RenderConfig = config.RenderConfig(),
+    ):
+        self._mode, parsed_location = _determine_output_mode(save_output)
+        self._render_config = render_config
         if self._mode == _OutputMode.IMAGES:
-            self._parsed_location.parent.mkdir(parents=True, exist_ok=True)
-            self._writer = _ImageWriter(self._parsed_location)
+            parsed_location.parent.mkdir(parents=True, exist_ok=True)
+            self._writer = _ImageWriter(parsed_location)
 
         elif self._mode == _OutputMode.VIDEO:
-            self._parsed_location.parent.mkdir(parents=True, exist_ok=True)
-            self._writer = _VideoWriter(self._parsed_location, input)
+            parsed_location.parent.mkdir(parents=True, exist_ok=True)
+            self._writer = _VideoWriter(parsed_location, input)
+        else:
+            self._writer = _NullWriter()
 
     def close_writer(self):
         self._writer.release()
 
-    @property
-    def result(self):
-        '''Return the most recent result.'''
-        return self._results[-1]
-
     def sink(self, frame_result: frame_data.FrameResult):
-        # At present we only keep the current frame's results
-        frame_result.sink_timestamp = time.time()
-        self._results[:] = [frame_result]
-        meta = frame_result.meta
-        if meta and self.tracers:
-            for tracer in self.tracers:
-                tracer.update(frame_result)
-            if frame_result.stream_id == 0:
-                for tracer in self.tracers:
-                    for m in tracer.get_metrics():
-                        meta.add_instance(m.key, m)
-
         image = frame_result.image
-        if meta and self._mode != _OutputMode.NONE:
+        meta = frame_result.meta
+        if frame_result.meta and self._mode != _OutputMode.NONE:
             image = image.copy()
             draw = display_cv.CVDraw(image, [])
-            for m in meta.values():
-                m.visit(lambda m: m.draw(draw))
+            if config.env.render_speedometers_on_saved_outputs:
+                for m in meta.values():
+                    m.visit(lambda m: m.draw(draw))
+            else:
+                for key in self._render_config.keys():
+                    if key in meta:
+                        meta[key].visit(lambda m: m.draw(draw))
             draw.draw()
         self._writer.write(image, str(meta.image_id), frame_result.stream_id)
-
-    def build_output_gst(self, gst: gst_builder.Builder, stream_count: int):
-        qsize = gst.default_queue_max_size_buffers
-        gst.appsink({'max-buffers': qsize, 'drop': False, 'sync': False})

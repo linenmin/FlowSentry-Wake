@@ -6,9 +6,9 @@ description: HuggingFace Transformers Phi-3-mini-4k-instruct model, limiting the
 
 models:
   phi3-mini-2048-4core-static:
-    precompiled_url: https://llm.axelera.ai/icdf/phi3_2048_mc_model_v2.tar.gz
-    precompiled_path: build/phi3-mini-2048-4core-static/phi3_2048_mc_model_v2.tar.gz
-    precompiled_md5: 4d16c08a467ad22bb58be5a2a7bb0f56
+    precompiled_url: https://llm.axelera.ai/icdf/3.x/phi3_2048_mc_model.tar.gz
+    precompiled_path: build/phi3-mini-2048-4core-static/phi3_2048_mc_model.tar.gz
+    precompiled_md5: 79abca018d325493eeac55920ed37857
     task_category: LanguageModel
     extra_kwargs:
       llm:

@@ -5,11 +5,11 @@
 #include "MultiObjTracker.hpp"
 
 #ifdef HAVE_BYTETRACK
-#include "../3rd_parties/bytetrack/include/BYTETracker.h"
+#include "../algorithms/bytetrack/include/BYTETracker.h"
 #endif
 
 #ifdef HAVE_OC_SORT
-#include "../3rd_parties/oc_sort/include/OCSort.hpp"
+#include "../algorithms/oc_sort/include/OCSort.hpp"
 #endif
 
 //************** Multiple Object Tracker Factory ***********
@@ -43,8 +43,9 @@ class ScalarMOTWrapper : public ax::MultiObjTracker
 {
   public:
   ScalarMOTWrapper(const TrackerParams &params);
-  const std::vector<ax::TrackedObject> Update(
-      const std::vector<ax::ObservedObject> &detections) override;
+  const std::vector<ax::TrackedObject> Update(const std::vector<ax::ObservedObject> &detections,
+      const std::vector<std::vector<float>> &embeddings,
+      const std::optional<Eigen::Matrix<float, 2, 3>> &transform = std::nullopt) override;
 
   private:
   axtracker::ScalarMOT tracker_;
@@ -54,8 +55,9 @@ class SORTWrapper : public ax::MultiObjTracker
 {
   public:
   SORTWrapper(const TrackerParams &params);
-  const std::vector<ax::TrackedObject> Update(
-      const std::vector<ax::ObservedObject> &detections) override;
+  const std::vector<ax::TrackedObject> Update(const std::vector<ax::ObservedObject> &detections,
+      const std::vector<std::vector<float>> &embeddings,
+      const std::optional<Eigen::Matrix<float, 2, 3>> &transform = std::nullopt) override;
 
   private:
   axtracker::SORT tracker_;
@@ -66,8 +68,9 @@ class BytetrackWrapper : public ax::MultiObjTracker
 {
   public:
   BytetrackWrapper(const TrackerParams &params);
-  const std::vector<ax::TrackedObject> Update(
-      const std::vector<ax::ObservedObject> &detections) override;
+  const std::vector<ax::TrackedObject> Update(const std::vector<ax::ObservedObject> &detections,
+      const std::vector<std::vector<float>> &embeddings,
+      const std::optional<Eigen::Matrix<float, 2, 3>> &transform = std::nullopt) override;
 
   private:
   BYTETracker tracker_;
@@ -79,8 +82,9 @@ class OCSortWrapper : public ax::MultiObjTracker
 {
   public:
   OCSortWrapper(const TrackerParams &params);
-  const std::vector<ax::TrackedObject> Update(
-      const std::vector<ax::ObservedObject> &detections) override;
+  const std::vector<ax::TrackedObject> Update(const std::vector<ax::ObservedObject> &detections,
+      const std::vector<std::vector<float>> &embeddings,
+      const std::optional<Eigen::Matrix<float, 2, 3>> &transform = std::nullopt) override;
 
   private:
   ocsort::OCSort tracker_;

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Iterable
 
 from axelera import types
 
@@ -16,6 +16,7 @@ from .. import (
     device_manager,
     logging_utils,
     network,
+    operators,
     pipeline,
     transforms,
     utils,
@@ -23,7 +24,7 @@ from .. import (
 )
 
 if TYPE_CHECKING:
-    from . import inf_tracers, network
+    from .. import inf_tracers, network
 
 
 LOG = logging_utils.getLogger(__name__)
@@ -35,15 +36,14 @@ def _deploy_one_model_via_subprocess(
     data_root: str,
     build_root: Path,
     pipe_type: str,
-    num_cal_images: int,
-    batch: int,
-    hardware_caps: config.HardwareCaps,
+    deploy_config: config.DeployConfig,
     aipu_cores: int,
     metis: config.Metis,
 ):
-    cap_argv = hardware_caps.as_argv()
-    if cap_argv:
-        cap_argv = ' ' + cap_argv
+    num_cal_images = deploy_config.num_cal_images
+    default_representative_images = deploy_config.default_representative_images
+    cal_seed = deploy_config.cal_seed
+    cores_argv = f' --aipu-cores {aipu_cores}'
     if pipe_type == 'torch':
         cores = ''
     else:
@@ -52,12 +52,17 @@ def _deploy_one_model_via_subprocess(
     LOG.info(f"Deploying model {model}{cores}")
     run_dir = config.env.framework
     try:
+        cal_argv = f'--cal-seed {cal_seed}' if cal_seed else ''
+        cal_argv += (
+            ' --no-default-representative-images' if not default_representative_images else ''
+        )
+        dump_core_model_argv = ' --dump-core-model' if deploy_config.dump_core_model else ''
         with utils.spinner():
             run(
                 f'{run_dir}/deploy.py --model {model} --num-cal-images {num_cal_images} '
-                f'--calibration-batch {batch}{cap_argv} '
+                f'{cores_argv} '
                 f'--data-root {data_root} --pipe {pipe_type} --build-root {build_root} {nn_name} '
-                f'--aipu-cores {aipu_cores} --metis {metis.name}',
+                f'--aipu-cores {aipu_cores} --metis {metis.name} {cal_argv} {dump_core_model_argv}',
             )
 
     except subprocess.CalledProcessError as e:
@@ -72,51 +77,41 @@ def _deploy_one_model_via_subprocess(
 def _get_or_deploy_models(
     user_specifed_nn_name_or_path: str,
     nn: network.AxNetwork,
-    data_root: str,
-    build_root: Path,
-    pipe_type: str,
-    num_cal_images: int,
-    batch: int,
-    hardware_caps: config.HardwareCaps,
+    system_config: config.SystemConfig,
+    pipeline_config: config.PipelineConfig,
+    deploy_config: config.DeployConfig,
     metis: config.Metis,
 ) -> network.ModelInfos:
-    requested_aipu_cores = hardware_caps.aipu_cores
-    nn_dir = build_root / nn.name
+    nn_dir = system_config.build_root / nn.name
     model_infos = network.read_deployed_model_infos(
-        nn_dir, nn, pipe_type, requested_aipu_cores, metis
+        nn_dir, nn, pipeline_config.pipe_type, pipeline_config.aipu_cores, metis
     )
     model_infos.add_label_enums(nn.datasets)
     if not model_infos.ready:
         for model in model_infos.missing():
-            exec_cores = model_infos.determine_execution_cores(model, requested_aipu_cores, metis)
+            exec_cores = model_infos.determine_execution_cores(
+                model, pipeline_config.aipu_cores, metis
+            )
             deploy_cores = model_infos.determine_deploy_cores(model, exec_cores, metis)
-            if deploy_cores == 0 and not model_infos.is_classical_cv_model(model):
-                raise ValueError(
-                    f"Model {model} is not a deep learning model, but aipu_cores is set to 0"
-                )
-            if deploy_cores < exec_cores and deploy_cores > 1:
-                LOG.info(f"{model} is restricted to deploy and run for up to {deploy_cores} cores")
-            elif deploy_cores < exec_cores and deploy_cores == 1:
-                LOG.warning(
-                    "This model is restricted to deploy for single-core (but can be run using multiple cores)."
-                )
+            if deploy_cores < exec_cores:
+                _for = f'up to {deploy_cores} cores' if deploy_cores > 1 else 'single-core'
+                but = f'(but can be run using {exec_cores} cores)'
+                LOG.info(f"{model} is being compiled for {_for} cores {but}.")
             else:
                 LOG.debug(f"Model deploy cores is {deploy_cores}")
             _deploy_one_model_via_subprocess(
                 model,
                 user_specifed_nn_name_or_path,
-                data_root,
-                build_root,
-                pipe_type,
-                num_cal_images,
-                batch,
-                hardware_caps,
+                system_config.data_root,
+                system_config.build_root,
+                pipeline_config.pipe_type,
+                deploy_config,
                 deploy_cores,
                 metis,
             )
 
         model_infos = network.read_deployed_model_infos(
-            nn_dir, nn, pipe_type, requested_aipu_cores, metis
+            nn_dir, nn, pipeline_config.pipe_type, pipeline_config.aipu_cores, metis
         )
         model_infos.check_ready()
     return model_infos
@@ -139,25 +134,241 @@ def run(cmd, shell=True, check=True, verbose=False, capture_output=True):
         raise e
 
 
-def _parse_dataset_source(source: str) -> Optional[str]:
-    dataset_split = None
-    if source.lower() == "dataset":
-        dataset_split = "val"
-        LOG.debug("Using default val dataset")
-    elif source.lower().startswith('dataset:'):
-        dataset_split = source[8:].lower()
-        if not dataset_split:
-            raise ValueError("Dataset input requires a set name")
-        LOG.debug(f"Using dataset {dataset_split}")
-    return dataset_split
-
-
 def _get_real_path_if_path_is_model_name(network_path):
     if not os.path.isfile(network_path) and not network_path.endswith('.yaml'):
         # maybe it is a model name?
         network_yaml_info = yaml_parser.get_network_yaml_info()
         network_path = network_yaml_info.get_info(network_path).yaml_path
     return network_path
+
+
+def _assign_image_preproc_ops(
+    task: pipeline.AxTask,
+    sources: list[config.Source],
+    custom_operators: dict[str, type[operators.AxOperator]],
+) -> None:
+    if preprocs := getattr(task.input, 'image_processing', []):
+        for idx, src in enumerate(sources):
+            for op in preprocs:
+                match = op.stream_check_match(idx)
+                if match:
+                    src.preprocessing.append(op.as_image_preproc())
+    task.image_preproc_ops = {
+        n: pipeline.create_transforms_from_config(src.preprocessing, custom_operators)
+        for n, src in enumerate(sources)
+    }
+
+
+def compile_pipelines(
+    nn: network.AxNetwork,
+    srcs: list[config.Source],
+    hwcaps: config.HardwareCaps,
+    tiling: config.TilingConfig | None = None,
+) -> None:
+    '''Compile the pipeline for the given network and sources.
+
+    Converts source image preprocessing operations to AxOperator instances in the first task,
+    and runs all transformers for the image preproc and task preprocs.
+    '''
+    _assign_image_preproc_ops(nn.tasks[0], srcs, nn.custom_operators)
+    if len(nn.tasks) > 1 and any(
+        isinstance(t.input, operators.InputWithImageProcessing) for t in nn.tasks[1:]
+    ):
+        LOG.warning(
+            "Multiple tasks with InputWithImageProcessing are not supported, "
+            "only the first task will be used."
+        )
+    from ..operators.custom_preprocessing import ConvertColorInput, _AddTiles
+
+    for preproc in nn.tasks[0].image_preproc_ops.values():
+        preproc.insert(0, ConvertColorInput(nn.tasks[0].input.color_format))
+        if tiling:
+            preproc.append(_AddTiles(tiling, nn.tasks[0].model_info.input_tensor_shape))
+    for preproc in nn.tasks[0].image_preproc_ops.values():
+        transforms.run_all_transformers(preproc, hardware_caps=hwcaps)
+    for task in nn.tasks:
+        transforms.run_all_transformers(task.preprocess, hardware_caps=hwcaps)
+
+
+def _update_pending_expansions(task):
+    from .. import schema
+
+    for ops in [task.preprocess, task.postprocess]:
+        for op in ops:
+            for field in op.supported:
+                x = getattr(op, field)
+                if x == schema.SENTINELS['labels']:
+                    setattr(op, field, task.model_info.labels)
+                elif x == schema.SENTINELS['label_filter']:
+                    setattr(op, field, task.model_info.label_filter)
+                elif x == schema.SENTINELS['num_classes']:
+                    setattr(op, field, task.model_info.num_classes)
+
+
+def _create_inference_operators(device_man: device_manager.DeviceManager, nn: network.AxNetwork):
+    def _instantiate_model(model_name: str) -> types.Model:
+        with nn.from_model_dir(model_name):
+            return nn.instantiate_model(model_name)
+
+    for task in nn.tasks:
+        if not task.is_dl_task:
+            continue
+        model_name = task.model_info.name
+        compiled_model_dir = nn.model_infos.manifest_path(model_name).parent
+        task.model_info = nn.model_infos.model(model_name)
+        model_or_manifest = task.model_info.manifest or _instantiate_model(model_name)
+        if len(task.preprocess) == 0:
+            # take preprocess from types.Model::override_preprocess
+            the_model = (
+                _instantiate_model(model_name)
+                if task.model_info.manifest is not None
+                else model_or_manifest
+            )
+            nn.attach_model_specific_preprocess(the_model, task)
+        _update_pending_expansions(task)
+        task.inference = operators.Inference(
+            device_man,
+            compiled_model_dir,
+            model_name,
+            model_or_manifest,
+            task.model_info,
+            task.inference_op_config,
+        )
+
+
+def _propagate_model_and_context_info(nn: network.AxNetwork, task_graph: graph.DependencyGraph):
+    # Track context per task name
+    task_contexts = {}
+
+    for taskn, task in enumerate(nn.tasks):
+        # master_task is "where" defined in the Input operator
+        if master_task := task_graph.get_master(task.name):
+            if master_task in task_contexts:
+                task.context.update(task_contexts[master_task])
+
+        if not task.is_dl_task:
+            op_list = [task.input] + task.cv_process
+            for op in op_list:
+                op.configure_model_and_context_info(
+                    task.model_info,
+                    task.context,
+                    task.name,
+                    taskn,
+                    compiled_model_dir,
+                    task_graph,
+                )
+
+                # pass labels from detections to tracker
+                if isinstance(op, operators.Tracker):
+                    model_name = nn.find_model_info_from_task(op.bbox_task_name).name
+                    op.labels = nn.model_infos.model(model_name).labels
+        else:
+            compiled_model_dir = nn.model_infos.manifest_path(task.model_info.name).parent
+
+            op_list = [task.input]
+            if isinstance(task.input, operators.InputWithImageProcessing):
+                op_list += task.input.image_processing
+            elif isinstance(task.input, operators.InputFromROI):
+                op_list += task.input.image_processing_on_roi
+            op_list += task.preprocess + [task.inference] + task.postprocess
+            for op in op_list:
+                op.configure_model_and_context_info(
+                    task.model_info,
+                    task.context,
+                    task.name,
+                    taskn,
+                    compiled_model_dir,
+                    task_graph,
+                )
+
+        # Store this task's propagated context for its children to use
+        task_contexts[task.name] = task.context.propagate()
+
+
+def _verify_evaluation_model_and_leaf(nn: network.AxNetwork, task_graph: graph.DependencyGraph):
+    eval_tracking_task = False
+    net_type = task_graph.network_type
+    task_names = task_graph.task_names
+
+    root_task, leaf_task = task_graph.get_root_and_leaf_tasks()
+    if net_type == graph.NetworkType.CASCADE_NETWORK:
+        LOG.info(
+            f"Cascade network detected, measuring the applicable accuracy of the last task: {leaf_task}"
+        )
+
+    # if cascade network, we should build model name as <model1>_<model2> to report in the Evaluator
+    if task_graph.network_type == graph.NetworkType.CASCADE_NETWORK:
+        model_name = " -> ".join(nn.find_model_info_from_task(t).name for t in task_names)
+    else:
+        model_name = nn.find_model_info_from_task(leaf_task).name
+
+    task_categories = {task_graph.get_task(t).model_info.task_category for t in task_names}
+    if types.TaskCategory.ObjectTracking in task_categories:
+        eval_tracking_task = True
+        LOG.info(
+            "Tracker task detected for accuracy measurement. To evaluate object detection accuracy"
+            " instead, please remove the tracker task from the pipeline"
+        )
+    return model_name, root_task, leaf_task, eval_tracking_task
+
+
+def _create_pipein_and_evaluator(
+    nn: network.AxNetwork,
+    task_graph: graph.DependencyGraph,
+    system_config: config.SystemConfig,
+    stream_config: config.StreamConfig,
+    pipeline_config: config.PipelineConfig,
+    src: config.Source,
+    id_allocator: base.SourceIdAllocator,
+):
+    if pipeline_config.tiling:
+        raise ValueError("dataset evaluation cannot be performed with tiling enabled")
+    ok = (graph.NetworkType.SINGLE_MODEL, graph.NetworkType.CASCADE_NETWORK)
+    if task_graph.network_type not in ok:
+        raise ValueError(
+            f"dataset evaluation can only be performed with single model or cascade networks.\n"
+            f"This network is a {task_graph.network_type.name}"
+        )
+
+    model_name, root_task, leaf_task, eval_tracking_task = _verify_evaluation_model_and_leaf(
+        nn, task_graph
+    )
+
+    split = src.location
+    mi = nn.find_model_info_from_task(leaf_task)
+    validation_settings = nn.find_task(leaf_task).validation_settings
+    val_components = io.get_validation_components(
+        nn,
+        mi,
+        leaf_task,
+        system_config.data_root,
+        split,
+        validation_settings,
+    )
+    pipein = io.DatasetInput(
+        src,
+        val_components.dataloader,
+        val_components.reformatter,
+        stream_config.frames,
+        system_config.hardware_caps,
+        id_allocator.allocate(),
+    )
+    # TODO: consider to add dataset and data_root to types.DataLoader,
+    # so that evaluator has a chance to access the dataset
+    dataset = getattr(val_components.dataloader, 'dataset', None)
+    from .. import evaluation
+
+    evaluator = evaluation.AxEvaluator(
+        model_name,
+        nn.find_model(mi.name).dataset,
+        mi.task_category,
+        leaf_task,
+        nn.datasets[nn.find_model(mi.name).dataset],
+        dataset,
+        master_task=root_task if root_task != leaf_task and not eval_tracking_task else None,
+        evaluator=val_components.evaluator,
+    )
+    return pipein, evaluator
 
 
 class PipeManager:
@@ -174,207 +385,102 @@ class PipeManager:
 
     def __init__(
         self,
-        network_path,
-        sources,
-        pipe_type,
-        ax_precompiled_gst='',
-        frames: int = 0,
-        save_output: str = '',
-        num_cal_images: int = 100,
-        batch: int = 1,
-        data_root: Path | None = None,
-        build_root: Path | None = None,
-        hardware_caps: config.HardwareCaps = config.HardwareCaps.NONE,
-        allow_hardware_codec=True,
-        tracers: list[inf_tracers.Tracer] = [],
-        server_loader=None,
-        metis: config.Metis = config.Metis.none,
-        rtsp_latency: int = 500,
-        device_selector: str = '',
-        specified_frame_rate: int = 0,
-        tile: dict[str, any] | None = None,
+        system_config: config.SystemConfig,
+        stream_config: config.InferenceStreamConfig,
+        pipeline_config: config.PipelineConfig,
+        deploy_config: config.DeployConfig,
+        tracers: list[inf_tracers.Tracer],
+        render_config: config.RenderConfig,
+        id_allocator: base.SourceIdAllocator,
     ):
-        network_path = _get_real_path_if_path_is_model_name(network_path)
-        self.pipe_type = pipe_type
-        self._dataset_split = _parse_dataset_source(sources[0])
-        self.server_mode = sources[0].lower() == "server"
-        if not server_loader and self.server_mode:
-            raise ValueError("Server mode requires a loader")
-        self.server_loader = server_loader
-        self.specified_frame_rate = specified_frame_rate
-        data_root = data_root or config.default_data_root()
-        build_root = build_root or config.default_build_root()
-        self.allow_hardware_codec = allow_hardware_codec
-        self.rtsp_latency = rtsp_latency
-        # TODO: (SDK-782) if without deployment, we don't know how many aipu cores
-        # are needed from inference.py; torch pipeline doesn't support aipu_cores=4
+        network_path = _get_real_path_if_path_is_model_name(pipeline_config.network)
+        self._sources = sources = pipeline_config.sources
+        self._parent_callback = None
         self._device_man = device_manager.create_device_manager(
-            pipe_type, metis, device_selector=device_selector
+            pipeline_config.pipe_type,
+            system_config.metis,
+            device_selector=pipeline_config.device_selector,
         )
         metis = self._device_man.get_metis_type()
 
-        data_root = Path(data_root).resolve()
-        nn = network.parse_network_from_path(network_path, self.eval_mode, data_root)
-        if pipe_type in ('torch', 'torch-aipu') or self.eval_mode:
+        self._network = nn = network.parse_network_from_path(
+            network_path, deploy_config, pipeline_config.eval_mode, system_config.data_root
+        )
+        if pipeline_config.pipe_type in ('torch', 'torch-aipu') or pipeline_config.eval_mode:
             utils.ensure_dependencies_are_installed(nn.dependencies)
-        network.restrict_cores(nn, pipe_type, hardware_caps.aipu_cores, metis)
+        network.restrict_cores(nn, pipeline_config.pipe_type, pipeline_config.aipu_cores, metis)
 
         nn.model_infos = _get_or_deploy_models(
             network_path,
             nn,
-            data_root,
-            build_root,
-            pipe_type,
-            num_cal_images,
-            batch,
-            hardware_caps,
+            system_config,
+            pipeline_config,
+            deploy_config,
             metis,
         )
-
         self.tracers = self._device_man.configure_boards_and_tracers(nn, tracers)
-
-        self.hardware_caps = hardware_caps.detect_caps()
+        self.hardware_caps = system_config.hardware_caps
         task_graph = self.build_dependency_graph(nn.tasks)
-        self._pipeline = pipeline.get_pipeline(
-            self._device_man,
-            pipe_type,
-            nn,
-            build_root,
-            self.hardware_caps,
-            ax_precompiled_gst,
-            task_graph,
-        )
-        for task in nn.tasks:
-            transforms.run_all_transformers(task.preprocess, hardware_caps=self.hardware_caps)
-            if hasattr(task.input, 'image_processing'):
-                ops = []
-                for idx in range(len(sources)):
-                    ops.insert(idx, [])
-                    for op in task.input.image_processing:
-                        match = op.stream_check_match(idx)
-                        if match:
-                            ops[idx].append(op)
-                    if len(ops[idx]) > 1:
-                        transforms.run_all_transformers(ops[idx], hardware_caps=self.hardware_caps)
-                    for op in ops[idx]:
-                        if hasattr(op, 'set_stream_match'):
-                            op.set_stream_match(str(idx))
+        logging_dir = pipeline.download_nn_assets(system_config, nn)
 
-                task.input.image_processing = [item for sublist in ops for item in sublist]
-        # propagate model and context info after all transformers have been applied and before invoking get_validation_components, which utilizes the context info.
-        self._pipeline.propagate_model_and_context_info()
+        # this is kind of the core of the pipeline builder. But note it is still dependent on the device manager
+        compile_pipelines(nn, sources, self.hardware_caps, pipeline_config.tiling)
+        _create_inference_operators(self._device_man, nn)
+        nn.model_infos.add_label_enums(nn.datasets)
+        _propagate_model_and_context_info(nn, task_graph)
 
-        LOG.trace("Parse input and output options")
-        if self.server_mode:
-            self.pipein = io.ServerInput(
-                frames,
-                hardware_caps,
-                server_loader,
-            )
-            self._evaluator = None
-        elif self.eval_mode:
-            eval_tracking_task = False
-            if (
-                task_graph.network_type
-                in {
-                    graph.NetworkType.SINGLE_MODEL,
-                    graph.NetworkType.CASCADE_NETWORK,
-                }
-                and not tile
-            ):
-                root_task, leaf_task = task_graph.get_root_and_leaf_tasks()
-                if task_graph.network_type == graph.NetworkType.CASCADE_NETWORK:
-                    LOG.info(
-                        f"Cascade network detected, measuring the applicable accuracy of the last task: {leaf_task}"
-                    )
-                mi = nn.find_model_info_from_task(leaf_task)
-                validation_settings = nn.find_task(leaf_task).validation_settings
-
-                # if cascade network, we should build model name as <model1>_<model2> to report in the Evaluator
-                if task_graph.network_type == graph.NetworkType.CASCADE_NETWORK:
-                    model_name = " -> ".join(
-                        [
-                            nn.find_model_info_from_task(task).name
-                            for task in task_graph.task_map.keys()
-                        ]
-                    )
-                else:
-                    model_name = mi.name
-
-                task_categories = {
-                    task_graph.get_task(task).model_info.task_category
-                    for task in task_graph.task_names
-                }
-                if types.TaskCategory.ObjectTracking in task_categories:
-                    eval_tracking_task = True
-                    LOG.info(
-                        "Tracker task detected for accuracy measurement. "
-                        "To evaluate object detection accuracy instead, "
-                        "please remove the tracker task from the pipeline"
-                    )
-
-            else:
-                raise ValueError(
-                    f"For accuracy measurement, only single model and cascade networks are supported with no tiling"
-                )
-
-            val_components = io.get_validation_components(
-                nn, mi, leaf_task, data_root, self._dataset_split, batch, validation_settings
-            )
-            self.pipein = io.DatasetInput(
-                val_components.dataloader,
-                val_components.reformatter,
-                task.input.color_format,
-                frames,
-                hardware_caps,
-            )
-            # TODO: consider to add dataset and data_root to types.DataLoader,
-            # so that evaluator has a chance to access the dataset
-            dataset = getattr(val_components.dataloader, 'dataset', None)
-            from .. import evaluation
-
-            self._evaluator = evaluation.AxEvaluator(
-                model_name,
-                nn.find_model(mi.name).dataset,
-                mi.task_category,
-                leaf_task,
-                nn.datasets[nn.find_model(mi.name).dataset],
-                dataset,
-                master_task=root_task if root_task != leaf_task else None,
-                evaluator=val_components.evaluator,
+        if pipeline_config.eval_mode:
+            self._pipein, self._evaluator = _create_pipein_and_evaluator(
+                nn,
+                task_graph,
+                system_config,
+                stream_config,
+                pipeline_config,
+                self._sources[0],
+                id_allocator,
             )
         else:
-            root_task = tile and task_graph.get_root_and_leaf_tasks()[0]
-            mi = root_task and nn.find_model_info_from_task(root_task)
-            self.pipein = io.MultiplexPipeInput(
-                pipe_type,
-                sources,
-                hardware_caps=self.hardware_caps,
-                allow_hardware_codec=self.allow_hardware_codec,
-                color_format=task.input.color_format,
-                rtsp_latency=self.rtsp_latency,
-                specified_frame_rate=self.specified_frame_rate,
-                model_info=mi,
+            self._pipein = io.MultiplexPipeInput(
+                pipeline_config.sources,
+                system_config,
+                pipeline_config,
+                id_allocator,
             )
             self._evaluator = None
-        self.sources = {n: src for n, src in enumerate(sources)}
-        self.pipeout = io.PipeOutput(save_output=save_output, tracers=tracers)
-        self._pipeline.gen_end2end_pipe(self.pipein, self.pipeout, tile=tile)
+        self.sources = {sid: p.sources[0] for sid, p in self._pipein.inputs.items()}
+        rc = self._render_config = _set_render_config(nn, render_config)
+        self._pipeout = io.PipeOutput(pipeline_config.save_output, self._pipein, rc)
+        self._pipeline = base.create_pipe(
+            self._device_man,
+            pipeline_config,
+            nn,
+            logging_dir,
+            system_config.hardware_caps,
+            task_graph,
+            self._result_ready_callback,
+            self._pipein,
+        )
+        self._id_allocator = id_allocator
 
-    def add_source(self, source, source_id: int = -1):
+    @property
+    def network(self) -> network.AxNetwork:
+        '''Return the network associated with this PipeManager.'''
+        return self._network
+
+    def add_source(self, source: config.Source, source_id: int = -1):
         if source_id == -1:
-            source_id = max(self.sources.keys()) + 1
+            source_id = self._id_allocator.allocate()
         if source_id in self.sources:
             LOG.warning(f"Unable to add source on slot {source_id} already taken")
             return
 
-        pipe_newinput = self.pipein.add_source(source)
-        self._pipeline.add_source(pipe_newinput, source_id)
+        pipe_newinput = self._pipein.add_source(source, source_id)
+        self._pipeline.add_source(pipe_newinput)
         self.sources[source_id] = source
         return source_id
 
     def remove_source(self, source_id):
-        self.pipein.remove_source(self.sources[source_id])
+        self._pipein.remove_source(self.sources[source_id])
         self._pipeline.remove_source(source_id)
         del self.sources[source_id]
 
@@ -388,10 +494,16 @@ class PipeManager:
     def pipe(self):
         return self._pipeline
 
+    def set_render(self, show_labels=False, show_annotations=False):
+        """Set render mode for the pipeline for all tasks."""
+        for task in self._pipeline.nn.tasks:
+            self.pipeout.render_config.set_task(task.name, show_annotations, show_labels)
+        return self
+
     def __getattr__(self, task_name):
         for t in self._pipeline.nn.tasks:
             if task_name == t.name:
-                return t
+                return TaskProxy(self, task_name)
         raise AttributeError(f"{self.__class__.__name__} object has no attribute '{task_name}'")
 
     def __dir__(self):
@@ -419,15 +531,38 @@ class PipeManager:
     def play_pipe(self):
         self._pipeline.play()
 
+    def _result_ready_callback(self, result: base.FrameResult | None):
+        """Callback for the pipe output to handle results."""
+        if result is not None:
+            result.sink_timestamp = time.time()
+            if result.meta:
+                result.meta.set_render_config(self._render_config)
+            if result.meta and self.tracers:
+                for tracer in self.tracers:
+                    tracer.update(result)
+                if result.meta and result.stream_id == 0:
+                    for tracer in self.tracers:
+                        for m in tracer.get_metrics():
+                            result.meta.add_instance(m.key, m)
+            self._pipeout.sink(result)
+        else:
+            self._pipeout.close_writer()
+        if self._parent_callback:
+            self._parent_callback(result)
+
     def setup_callback(self, callback: base.ResultCallback):
-        self._pipeline.setup_callback(callback)
+        self._parent_callback = callback
 
     @property
     def number_of_frames(self):
-        return self.pipein.number_of_frames
+        return self._pipein.number_of_frames
 
     def is_single_image(self):
-        return self.pipein.format == 'image'
+        return (
+            len(self._sources) == 1
+            and self._sources[0].type == config.SourceType.IMAGE_FILES
+            and len(self._sources[0].images) == 1
+        )
 
     @property
     def evaluator(self):
@@ -435,7 +570,7 @@ class PipeManager:
 
     @property
     def eval_mode(self):
-        return bool(self._dataset_split)
+        return bool(self._sources[0].type == config.SourceType.DATASET)
 
     def build_dependency_graph(self, nn_tasks):
         task_graph = graph.DependencyGraph(nn_tasks)
@@ -443,3 +578,74 @@ class PipeManager:
             task_graph.print_all_views(LOG.debug)
             LOG.debug(f"Network type: {task_graph.network_type}")
         return task_graph
+
+
+def _set_render_config(
+    nn, render_config_from_api: config.RenderConfig | None
+) -> config.RenderConfig:
+    """Set render configuration for the pipeline based on the tasks in the neural network."""
+    task_names = {task.name for task in nn.tasks}
+
+    if render_config_from_api is not None:
+        config_keys = set(render_config_from_api.keys())
+        extra_keys = config_keys - task_names
+        if extra_keys:
+            raise ValueError(f"render_config_from_api contains keys not in nn.tasks: {extra_keys}")
+
+    final_config = config.RenderConfig()
+    api_config_keys = (
+        set(render_config_from_api.keys()) if render_config_from_api is not None else set()
+    )
+    for task in nn.tasks:
+        if render_config_from_api is not None and task.name in api_config_keys:
+            # Priority 1: API config overrides everything
+            task_render_config = render_config_from_api[task.name]
+        elif task.task_render_config is not None:
+            # Priority 2: Task's own task_render_config
+            task_render_config = task.task_render_config
+        else:
+            # Priority 3: Default TaskRenderConfig
+            task_render_config = config.TaskRenderConfig()
+
+        final_config.set_task(
+            task.name,
+            show_annotations=task_render_config.show_annotations,
+            show_labels=task_render_config.show_labels,
+            force_register=True,
+        )
+    return final_config
+
+
+class TaskProxy:
+    """Proxy class for tasks to allow setting render options per task while preserving access to the original task attributes."""
+
+    def __init__(self, pipe_manager, task_name):
+        self._pipe_manager = pipe_manager
+        self._pipeout = pipe_manager.pipeout
+        self.task_name = task_name
+
+        for t in pipe_manager._pipeline.nn.tasks:
+            if task_name == t.name:
+                self._original_task = t
+                break
+
+    def set_render(self, show_annotations=True, show_labels=True):
+        """Set render options for this specific task.
+
+        Args:
+            show_annotations: Whether to draw visual elements like bounding boxes
+            show_labels: Whether to draw class labels and score text
+
+        Returns:
+            Self for method chaining
+        """
+        self._pipeout.render_config.set_task(self.task_name, show_annotations, show_labels)
+        return self
+
+    def __getattr__(self, name):
+        """Forward attribute access to the original task object.
+
+        This allows accessing attributes like 'classes' directly from the proxy.
+        """
+        # Delegate to the original task for any attributes not found on the proxy
+        return getattr(self._original_task, name)

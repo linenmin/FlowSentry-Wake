@@ -5,8 +5,8 @@ from axelera.app.stream import create_inference_stream
 stream = create_inference_stream(
     network="yolov5m-v7-coco-tracker",
     sources=[
-        str(config.env.framework / "media/traffic1_1080p.mp4"),
-        str(config.env.framework / "media/traffic2_1080p.mp4"),
+        config.env.framework / "media/traffic1_1080p.mp4",
+        config.env.framework / "media/traffic2_1080p.mp4",
     ],
 )
 

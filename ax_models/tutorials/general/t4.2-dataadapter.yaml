@@ -5,7 +5,7 @@ name: t4.2-dataadapter
 description: Tutorial-4.2 - An example demonstrating how to create your own DataAdapter
 
 pipeline:
-  - classifier:
+  - classifications:
       model_name: model1
       input:
           type: image

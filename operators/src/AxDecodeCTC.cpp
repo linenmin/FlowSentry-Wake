@@ -196,7 +196,8 @@ decode_to_meta(const AxTensorsInterface &tensors, const ctc_properties *prop,
   }
 
   if (1 != tensors.size()) {
-    throw std::runtime_error("ctc_decode_to_meta: Number of tensors must be 1");
+    throw std::runtime_error("ctc_decode_to_meta: Number of tensors must be 1, but got "
+                             + std::to_string(tensors.size()));
   }
 
   auto &tensor = tensors[0];
@@ -226,15 +227,9 @@ decode_to_meta(const AxTensorsInterface &tensors, const ctc_properties *prop,
     logger(AX_TRACE) << "Using NHWC layout: B=" << tensor.sizes[0] << ", H=" << num_chunks_to_reduce
                      << ", W=" << positions << ", C=" << chars_count;
   } else {
-    // Expect 3D tensor: Treat as [Slice, C, W] layout
-    if (tensor.sizes.size() != 3) {
-      logger(AX_ERROR) << "When do_reduce_mean=false, tensor must have exactly 3 dimensions ([Slice, C, W])";
-      throw std::runtime_error("ctc_decode_to_meta: Expected 3D tensor for do_reduce_mean=false");
-    }
-    // Interpret dimensions based on [Slice, C, W]
-    size_t num_slices = tensor.sizes[0]; // Slice dimension (e.g., Batch or Head if not reduced)
-    chars_count = tensor.sizes[1]; // C (Number of characters)
-    positions = tensor.sizes[2]; // W (Number of sequence positions)
+    size_t num_slices = tensor.sizes[1]; // Slice dimension (e.g., Batch or Head if not reduced)
+    chars_count = tensor.sizes[2]; // C (Number of characters)
+    positions = tensor.sizes[3]; // W (Number of sequence positions)
     num_chunks_to_reduce = 1; // No reduction happens here
     logger(AX_TRACE) << "Using 3D layout [Slice, C, W]: Slice=" << num_slices
                      << ", C=" << chars_count << ", W=" << positions;

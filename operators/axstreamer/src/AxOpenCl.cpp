@@ -5,6 +5,8 @@
 #include <vector>
 
 
+namespace ax_utils
+{
 struct local_size {
   size_t width;
   size_t height;
@@ -21,8 +23,27 @@ determine_local_work_size(size_t width, size_t height, size_t max_work_size)
   return { width, height };
 }
 
-namespace ax_utils
+
+output_format
+get_output_format(AxVideoFormat format, bool ignore_alpha)
 {
+  switch (format) {
+    case AxVideoFormat::RGBA:
+      return ignore_alpha ? RGB_OUTPUT : RGBA_OUTPUT;
+    case AxVideoFormat::BGRA:
+      return ignore_alpha ? BGR_OUTPUT : BGRA_OUTPUT;
+    case AxVideoFormat::RGB:
+      return RGB_OUTPUT;
+    case AxVideoFormat::BGR:
+      return BGR_OUTPUT;
+    case AxVideoFormat::GRAY8:
+      return GRAY_OUTPUT;
+    default:
+      throw std::runtime_error(
+          "Unsupported output format: " + AxVideoFormatToString(format));
+  }
+}
+
 std::mutex CLProgram::cl_mutex;
 
 CLProgram::CLProgram(const std::string &source, void *display, Ax::Logger &log)
@@ -30,32 +51,151 @@ CLProgram::CLProgram(const std::string &source, void *display, Ax::Logger &log)
 {
   std::lock_guard<std::mutex> lock(cl_mutex);
 
-  cl_platform_id platformId;
+  // Get OpenCL preference from environment variable
+  // AX_OPENCL_PREFERENCE can be: "INTEL", "CPU", "GPU", "AUTO" (default)
+  std::string preference = std::getenv("AX_OPENCL_PREFERENCE") ?
+                               std::getenv("AX_OPENCL_PREFERENCE") :
+                               "AUTO";
+
+  // Get all available platforms
   cl_uint numPlatforms;
-  auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
+  auto error = clGetPlatformIDs(0, nullptr, &numPlatforms);
   if (error != CL_SUCCESS) {
-    throw std::runtime_error("Failed to get platform ID! Error = " + std::to_string(error));
+    logger.throw_error("OpenCL not functional: Failed to get platform count! Error = "
+                       + std::to_string(error));
   }
-  extensions = init_extensions(platformId, display);
-  cl_uint num_devices = 1;
 
-  error = get_device_id(platformId, &device_id, &num_devices, extensions);
-
+  std::vector<cl_platform_id> platforms(numPlatforms);
+  error = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
   if (error != CL_SUCCESS) {
-    throw std::runtime_error("Unable to find appropriate OpenCL device.");
+    logger.throw_error("OpenCL not functional: Failed to get platform IDs! Error = "
+                       + std::to_string(error));
   }
-  context = create_context(platformId, device_id, extensions);
+
+  // Test platform functionality
+  auto test_platform_functionality = [this](cl_platform_id platform) -> bool {
+    cl_uint num_devices = 0;
+    cl_device_id test_device;
+    cl_int test_error
+        = clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 1, &test_device, &num_devices);
+    if (test_error != CL_SUCCESS || num_devices == 0) {
+      return false;
+    }
+
+    // Try to create a context to verify the platform works
+    cl_context test_context
+        = clCreateContext(nullptr, 1, &test_device, nullptr, nullptr, &test_error);
+    if (test_error != CL_SUCCESS) {
+      return false;
+    }
+    clReleaseContext(test_context);
+    return true;
+  };
+
+  cl_platform_id selected_platform = nullptr;
+  std::string selected_platform_name;
+
+  // Define preference order for each setting
+  std::vector<std::string> preference_order;
+  if (preference == "INTEL") {
+    preference_order = { "Intel" };
+  } else if (preference == "CPU") {
+    preference_order = { "Intel", "Portable Computing Language" };
+  } else if (preference == "GPU") {
+    preference_order = { "NVIDIA" };
+  } else { // AUTO or any other value
+    preference_order = { "Intel", "Portable Computing Language", "NVIDIA" };
+  }
+
+  // Try platforms in preference order
+  for (const std::string &preferred_platform : preference_order) {
+    for (cl_platform_id platform : platforms) {
+      char platform_name[256];
+      clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name),
+          platform_name, nullptr);
+      std::string platform_str(platform_name);
+
+      logger(AX_DEBUG) << "Checking OpenCL platform: " << platform_str << std::endl;
+
+      if (platform_str.find(preferred_platform) != std::string::npos) {
+        logger(AX_DEBUG) << "Testing platform functionality: " << platform_str << std::endl;
+
+        if (test_platform_functionality(platform)) {
+          selected_platform = platform;
+          selected_platform_name = platform_str;
+          logger(AX_INFO) << "Selected OpenCL platform: " << selected_platform_name
+                          << " (preference: " << preference << ")" << std::endl;
+          goto platform_selected; // Break out of nested loops
+        } else {
+          logger(AX_DEBUG) << "Platform " << platform_str
+                           << " is not functional, skipping" << std::endl;
+        }
+      }
+    }
+  }
+
+  // If no preferred platform works, handle based on preference type
+  if (!selected_platform) {
+    if (preference == "AUTO") {
+      // For AUTO mode, try any functional platform in remaining order
+      logger(AX_DEBUG) << "No preferred platform functional in AUTO mode, trying remaining platforms"
+                       << std::endl;
+      for (cl_platform_id platform : platforms) {
+        char platform_name[256];
+        clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name),
+            platform_name, nullptr);
+        std::string platform_str(platform_name);
+
+        if (test_platform_functionality(platform)) {
+          selected_platform = platform;
+          selected_platform_name = platform_str;
+          logger(AX_INFO) << "Selected functional OpenCL platform: " << selected_platform_name
+                          << " (AUTO mode)" << std::endl;
+          break;
+        }
+      }
+    } else {
+      // For explicit preferences (INTEL, GPU, CPU), fail with clear error
+      std::string available_platforms;
+      for (cl_platform_id platform : platforms) {
+        char platform_name[256];
+        clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name),
+            platform_name, nullptr);
+        if (!available_platforms.empty())
+          available_platforms += ", ";
+        available_platforms += platform_name;
+      }
+
+      logger.throw_error("Requested OpenCL platform '" + preference + "' is not available or functional. "
+                         + "Available platforms: [" + available_platforms + "]. "
+                         + "Use AX_OPENCL_PREFERENCE=AUTO for automatic selection.");
+    }
+  }
+
+platform_selected:
+
+  if (!selected_platform) {
+    logger.throw_error("No functional OpenCL platform found. Available platforms may be installed but not working properly.");
+  }
+
+  extensions = init_extensions(selected_platform, display);
+
+  cl_uint num_devices;
+  error = get_device_id(selected_platform, &device_id, &num_devices, extensions);
   if (error != CL_SUCCESS) {
-    logger(AX_ERROR) << "Failed to create OpenCL context, error = " << error << std::endl;
-    throw std::runtime_error(
-        "Failed to create OpenCL context, error = " + std::to_string(error));
+    logger.throw_error("OpenCL not functional: Failed to get device! Error = "
+                       + std::to_string(error));
+  }
+
+  context = create_context(selected_platform, device_id, extensions);
+  if (error != CL_SUCCESS) {
+    logger.throw_error("OpenCL not functional: Failed to create OpenCL context, error = "
+                       + std::to_string(error));
   }
   commands = clCreateCommandQueue(context, device_id, 0, &error);
   if (error != CL_SUCCESS) {
-    logger(AX_ERROR) << "Failed to create OpenCL command queue, error = " << error
-                     << std::endl;
-    throw std::runtime_error(
-        "Failed to create OpenCL command queue, error = " + std::to_string(error));
+    logger.throw_error("OpenCL not functional: Failed to create OpenCL command queue, error = "
+                       + std::to_string(error));
   }
 
   const char *sources[] = { source.c_str() };
@@ -83,7 +223,7 @@ CLProgram::get_kernel(const std::string &kernel_name) const
   int error = CL_SUCCESS;
   auto kernel = clCreateKernel(program, kernel_name.c_str(), &error);
   if (error != CL_SUCCESS) {
-    throw std::runtime_error("Failed to create kernel " + kernel_name
+    throw std::runtime_error("Failed to create OpenCL kernel " + kernel_name
                              + ", error = " + std::to_string(error));
   }
   return ax_kernel{ kernel };
@@ -221,6 +361,20 @@ get_kernel_utils(int rotate_type)
 #define advance_uchar2_ptr(ptr, offset) ((__global uchar2 *)((__global uchar *)ptr + offset))
 #define advance_uchar3_ptr(ptr, offset) ((__global uchar3 *)((__global uchar *)ptr + offset))
 #define advance_uchar4_ptr(ptr, offset) ((__global uchar4 *)((__global uchar *)ptr + offset))
+
+typedef enum : int {
+      RGBA_OUTPUT = 0,
+      BGRA_OUTPUT = 1,
+      RGB_OUTPUT = 3,
+      BGR_OUTPUT = 4,
+      GRAY_OUTPUT = 5
+} output_format;
+
+
+uchar RGB_to_GRAY(uchar3 rgb) {
+    // Convert RGB to grayscale using the formula: Y = 0.299*R + 0.587*G + 0.114*B
+    return (uchar)((rgb.x * 77 + rgb.y * 150 + rgb.z * 29) >> 8);
+}
 
 
 uchar3 YUV_to_RGB(uchar Y, uchar U, uchar V) {
@@ -384,22 +538,30 @@ uchar4  yuyv_sampler(__global uchar4 *in, float fx, float fy, const yuyv_image *
   float xfrac = xpixel_left - x1;
   float yfrac = ypixel_top - y1;
 
-  x1 = max(x1, 0);
-  y1 = max(y1, 0);
-  int x2 = min(x1 + 1,img->width - 1);
-  int y2 = min(y1 + 1,img->height - 1);
+  int x2 = min(x1 + 1, img->width - 1);
+  int y2 = min(y1 + 1, img->height - 1);
+
   x1 += img->crop_x;
   y1 += img->crop_y;
   x2 += img->crop_x;
   y2 += img->crop_y;
 
-  float4 top = convert_float4(in[y1 * img->stride + x1 / 2]);
-  float4 bottom = convert_float4(in[y2 * img->stride + x2 / 2]);
+  // Each YUYV pixel pair is stored as Y1 U Y2 V
+  int idx1 = y1 * img->stride + (x1 >> 1);
+  int idx2 = y1 * img->stride + (x2 >> 1);
+  int idx3 = y2 * img->stride + (x1 >> 1);
+  int idx4 = y2 * img->stride + (x2 >> 1);
 
-  float3 in00 = x1 % 2 == 0 ? top.xyw : top.zyw;
-  float3 in01 = x1 % 2 == 0 ? convert_float4(in[y1 * img->stride + x1 / 2 + 1]).xyw : top.zyw;
-  float3 in10 = x1 % 2 == 0 ? bottom.xyw : bottom.zyw;
-  float3 in11 = x1 % 2 == 0 ? convert_float4(in[y2 * img->stride + x1 / 2 + 1]).xyw : bottom.zyw;
+  float4 p00 = convert_float4(in[idx1]);
+  float4 p01 = convert_float4(in[idx2]);
+  float4 p10 = convert_float4(in[idx3]);
+  float4 p11 = convert_float4(in[idx4]);
+
+  // Select correct Y and UV values based on even/odd position
+  float3 in00 = (x1 & 1) ? (float3)(p00.z, p00.y, p00.w) : (float3)(p00.x, p00.y, p00.w);
+  float3 in01 = (x2 & 1) ? (float3)(p01.z, p01.y, p01.w) : (float3)(p01.x, p01.y, p01.w);
+  float3 in10 = (x1 & 1) ? (float3)(p10.z, p10.y, p10.w) : (float3)(p10.x, p10.y, p10.w);
+  float3 in11 = (x2 & 1) ? (float3)(p11.z, p11.y, p11.w) : (float3)(p11.x, p11.y, p11.w);
 
   float3 yuv = bilinear(in00, in01, in10, in11, xfrac, yfrac);
   return convert_YUV2RGBA(yuv);
@@ -413,6 +575,44 @@ typedef struct rgb_image {
     int crop_y;
 } rgb_image;
 
+typedef struct gray8_image {
+    int width;
+    int height;
+    int stride;
+    int crop_x;
+    int crop_y;
+} gray8_image;
+
+uchar gray8_sampler_bl(__global const uchar *image, float fx, float fy, const gray8_image *img) {
+    //  Here we add in the offsets to the pixel from the crop meta
+    float xpixel_left = clamp(fx - 0.5f, 0.0f, (float)(img->width - 1));
+    float ypixel_top = clamp(fy - 0.5f, 0.0f, (float)(img->height - 1));
+
+    int x1 = (int)floor(xpixel_left);
+    int y1 = (int)floor(ypixel_top);
+    float xfrac = xpixel_left - x1;
+    float yfrac = ypixel_top - y1;
+
+    int x2 = min(x1 + 1, img->width - 1);
+    int y2 = min(y1 + 1, img->height - 1);
+
+    x1 += img->crop_x;
+    y1 += img->crop_y;
+    x2 += img->crop_x;
+    y2 += img->crop_y;
+
+    float p00 = (float)image[y1 * img->stride + x1];
+    float p01 = (float)image[y1 * img->stride + x2];
+    float p10 = (float)image[y2 * img->stride + x1];
+    float p11 = (float)image[y2 * img->stride + x2];
+
+    //  Performs bilinear interpolation with higher precision
+    float i1 = mix(p00, p01, xfrac);
+    float i2 = mix(p10, p11, xfrac);
+    float value = mix(i1, i2, yfrac);
+
+    return convert_uchar_sat_rte(value);
+}
 uchar4 rgba_sampler_bl(__global const uchar4 *image, float fx, float fy, const rgb_image *img ) {
     //  Here we add in the offsets to the pixel from the crop meta
     float xpixel_left = fx - 0.5f;

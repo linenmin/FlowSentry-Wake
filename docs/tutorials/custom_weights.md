@@ -114,10 +114,12 @@ datasets:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: licenseplate_v4_resized640_aug3x-ACCURATE
+    ultralytics_data_yaml: data.yaml  # Recommended: Ultralytics format (replaces cal_data, val_data, labels)
     label_type: YOLOv8
-    labels: data.yaml
-    cal_data: val.txt     # Text file with image paths or directory like `valid`
-    val_data: test.txt    # Text file with image paths or directory like `test`
+    # Alternative traditional format:
+    # labels: data.yaml
+    # cal_data: val.txt     # Text file with image paths or directory like `valid`
+    # val_data: test.txt    # Text file with image paths or directory like `test`
 ```
 
 The YAML file contains five top-level sections:
@@ -177,6 +179,7 @@ configured dataset in the `AxTaskMeta` format used by the Voyager tools.
 | `data_dir_name` | The name of the dataset directory, which is specified relative to a *data root*. The default data root is the Voyager repository `data` directory, and this can be changed when running the Voyager tools by setting the command-line option `--data-root` |
 | `label_type` | The label annotation format. Supported formats include `YOLOv8` and `COCO JSON` for custom datasets, both widely recognized as industry-standard labeling formats, and `COCO2017` and `COCO2014` for the official COCO 2017 and 2014 datasets. |
 | `labels` | The name of the labels file, specified relative to `data_dir_name`. If your labels file is maintained elsewhere, use `labels_path` to provide an absolute path instead |
+| `ultralytics_data_yaml` | **Recommended**: Path to an Ultralytics data YAML file, relative to `data_dir_name`. Automatically generates `cal_data`, `val_data`, and `labels_path` from the Ultralytics configuration. Cannot be used with `cal_data`, `val_data`, `labels_path`, or `labels` |
 | `cal_data` | Calibration data. For `label_type: YOLOv8`, a text file (e.g., `val.txt`) with image paths or a directory (e.g., `valid`) with labels and images subdirs, relative to `data_dir_name`. For `label_type: COCO JSON`, a COCO JSON file (e.g., `val.json`) relative to `data_dir_name`. |
 | `val_data` | Validation data for end-to-end accuracy. For `label_type: YOLOv8`, a text file (e.g., `test.txt`) with image paths or a directory (e.g., `test`) with labels and images subdirs, relative to `data_dir_name`. For `label_type: COCO JSON`, a COCO JSON file (e.g., `test.json`) relative to `data_dir_name`. |
 | `repr_imgs_dir_path` | Absolute path to a directory containing a set of representative images. Can be specified instead of `cal_data` |
@@ -189,7 +192,60 @@ metadata ensures that the dataset can be used with any model with the same task 
 and with any of the Axelera evaluation libraries for calculating related metrics, such as
 mean average precision (mAP).
 
-This example uses the YOLOv8 label format. Class names can be defined in two ways:
+### Ultralytics Data YAML Support
+
+The Axelera framework now supports using Ultralytics-format data YAML files directly, which simplifies dataset configuration for users migrating from Ultralytics. Instead of manually creating `cal_data`, `val_data`, and `labels_path` files, you can use the `ultralytics_data_yaml` parameter.
+
+**Traditional Format:**
+```yaml
+datasets:
+  licenseplate:
+    class: ObjDataAdapter
+    class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
+    data_dir_name: licenseplate_v4_resized640_aug3x-ACCURATE
+    label_type: YOLOv8
+    labels: data.yaml
+    cal_data: val.txt     # Text file with image paths or directory like `valid`
+    val_data: test.txt    # Text file with image paths or directory like `test`
+```
+
+**Ultralytics Format (Recommended):**
+```yaml
+datasets:
+  licenseplate:
+    class: ObjDataAdapter
+    class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
+    data_dir_name: licenseplate_v4_resized640_aug3x-ACCURATE
+    ultralytics_data_yaml: data.yaml  # Automatically handles cal_data, val_data, and labels
+    label_type: YOLOv8
+```
+
+When using `ultralytics_data_yaml`, the framework automatically:
+- Parses the Ultralytics data YAML file to extract class names and dataset paths
+- Creates temporary calibration and validation files based on the `train` and `val` fields
+- Handles both directory-based and file-based image lists
+- Supports relative and absolute paths with intelligent path resolution
+
+**Example Ultralytics data.yaml:**
+```yaml
+# licenseplate_v4_resized640_aug3x-ACCURATE/data.yaml
+path: ../datasets/licenseplate_v4_resized640_aug3x-ACCURATE
+train: images/train
+val: images/val
+test: images/test
+
+nc: 1
+names: ['License_Plate']
+```
+
+The framework intelligently resolves paths like `../train/images` to `train/images` when the actual dataset structure doesn't match, ensuring compatibility with various dataset formats.
+
+> [!NOTE]
+> When using `ultralytics_data_yaml`, you cannot simultaneously specify `cal_data`, `val_data`, `labels_path`, or `labels` as these are automatically generated from the Ultralytics configuration.
+
+### Traditional Class Name Configuration
+
+For traditional configurations or when not using Ultralytics format, class names can be defined in two ways:
 
 1. **YAML File**: A YAML file (e.g., `labels: data.yaml`) specifies an ordered list of class names. Examples:
 
@@ -388,7 +444,7 @@ labelling format.
 | Data adapter class | Task category | Description | YAML fields |
 | :----------------- | :------------ | :---------- | :---------- |
 | [TorchvisionDataAdapter](/ax_datasets/torchvision.py) | `Classification` | Axelera generic data loader for classifier models based on torchvision. Provides built-in support for many torchvision datasets such as ImageNet, MNIST, LFWPairs, LFWPeople and CalTech101 | [reference](/docs/reference/adapters.md#torchvisiondataadapter) |
-| [ObjDataAdapter](/ax_datasets/objdataadapter.py) | `ObjectDetection` | Axelera generic data loader with multi-format label support. Provides built-in support for [COCO 2014 and 2017 datasets](https://cocodataset.org) | [reference](/docs/reference/adapters.md#objdataadapter) |
+| [ObjDataAdapter](/ax_datasets/objdataadapter.py) | `ObjectDetection` | Axelera generic data loader with multi-format label support. Provides built-in support for [COCO 2014 and 2017 datasets](https://cocodataset.org) and Ultralytics data YAML format | [reference](/docs/reference/adapters.md#objdataadapter) |
 | [KptDataAdapter](/ax_datasets/objdataadapter.py) | `KeypointDetection` | Axelera data loader for YOLO keypoints. Provides built-in support for [COCO 2017 dataset](https://cocodataset.org) | [reference](/docs/reference/adapters.md#kptdataadapter) |
 | [SegDataAdapter](/ax_datasets/objdataadapter.py) | `InstanceSegmentation` | Axelera data loader for YOLO segmentation. Provides built-in support for [COCO 2017 dataset](https://cocodataset.org) | [reference](/docs/reference/adapters.md#segdataadapter) |
 

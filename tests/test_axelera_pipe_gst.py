@@ -8,7 +8,7 @@ from unittest.mock import call, patch
 
 import pytest
 
-from axelera.app import gst_builder, operators, pipe, pipeline
+from axelera.app import config, gst_builder, operators, pipe, pipeline
 from axelera.app.pipe import gst, gst_helper, io
 
 # isort: off
@@ -42,7 +42,7 @@ def test_iteration_appsinks(num_sinks):
 
 
 def _expected_rtsp_input_builder(source_id_offset=0):
-    exp = gst_builder.Builder()
+    exp = gst_builder.Builder(None, None, 4)
     exp.rtspsrc(
         {'user-id': '', 'user-pw': ''},
         location='rtsp://localhost:8554/test',
@@ -68,63 +68,21 @@ def _expected_rtsp_input_builder(source_id_offset=0):
 
 
 def test_build_input_with_normal_input():
-    pipein = io.SinglePipeInput('gst', 'rtsp://localhost:8554/test')
-    builder = gst_builder.Builder()
-    tasks = [
-        pipeline.AxTask(
-            'task0',
-            operators.Input(),
-        )
-    ]
-    pipe.gst._build_input_pipeline(builder, tasks, pipein, 0)
+    pipein = io.SinglePipeInput('gst', config.Source('rtsp://localhost:8554/test'))
+    builder = gst_builder.Builder(None, None, 4)
+    task = pipeline.AxTask('task0', operators.Input())
+    pipe.gst._build_input_pipeline(builder, task, pipein)
     exp = _expected_rtsp_input_builder()
-    exp.videoconvert()
-    exp.capsfilter({'caps': 'video/x-raw,format=RGBA'})
     exp.queue(connections={'src': 'inference-task0.sink_%u'})
     assert list(builder) == list(exp)
 
 
 def test_build_input_with_normal_input_with_sourceid():
-    pipein = io.SinglePipeInput('gst', 'rtsp://localhost:8554/test')
-    builder = gst_builder.Builder()
-    tasks = [
-        pipeline.AxTask(
-            'task0',
-            operators.Input(),
-        )
-    ]
-    pipe.gst._build_input_pipeline(builder, tasks, pipein, 4)
+    pipein = io.SinglePipeInput('gst', config.Source('rtsp://localhost:8554/test'), source_id=4)
+    builder = gst_builder.Builder(None, None, 4)
+    task = pipeline.AxTask('task0', operators.Input())
+    pipe.gst._build_input_pipeline(builder, task, pipein)
     exp = _expected_rtsp_input_builder(4)
-    exp.videoconvert()
-    exp.capsfilter({'caps': 'video/x-raw,format=RGBA'})
-    exp.queue(connections={'src': 'inference-task0.sink_%u'})
-    assert list(builder) == list(exp)
-
-
-def test_build_input_with_image_processing():
-    pipein = io.SinglePipeInput('gst', 'rtsp://localhost:8554/test')
-    builder = gst_builder.Builder()
-    matrix = '0.6,0.3,-67.2,-0.4,0.5,493.6,0.0,0.0,1.0'
-    tasks = [
-        pipeline.AxTask(
-            'task0',
-            operators.InputWithImageProcessing(
-                image_processing=[
-                    operators.custom_preprocessing.Perspective(matrix),
-                ],
-            ),
-        )
-    ]
-    pipe.gst._build_input_pipeline(builder, tasks, pipein, 0)
-    exp = _expected_rtsp_input_builder()
-    exp.videoconvert()
-    exp.capsfilter({'caps': 'video/x-raw,format=RGBA'})
-    exp.videoconvert()
-    exp.capsfilter({'caps': 'video/x-raw,format=RGBA'})
-    exp.perspective(
-        matrix='1.1904761904761905,-0.7142857142857143,432.5714285714286,'
-        '0.9523809523809526,1.4285714285714286,-641.1428571428572,0.0,0.0,1.0'
-    )
     exp.queue(connections={'src': 'inference-task0.sink_%u'})
     assert list(builder) == list(exp)
 
@@ -168,3 +126,150 @@ def test_save_axnet_files():
                 call('model=build/modelD.json\np0_options='),
             ]
         )
+
+
+def test_handle_pair_validation():
+    """Test the pair validation handling logic in GstPipe."""
+    from unittest.mock import MagicMock, patch
+
+    import numpy as np
+
+    from axelera.app.meta import pair_validation
+    from axelera.app.pipe import gst
+    from axelera.app.pipe.gst import GstPipe
+
+    # Patch the __init__ method to avoid needing actual dependencies
+    with patch.object(GstPipe, '__init__', return_value=None):
+        # Create a mock GstPipe object with is_pair_validation=True
+        pipe = GstPipe()
+        pipe.is_pair_validation = True
+        pipe._cached_ax_meta = None
+
+        # Create metadata instances
+        ax_meta = gst.meta.AxMeta('id1')
+        pv_meta = pair_validation.PairValidationMeta()
+        ax_meta.add_instance('task1', pv_meta)
+
+        # Create embeddings - using 2D arrays to match the shape expected by PairValidationMeta
+        embeddings1 = np.array([[0.1, 0.2, 0.3, 0.4]])
+        embeddings2 = np.array([[0.5, 0.6, 0.7, 0.8]])
+
+        # Create a GstMetaInfo that simulates what we'd get from inference
+        meta_info = MagicMock()
+        meta_info.task_name = 'task1'
+        meta_info.meta_type = pair_validation.PairValidationMeta
+
+        # Create mock task_meta with results
+        task_meta = MagicMock()
+        task_meta.results = [embeddings1]
+
+        # Create decoded_meta dictionary
+        decoded_meta = {meta_info: task_meta}
+
+        # First call to _handle_pair_validation should store the first result and return ax_meta
+        cached_meta = pipe._handle_pair_validation(ax_meta, decoded_meta)
+        assert cached_meta is not None, "First call should return the metadata for caching"
+        assert (
+            len(cached_meta.get_instance('task1', pair_validation.PairValidationMeta).results) == 1
+        )
+        assert np.array_equal(
+            cached_meta.get_instance('task1', pair_validation.PairValidationMeta).results[0],
+            embeddings1,
+        )
+
+        # Update decoded meta with second embedding
+        task_meta.results = [embeddings2]
+
+        # Second call to _handle_pair_validation with second embedding should return None
+        # indicating processing is complete
+        result = pipe._handle_pair_validation(cached_meta, decoded_meta)
+        assert result is None, "Second call should return None to indicate pair is complete"
+
+        # Verify both embeddings were collected
+        assert (
+            len(cached_meta.get_instance('task1', pair_validation.PairValidationMeta).results) == 2
+        )
+        assert np.array_equal(
+            cached_meta.get_instance('task1', pair_validation.PairValidationMeta).results[0],
+            embeddings1,
+        )
+        assert np.array_equal(
+            cached_meta.get_instance('task1', pair_validation.PairValidationMeta).results[1],
+            embeddings2,
+        )
+
+
+def test_gstpipe_loop_with_pair_validation():
+    """Test the _loop method's handling of pair validation within GstPipe."""
+    from unittest.mock import MagicMock, patch
+
+    import numpy as np
+
+    from axelera.app.meta import pair_validation
+    from axelera.app.pipe import gst
+    from axelera.app.pipe.gst import GstPipe, GstStream
+
+    # Patch the __init__ method to avoid needing actual dependencies
+    with patch.object(GstPipe, '__init__', return_value=None):
+        # Create a mock GstPipe object
+        pipe = GstPipe()
+        pipe.is_pair_validation = True
+        pipe._cached_ax_meta = None
+        pipe.task_graph = MagicMock()
+        pipe._stop_event = MagicMock()
+        pipe._stop_event.is_set.side_effect = [False, False, True]  # Run loop twice then exit
+        pipe.pipeout = MagicMock()
+        pipe._result_ready = MagicMock()
+
+        # Create metadata instances
+        ax_meta1 = gst.meta.AxMeta('id1')
+        pv_meta1 = pair_validation.PairValidationMeta()
+        ax_meta1.add_instance('task1', pv_meta1)
+
+        ax_meta2 = gst.meta.AxMeta('id2')
+        pv_meta2 = pair_validation.PairValidationMeta()
+        ax_meta2.add_instance('task1', pv_meta2)
+
+        # Create embeddings - using 2D arrays to match the shape expected by PairValidationMeta
+        embeddings1 = np.array([[0.1, 0.2, 0.3, 0.4]])
+        embeddings2 = np.array([[0.5, 0.6, 0.7, 0.8]])
+
+        # Create two frames with metadata
+        frame1 = MagicMock()
+        frame1.meta = ax_meta1
+
+        frame2 = MagicMock()
+        frame2.meta = ax_meta2
+
+        # Mock decoded metadata
+        meta_info = MagicMock()
+        meta_info.task_name = 'task1'
+        meta_info.meta_type = pair_validation.PairValidationMeta
+
+        task_meta1 = MagicMock()
+        task_meta1.results = [embeddings1]
+        decoded_meta1 = {meta_info: task_meta1}
+
+        task_meta2 = MagicMock()
+        task_meta2.results = [embeddings2]
+        decoded_meta2 = {meta_info: task_meta2}
+
+        # Create a mock stream that yields frame and decoded metadata pairs
+        stream = MagicMock(spec=GstStream)
+        stream.__iter__.return_value = [(frame1, decoded_meta1), (frame2, decoded_meta2)]
+
+        # Test the _loop method's handling of pair validation
+        with patch.object(
+            pipe, '_handle_pair_validation', wraps=pipe._handle_pair_validation
+        ) as mock_handle:
+            pipe._loop(stream)
+
+            # Verify _handle_pair_validation was called twice
+            assert mock_handle.call_count == 2
+
+            # First call should use frame1.meta and first decoded metadata
+            assert mock_handle.call_args_list[0][0][0] == frame1.meta
+            assert mock_handle.call_args_list[0][0][1] == decoded_meta1
+
+            # Second call should use cached metadata and second decoded metadata
+            assert mock_handle.call_args_list[1][0][1] == decoded_meta2

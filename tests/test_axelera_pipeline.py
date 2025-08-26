@@ -1,7 +1,7 @@
 # Copyright Axelera AI, 2024
 import pathlib
 import textwrap
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -9,7 +9,7 @@ import yaml
 torch = pytest.importorskip("torch")
 
 from axelera import types
-from axelera.app import gst_builder, network, operators, pipeline, schema, utils
+from axelera.app import config, gst_builder, network, operators, pipeline, schema, utils
 from axelera.app.operators import EvalMode
 
 FACE_DETECTION_MODEL_INFO = types.ModelInfo('FaceDetection', 'ObjectDetection', [3, 640, 480])
@@ -693,6 +693,7 @@ def test_trace_model_info():
               labels a, b, c, d, e
                      f, g, h, i
         label_filter []
+         output_info []
           model_type DEEP_LEARNING
          weight_path
           weight_url
@@ -807,106 +808,196 @@ FaceRecognition:
     assert mp.postprocess[0].eval_mode == EvalMode.EVAL
 
 
-MY_DECODE_TEMPLATE = """
-class {class_name}(operators.AxOperator):
-    conf_threshold: 0.25
-
-    {post_init}
-
-    def exec_torch(self, img, result, meta):
-        return img, result, meta
-
-    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        pass
+def test_parse_task_with_task_render_config():
+    in_yaml = """\
+FaceDetection:
+  input:
+  preprocess:
+  render:
+    show_annotations: True
+    show_labels: True
 """
+    model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
+    in_dict = yaml.safe_load(in_yaml)
+    mp = pipeline.parse_task(in_dict, {}, model_infos)
+    assert mp.name == 'FaceDetection'
+    assert mp.task_render_config.show_annotations is True
+    assert mp.task_render_config.show_labels is True
 
 
-def create_custom_decode(
-    class_name='CustomDecode',
-    set_dequant=False,
-    set_transpose=False,
-    set_postamble=False,
-    add_post_init=False,
-):
-    # Dynamically create a decode class with the desired flags
-    flag_lines = []
-    if set_dequant:
-        flag_lines.append('self.cpp_decoder_does_dequantization_and_depadding = True')
-    if set_transpose:
-        flag_lines.append('self.cpp_decoder_does_transpose = True')
-    if set_postamble:
-        flag_lines.append('self.cpp_decoder_does_postamble = True')
-    if add_post_init:
-        flag_lines.append('self.cpp_decoder_does_all = True')
-    if flag_lines:
-        flag_code = '\n        '.join(flag_lines)
-        post_init_impl = f"""
-    def _post_init(self):
-        {flag_code}
-        """
-    else:
-        post_init_impl = ""
-
-    class_def = MY_DECODE_TEMPLATE.format(post_init=post_init_impl, class_name=class_name)
-    namespace = {}
-    exec(textwrap.dedent(class_def), globals(), namespace)
-    return namespace[class_name]
+def test_parse_task_with_template_and_task_render_config():
+    in_yaml = """\
+FaceDetection:
+  template_path: templates/face_detection.yaml
+  input:
+    type: image
+  render:
+    show_annotations: True
+    show_labels: False
+"""
+    model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
+    in_dict = yaml.safe_load(in_yaml)
+    with patch.object(utils, 'load_yaml_by_reference') as mock_template, patch.object(
+        schema, 'load'
+    ) as mock_schema:
+        mock_schema.return_value = None
+        mock_template.return_value = dict(
+            input=dict(type='image'), preprocess=[dict(resize=dict(width=1024, height=768))]
+        )
+        mp = pipeline.parse_task(in_dict, {}, model_infos)
+    assert mp.name == 'FaceDetection'
+    assert mp.task_render_config.show_annotations is True
+    assert mp.task_render_config.show_labels is False
 
 
-Decode = create_custom_decode()
+def test_parse_classical_cv_task_with_task_render_config():
+    in_yaml = """
+Tracker:
+  input:
+    source: full
+    color_format: RGB
+  cv_process:
+  - tracker:
+      algorithm: oc-sort
+      bbox_task_name: detections
+      algo_params:
+        det_thresh: 0.6
+  render:
+    show_annotations: True
+    show_labels: True
+"""
+    model_infos = make_model_infos(TRACKER_MODEL_INFO)
+    in_dict = yaml.safe_load(in_yaml)
+
+    # Create a concrete mock class for BaseClassicalCV
+    mock_tracker = MagicMock(spec=operators.BaseClassicalCV)
+    mock_tracker.__repr__ = lambda _: "MockTracker"
+
+    # The correct way to patch the tracker
+    with patch.object(operators, 'builtins_classical_cv', {'tracker': mock_tracker}):
+        mp = pipeline.parse_task(in_dict, {}, model_infos)
+
+    assert mp.name == 'Tracker'
+    assert mp.task_render_config.show_annotations is True
+    assert mp.task_render_config.show_labels is True
+
+
+def test_parse_task_render_config():
+    phases = {
+        'render': {
+            'show_annotations': True,
+            'show_labels': False,
+        }
+    }
+    task_render_config = pipeline._parse_task_render_config(phases)
+    assert task_render_config is not None
+    assert task_render_config.show_annotations is True
+    assert task_render_config.show_labels is False
+    assert 'render' not in phases  # Check if render was popped from phases
+
+
+def test_parse_task_render_config_with_additional_params():
+    # Mock the TaskRenderConfig.from_dict method to accept our test parameters
+    original_from_dict = config.TaskRenderConfig.from_dict
+
+    def mock_from_dict(cls, settings_dict):
+        # Only keep the keys that are valid for TaskRenderConfig
+        valid_keys = {'show_annotations', 'show_labels'}
+        filtered_dict = {k: v for k, v in settings_dict.items() if k in valid_keys}
+        return original_from_dict(filtered_dict)
+
+    with patch.object(config.TaskRenderConfig, 'from_dict', classmethod(mock_from_dict)):
+        phases = {
+            'render': {
+                'show_annotations': True,
+                'show_labels': False,
+                'bbox_thickness': 2,
+                'text_thickness': 1,
+                'font_scale': 0.5,
+            }
+        }
+        task_render_config = pipeline._parse_task_render_config(phases)
+        assert task_render_config is not None
+        assert task_render_config.show_annotations is True
+        assert task_render_config.show_labels is False
+        assert 'render' not in phases  # Check if render was popped from phases
+
+
+def test_parse_task_render_config_empty():
+    phases = {}
+    task_render_config = pipeline._parse_task_render_config(phases)
+    assert task_render_config is None
 
 
 @pytest.mark.parametrize(
-    "add_post_init, include_model_config",
+    "inference_config, expected_handle_flags",
     [
-        (False, True),
-        (True, True),
-        (False, False),
-        (True, False),
+        # Test handle_all=True sets all flags to True
+        (
+            {"handle_all": True},
+            {
+                "handle_dequantization_and_depadding": True,
+                "handle_transpose": True,
+                "handle_postamble": True,
+                "handle_preamble": True,
+            },
+        ),
+        # Test handle_all=False sets all flags to False
+        (
+            {"handle_all": False},
+            {
+                "handle_dequantization_and_depadding": False,
+                "handle_transpose": False,
+                "handle_postamble": False,
+                "handle_preamble": False,
+            },
+        ),
+        # Test individual flags without handle_all (should use defaults or specified values)
+        (
+            {
+                "handle_preamble": True,
+                "handle_transpose": False,
+                "handle_dequantization_and_depadding": False,
+                "handle_postamble": False,
+            },
+            {
+                "handle_dequantization_and_depadding": False,
+                "handle_transpose": False,
+                "handle_postamble": False,
+                "handle_preamble": True,
+            },
+        ),
+        # Test empty config uses defaults
+        (
+            {},
+            {
+                "handle_dequantization_and_depadding": True,
+                "handle_transpose": True,
+                "handle_postamble": True,
+                "handle_preamble": True,
+            },
+        ),
     ],
 )
-def test_yaml_with_decoder_dequant_config(add_post_init, include_model_config):
-    Decode = create_custom_decode(add_post_init=add_post_init)
-
+def test_yaml_with_inference_config(inference_config, expected_handle_flags):
+    """Test that YAML parsing correctly sets InferenceOpConfig flags."""
     in_yaml = f"""
 FaceDetection:
     preprocess:
     - torch-totensor:
+    {'inference:' if inference_config else ''}
+"""
+    # Add inference config to YAML if provided
+    if inference_config:
+        for key, value in inference_config.items():
+            in_yaml += f"      {key}: {str(value).lower()}\n"
+    in_yaml += """
     postprocess:
     - decode:
         conf_threshold: 0.25
 """
-    model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
-    model_infos.model('FaceDetection').extra_kwargs['YOLO'] = {
-        'focus_layer_replacement': include_model_config
-    }
-    in_dict = yaml.safe_load(in_yaml)
-    ops = dict(decode=Decode)
-    mp = pipeline.parse_task(in_dict, ops, model_infos)
 
-    if include_model_config:
-        assert mp.inference_config.cpp_focus_layer_on_host is True
-    else:
-        assert mp.inference_config.cpp_focus_layer_on_host is False
-
-    decode_op = mp.postprocess[0]
-    assert isinstance(decode_op, Decode)
-    assert decode_op.conf_threshold == 0.25
-
-    if add_post_init:
-        assert decode_op.cpp_decoder_does_dequantization_and_depadding
-        assert decode_op.cpp_decoder_does_transpose
-        assert decode_op.cpp_decoder_does_postamble
-    else:
-        assert not decode_op.cpp_decoder_does_dequantization_and_depadding
-        assert not decode_op.cpp_decoder_does_transpose
-        assert not decode_op.cpp_decoder_does_postamble
-
-
-def test_cpp_decoder_does_all_property():
-    from axelera.app.operators.base import AxOperator
-
-    class DummyDecode(AxOperator):
+    class CustomDecode(operators.AxOperator):
         conf_threshold: float = 0.25
 
         def exec_torch(self, *a, **kw):
@@ -915,50 +1006,161 @@ def test_cpp_decoder_does_all_property():
         def build_gst(self, *a, **kw):
             pass
 
-    # All False by default
-    d = DummyDecode(conf_threshold=0.25)
-    assert not d.cpp_decoder_does_all
+    model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
+    in_dict = yaml.safe_load(in_yaml)
+    ops = dict(decode=CustomDecode)
+    mp = pipeline.parse_task(in_dict, ops, model_infos)
 
-    # Only one True
-    d = DummyDecode(conf_threshold=0.25)
-    d.cpp_decoder_does_dequantization_and_depadding = True
-    assert not d.cpp_decoder_does_all
+    # Verify inference op config flags
+    for flag_name, expected_value in expected_handle_flags.items():
+        actual_value = getattr(mp.inference_op_config, flag_name)
+        assert (
+            actual_value == expected_value
+        ), f"Expected {flag_name}={expected_value}, got {actual_value}"
 
-    d = DummyDecode(conf_threshold=0.25)
-    d.cpp_decoder_does_transpose = True
-    assert not d.cpp_decoder_does_all
+    # Verify decode operator
+    decode_op = mp.postprocess[0]
+    assert isinstance(decode_op, CustomDecode)
+    assert decode_op.conf_threshold == 0.25
 
-    d = DummyDecode(conf_threshold=0.25)
-    d.cpp_decoder_does_postamble = True
-    assert not d.cpp_decoder_does_all
 
-    # Two True
-    d = DummyDecode(conf_threshold=0.25)
-    d.cpp_decoder_does_dequantization_and_depadding = True
-    d.cpp_decoder_does_transpose = True
-    assert not d.cpp_decoder_does_all
+@pytest.mark.parametrize(
+    "template_config, phase_config, expected_result",
+    [
+        # Template has handle_all, phase has individual flags -> phase individual flags win
+        # Note: handle_transpose is forced to True because handle_postamble is True (dependency)
+        (
+            {"handle_all": True},
+            {"handle_preamble": True, "handle_transpose": False},
+            {
+                "handle_preamble": True,
+                "handle_transpose": True,  # forced to True due to postamble dependency
+                "handle_dequantization_and_depadding": True,  # default
+                "handle_postamble": True,  # default
+            },
+        ),
+        # Phase has handle_all, template has individual flags -> phase handle_all wins
+        (
+            {"handle_preamble": True, "handle_transpose": False},
+            {"handle_all": False},
+            {
+                "handle_preamble": False,
+                "handle_transpose": False,
+                "handle_dequantization_and_depadding": False,
+                "handle_postamble": False,
+            },
+        ),
+        # Both have individual flags -> phase overrides template
+        # Note: handle_transpose and handle_dequantization_and_depadding forced to True due to postamble dependency
+        (
+            {"handle_preamble": True, "handle_transpose": True},
+            {"handle_preamble": False},
+            {
+                "handle_preamble": False,
+                "handle_transpose": True,  # from template + forced due to postamble dependency
+                "handle_dequantization_and_depadding": True,  # default + forced due to postamble dependency
+                "handle_postamble": True,  # default
+            },
+        ),
+        # Only template has config -> template is used
+        (
+            {"handle_all": False},
+            {},
+            {
+                "handle_preamble": False,
+                "handle_transpose": False,
+                "handle_dequantization_and_depadding": False,
+                "handle_postamble": False,
+            },
+        ),
+    ],
+)
+def test_inference_config_priority_from_yaml_dict(template_config, phase_config, expected_result):
+    """Test InferenceOpConfig.from_yaml_dict priority handling."""
+    config = operators.InferenceOpConfig.from_yaml_dict(phase_config, template_config)
 
-    d = DummyDecode(conf_threshold=0.25)
-    d.cpp_decoder_does_transpose = True
-    d.cpp_decoder_does_postamble = True
-    assert not d.cpp_decoder_does_all
+    for flag_name, expected_value in expected_result.items():
+        actual_value = getattr(config, flag_name)
+        assert (
+            actual_value == expected_value
+        ), f"Expected {flag_name}={expected_value}, got {actual_value}"
 
-    d = DummyDecode(conf_threshold=0.25)
-    d.cpp_decoder_does_dequantization_and_depadding = True
-    d.cpp_decoder_does_postamble = True
-    assert not d.cpp_decoder_does_all
 
-    # All three True
-    d = DummyDecode(conf_threshold=0.25)
-    d.cpp_decoder_does_dequantization_and_depadding = True
-    d.cpp_decoder_does_transpose = True
-    d.cpp_decoder_does_postamble = True
-    assert d.cpp_decoder_does_all
+def test_inference_config_conflicting_flags():
+    """Test that setting both handle_all and individual flags raises an error."""
+    with pytest.raises(
+        ValueError, match="Cannot set both 'handle_all' and individual handle flags"
+    ):
+        operators.InferenceOpConfig(handle_all=True, handle_preamble=False)
 
-    # _cpp_decoder_does_all set directly
-    d = DummyDecode(conf_threshold=0.25)
-    d.cpp_decoder_does_all = True
-    assert d.cpp_decoder_does_all
-    # Setting to False disables all
-    d.cpp_decoder_does_all = False
-    assert not d.cpp_decoder_does_all
+
+def test_inference_config_postamble_dependencies():
+    """Test that postamble dependencies are enforced with warnings."""
+    # Test that dependencies are enforced correctly
+    config = operators.InferenceOpConfig(
+        handle_postamble=True, handle_transpose=False, handle_dequantization_and_depadding=False
+    )
+    # Dependencies should be forced to True
+    assert config.handle_transpose is True
+    assert config.handle_dequantization_and_depadding is True
+
+
+def test_yaml_with_focus_layer_replacement():
+    """Test YOLO focus layer replacement functionality."""
+    in_yaml = """
+FaceDetection:
+    preprocess:
+    - torch-totensor:
+    inference:
+      handle_all: false
+    postprocess:
+    - decode:
+        conf_threshold: 0.25
+"""
+
+    class CustomDecode(operators.AxOperator):
+        conf_threshold: float = 0.25
+
+        def exec_torch(self, *a, **kw):
+            pass
+
+        def build_gst(self, *a, **kw):
+            pass
+
+    model_infos = make_model_infos(FACE_DETECTION_MODEL_INFO)
+    # Test focus layer replacement via extra_kwargs
+    model_infos.model('FaceDetection').extra_kwargs['YOLO'] = {'focus_layer_replacement': True}
+    in_dict = yaml.safe_load(in_yaml)
+    ops = dict(decode=CustomDecode)
+    mp = pipeline.parse_task(in_dict, ops, model_infos)
+
+    # Verify inference op config
+    assert mp.inference_op_config.handle_all is False
+    assert mp.inference_op_config.handle_preamble is False
+
+    # Verify YOLO config is preserved in model info
+    assert mp.model_info.extra_kwargs['YOLO']['focus_layer_replacement'] is True
+
+
+@pytest.mark.parametrize("handle_all_value", [True, False, None])
+def test_inference_config_handle_all_property(handle_all_value):
+    """Test the handle_all convenience parameter."""
+    if handle_all_value is None:
+        # Test individual flags when handle_all is None
+        config = operators.InferenceOpConfig(
+            handle_preamble=True,
+            handle_transpose=False,
+            handle_dequantization_and_depadding=True,
+            handle_postamble=False,
+        )
+        assert config.handle_preamble is True
+        assert config.handle_transpose is False
+        assert config.handle_dequantization_and_depadding is True
+        assert config.handle_postamble is False
+    else:
+        # Test handle_all parameter
+        config = operators.InferenceOpConfig(handle_all=handle_all_value)
+        assert config.handle_preamble is handle_all_value
+        assert config.handle_transpose is handle_all_value
+        assert config.handle_dequantization_and_depadding is handle_all_value
+        assert config.handle_postamble is handle_all_value

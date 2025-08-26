@@ -209,3 +209,28 @@ def safe_torch_load(
         else:
             # If it's another type of error, re-raise it
             raise
+
+
+def set_random_seed(seed=42):
+    """To ensure deterministic ordering across different machines and runs for reproducibility."""
+    import os
+    import random
+
+    import numpy as np
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    # For complete determinism (may impact performance)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # Python hash seed for consistent ordering
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+    # generator = torch.Generator()
+    # generator.manual_seed(seed)
+    # return generator

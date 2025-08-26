@@ -1,6 +1,6 @@
 # Copyright Axelera AI, 2025
 """
-Test the run_chat_loop function's no_history functionality
+Test the run_chat_loop function's history keeping functionality
 """
 
 from unittest.mock import MagicMock, patch
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def test_run_chat_loop_no_history():
-    """Test that run_chat_loop respects the no_history flag."""
+def test_run_chat_loop_clear_history_when_keep_history_is_false():
+    """Test that run_chat_loop respects the keep_history=False flag."""
     from inference_llm import run_chat_loop
 
     # Mock dependencies
@@ -57,20 +57,20 @@ def test_run_chat_loop_no_history():
             eos_token_id=None,
             end_token_id=None,
             LOG=mock_log,
-            no_history=True,
+            keep_history=False,
         )
 
         # Assert reset was called with preserve_system_prompt=True
         mock_chat_encoder.reset.assert_called_once_with(preserve_system_prompt=True)
 
         # Assert that history contains the message before being cleared
-        # (history gets appended before no_history clears it)
+        # (history gets appended before keep_history=False clears it)
         assert mock_chat_encoder.encode.called
         assert mock_chat_encoder.encode.call_args[0][0] == "test message"
 
 
-def test_run_chat_loop_with_history():
-    """Test that run_chat_loop keeps history when no_history=False."""
+def test_run_chat_loop_with_history_when_keep_history_is_true():
+    """Test that run_chat_loop keeps history when keep_history=True."""
     from inference_llm import run_chat_loop
 
     # Mock dependencies
@@ -117,7 +117,7 @@ def test_run_chat_loop_with_history():
             eos_token_id=None,
             end_token_id=None,
             LOG=mock_log,
-            no_history=False,
+            keep_history=True,
         )
 
         # Assert reset was NOT called
@@ -168,7 +168,7 @@ def test_run_chat_loop_clear_history_command():
         eos_token_id=None,
         end_token_id=None,
         LOG=mock_log,
-        no_history=False,  # This should be ignored for clear history command
+        keep_history=True,  # This should be ignored for clear history command
     )
 
     # Assert reset was called

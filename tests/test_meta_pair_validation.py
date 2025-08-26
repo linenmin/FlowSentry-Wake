@@ -61,5 +61,4 @@ def test_to_evaluation():
 
 def test_draw():
     meta = PairValidationMeta()
-    with pytest.raises(RuntimeError):
-        meta.draw(None)
+    meta.draw(None)

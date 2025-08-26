@@ -43,10 +43,10 @@ def test_torch_to_tensor_expansion():
 
 def test_barrel_and_convert():
     ops = [
+        operators.custom_preprocessing.ConvertColorInput(format='rgb'),
         operators.custom_preprocessing.CameraUndistort(
             fx=1.0, fy=1.0, cx=0.5, cy=0.5, distort_coefs=[1.0, 1.0, 1.0, 0.0, 0.0]
         ),
-        operators.custom_preprocessing.ConvertColorInput(format='rgb'),
     ]
 
     got = ops.copy()
@@ -67,10 +67,10 @@ def test_barrel_and_convert():
 
 def test_perspective_and_convert():
     ops = [
+        operators.custom_preprocessing.ConvertColorInput(format='rgb'),
         operators.custom_preprocessing.Perspective(
             camera_matrix=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         ),
-        operators.custom_preprocessing.ConvertColorInput(format='rgb'),
     ]
 
     got = ops.copy()
@@ -293,6 +293,52 @@ def test_adjacent_letterbox_to_tensor_2normalise():
         operators.mega.OpenCLetterBoxToTensorAndNormalize(
             width=640, height=640, mean='104/255, 117/255, 123/255', std='2/255, 2/255, 2/255'
         ),
+    ]
+
+
+def test_adjacent_letterbox_to_tensor_linear_scaling():
+    got = [
+        operators.Letterbox(width=640, height=640),
+        operators.ToTensor(),
+        operators.PermuteChannels('NHWC', 'NCHW'),
+        operators.TypeCast(datatype='float32'),
+        operators.LinearScaling(
+            mean='0',
+            shift='255',
+            tensor_layout=types.TensorLayout.NCHW,
+        ),
+    ]
+    transforms.run_all_transformers(got, hardware_caps=config.HardwareCaps.OPENCL)
+    assert got == [
+        operators.mega.OpenCLetterBoxToTensorAndLinearScaling(
+            width=640,
+            height=640,
+            mean='0',
+            shift='255',
+        )
+    ]
+
+
+def test_adjacent_letterbox_to_tensor_linear_scaling():
+    got = [
+        operators.Resize(width=640, height=640),
+        operators.ToTensor(),
+        operators.PermuteChannels('NHWC', 'NCHW'),
+        operators.TypeCast(datatype='float32'),
+        operators.LinearScaling(
+            mean='0',
+            shift='255',
+            tensor_layout=types.TensorLayout.NCHW,
+        ),
+    ]
+    transforms.run_all_transformers(got, hardware_caps=config.HardwareCaps.OPENCL)
+    assert got == [
+        operators.mega.OpenCLResizeToTensorAndLinearScaling(
+            width=640,
+            height=640,
+            mean='0',
+            shift='255',
+        )
     ]
 
 

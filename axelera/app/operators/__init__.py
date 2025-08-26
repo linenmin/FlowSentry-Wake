@@ -12,7 +12,7 @@ from .base import (
     compose_preprocess_transforms,
 )
 from .context import PipelineContext
-from .inference import AxeleraDequantize, Inference, InferenceConfig
+from .inference import AxeleraDequantize, Inference, InferenceOpConfig
 from .input import Input, InputFromROI, InputWithImageProcessing, get_input_operator
 from .preprocessing import InterpolationMode
 

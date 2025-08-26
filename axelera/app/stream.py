@@ -2,8 +2,11 @@
 # Inference stream class
 from __future__ import annotations
 
+import collections
+import copy
 import dataclasses
 import io
+import itertools
 import queue
 import signal
 import sys
@@ -13,9 +16,10 @@ from typing import TYPE_CHECKING, Iterable
 from . import config, logging_utils, pipe, utils
 
 LOG = logging_utils.getLogger(__name__)
+_INTERRUPT_RAISED = object()  # sentinel for interrupt raised
 
 if TYPE_CHECKING:
-    from .inf_tracers import TraceMetric
+    from .inf_tracers import TraceMetric, Tracer
 
 
 class InterruptHandler:
@@ -40,124 +44,159 @@ class InterruptHandler:
         return self._interrupted.is_set()
 
 
-@dataclasses.dataclass
-class BaseInferenceConfig:
-    """Base class for inference config"""
-
-    timeout: int = 0
-    log_level: int = logging_utils.INFO  # INFO, DEBUG, TRACE
-
-    def __post_init__(self):
-        logging_utils.configure_logging(logging_utils.Config(self.log_level))
-
-
-@dataclasses.dataclass
-class InferenceConfig(BaseInferenceConfig):
-    """Configuration for local inference mode"""
-
-    network: str = dataclasses.field(default='')
-    sources: list[str] = dataclasses.field(default_factory=list)
-    pipe_type: str = dataclasses.field(default='gst')
-    hardware_caps: config.HardwareCaps = dataclasses.field(
-        default_factory=lambda: config.HardwareCaps(
-            config.HardwareEnable.detect,
-            config.HardwareEnable.detect,
-            config.HardwareEnable.detect,
+def _create_manager(
+    system: config.SystemConfig,
+    stream: config.InferenceStreamConfig,
+    pipeline: config.PipelineConfig,
+    deploy: config.DeployConfig,
+    tracers: list[Tracer],
+    render_config: config.RenderConfig,
+    id_allocator: pipe.SourceIdAllocator,
+) -> pipe.PipeManager:
+    if not pipeline.network:
+        raise ValueError("network must be specified")
+    if not pipeline.sources:
+        raise ValueError("sources must be specified")
+    if pipeline.pipe_type not in ['gst', 'torch', 'torch-aipu', 'quantized']:
+        raise ValueError(
+            f"Invalid pipe type: {pipeline.pipe_type}, valid types are gst, torch, torch-aipu, quantized"
         )
-    )
-    frames: int = 0
-    # Store additional configuration parameters
-    extra_params: dict = dataclasses.field(default_factory=dict)
+    try:
+        return pipe.PipeManager(
+            system,
+            stream,
+            pipeline,
+            deploy,
+            tracers,
+            render_config,
+            id_allocator,
+        )
+    except TypeError as e:
+        raise TypeError(f"Invalid PipeManager configuration: {str(e)}") from e
 
-    @classmethod
-    def from_kwargs(cls, network: str, sources: list[str], **kwargs) -> 'InferenceConfig':
-        """Create config from kwargs, with required network and sources parameters"""
-        known_fields = cls.__dataclass_fields__.keys()
-        config_kwargs = {k: v for k, v in kwargs.items() if k in known_fields}
-        extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_fields}
-        config_kwargs['extra_params'] = extra_kwargs
 
-        instance = cls(network=network, sources=sources, **config_kwargs)
-        return instance
-
-    def __post_init__(self):
-        super().__post_init__()
-        if not self.network:
-            raise ValueError("network must be specified")
-        if not self.sources:
-            raise ValueError("sources must be specified")
-        if self.pipe_type not in ['gst', 'torch', 'torch-aipu']:
-            raise ValueError(f"Invalid pipe type: {self.pipe_type}")
-
-        # Pass both standard args and extra params to PipeManager
-        pipe_args = {
-            'network_path': self.network,
-            'sources': self.sources,
-            'pipe_type': self.pipe_type,
-            'hardware_caps': self.hardware_caps,
-            **self.extra_params,
-        }
-        try:
-            self._pipe_mgr = pipe.PipeManager(**pipe_args)
-        except TypeError as e:
-            raise TypeError(f"Invalid PipeManager configuration: {str(e)}") from e
-
-    @property
-    def pipe_mgr(self):
-        return self._pipe_mgr
+def _calculate_num_frames(pipelines, requested_frames):
+    nframes = [p.number_of_frames for p in pipelines]
+    combined = [x for x in itertools.chain(nframes, [requested_frames]) if x > 0]
+    return min(combined) if combined else 0
 
 
 class InferenceStream:
     """An iterator that launches the inference pipeline locally
     and yields inference results for each frame"""
 
-    def __init__(self, pipe_mgr: pipe.PipeManager, frames: int = 0, timeout: int = 0):
-        if pipe_mgr is None:
-            raise ValueError("pipe_mgr must be provided")
-        self.timeout = timeout if timeout > 0 and not pipe_mgr.eval_mode else None
+    def __init__(
+        self,
+        system_config: config.SystemConfig,
+        stream_config: config.InferenceStreamConfig,
+        deploy_config: config.DeployConfig,
+        default_pipeline_config: config.PipelineConfig,
+        pipeline_configs: list[config.PipelineConfig] | None = None,
+        tracers: list[Tracer] | None = None,
+    ):
+        self._system_config = system_config
+        self._stream_config = stream_config
+        self._deploy_config = deploy_config
+        self._default_pipeline_config = default_pipeline_config
+        any_eval_mode = any(p.eval_mode for p in pipeline_configs or [])
+        self.timeout = (
+            stream_config.timeout if stream_config.timeout > 0 and not any_eval_mode else None
+        )
         self._queue = queue.Queue(maxsize=10)
-        self.pipe_mgr = pipe_mgr
-        self.pipe_mgr.setup_callback(self.feed_result)
-        _pipe_frames = self.pipe_mgr.number_of_frames
-        if _pipe_frames > 0:
-            self.frames = min(_pipe_frames, frames) if frames > 0 else _pipe_frames
-        else:
-            self.frames = frames
         self._interrupt_raised = False
+        self._pipelines: list[pipe.PipeManager] = []
         self._timer = utils.Timer()
+        self._frames_requested = stream_config.frames
         self._frames_executed = 0
-        self.pipe_mgr.init_pipe()
-        self.lock = threading.Lock()
+        self._stream_lock = threading.Lock()
         self._interrupt_handler = InterruptHandler(self)
-        self.hardware_caps = self.pipe_mgr.hardware_caps
+        self._id_allocator = pipe.SourceIdAllocator()
+        self.hardware_caps = system_config.hardware_caps.detect_caps()
         self._done = False
         self._queue_blocked = False
+        self._tracers: list[Tracer] = tracers or []
+        for pc in pipeline_configs:
+            self.add_pipeline(pc)
+        self._frames = _calculate_num_frames(self._pipelines, stream_config.frames)
 
-    @classmethod
-    def from_config(cls, config: InferenceConfig) -> 'InferenceStream':
-        """Alternative constructor using InferenceConfig"""
-        return cls(
-            pipe_mgr=config.pipe_mgr,
-            frames=config.frames,
-            timeout=config.timeout,
+    def pipeline_by_stream_id(self, stream_id: int) -> pipe.PipeManager:
+        """Find a pipeline by its stream ID.
+
+        If not found, raises ValueError.
+        """
+        for pipeline in self._pipelines:
+            if stream_id in pipeline.sources:
+                return pipeline
+        raise ValueError(f"Stream ID {stream_id} not found in any pipeline")
+
+    def add_pipeline(
+        self, pipeline_config: config.PipelineConfig | None = None, **kwargs
+    ) -> pipe.PipeManager:
+        '''Add a new pipeline to the stream.
+
+        This pipeline will execute in parallel with any existing pipelines, and
+        results will be yielded as they become available in the same inference
+        loop.
+
+        The configuration can either be provided as a PipelineConfig object, or
+        as keyword arguments that will be used to create a PipelineConfig object.
+        '''
+        pipeline_config = pipeline_config or copy.deepcopy(self._default_pipeline_config)
+        pipeline_config.update_from_kwargs(kwargs)
+        manager = _create_manager(
+            self._system_config,
+            self._stream_config,
+            pipeline_config,
+            self._deploy_config,
+            self._tracers,
+            None,
+            self._id_allocator,
         )
+        manager.init_pipe()
+        manager.setup_callback(lambda result: self._feed_result(manager, result))
+        self._pipelines.append(manager)
+        return manager
 
     @property
     def manager(self):
-        return self.pipe_mgr
+        if len(self._pipelines) > 1:
+            raise RuntimeError(
+                "More than one pipeline in the stream, please use pipelines property with multiple pipelines"
+            )
+        return self._pipelines[0]
 
     @property
-    def sources(self) -> dict[int, str]:
+    def pipelines(self):
+        return self._pipelines[:]
+
+    @property
+    def sources(self) -> dict[int, config.Source]:
         '''Return the list of input sources'''
-        return self.pipe_mgr.sources
+        return collections.ChainMap(*(p.sources for p in self._pipelines))
+
+    @property
+    def frames(self) -> int:
+        '''Return the number of frames to process, or 0 if there is no bounding condition.
+
+        If all inputs are unbounded and the stream is not configured with a frame limit, this will
+        be 0.
+
+        If any input is bounded (eg a filesrc), or if the stream was configured to stop after a
+        number this will return the minimum of all the non-zero boundaries.
+
+        Typically used to implement a progress bar, it shold not be considered a reliable indicator
+        of when the stream will finish, as the stream may be interrupted by a signal or other
+        event.
+        '''
+        return self._frames_requested
 
     def __len__(self):
-        return self.frames
+        return self._frames
 
-    def feed_result(self, result: pipe.FrameResult | None):
+    def _feed_result(self, pipeline: pipe.PipeManager, result: pipe.FrameResult | None):
         while not self._done:
             try:
-                self._queue.put(result, timeout=0.2)
+                self._queue.put((pipeline, result), timeout=0.2)
                 if self._queue_blocked and self._queue.qsize() < self._queue.maxsize // 2:
                     LOG.info(
                         f"InferencedStream is being processed quickly enough again (backlog={self._queue.qsize()})"
@@ -171,20 +210,37 @@ class InferenceStream:
                     )
                 self._queue_blocked = True
 
-    def __iter__(self):
-        self.pipe_mgr.run_pipe()
+    def __iter__(self) -> Iterable[pipe.FrameResult]:
+        if not self._pipelines:
+            raise ValueError(
+                "No pipeline configs provided, please add a pipeline using add_pipeline()"
+            )
+        for pipeline in self._pipelines:
+            pipeline.run_pipe()
         self._timer.reset()
         try:
             n = 0
-            while not self.frames or n < self.frames:
+            while (not self.frames or n < self.frames) and self._pipelines:
                 if self.is_interrupted:
+                    LOG.debug("Stream interrupted, stopping...")
                     break
                 try:
-                    result = self._queue.get(timeout=self.timeout)
-                    if result is None or self._interrupt_raised:
+                    pipeline, result = self._queue.get(timeout=self.timeout)
+                    if result is None and pipeline is not None:
+                        if pipeline in self._pipelines:
+                            LOG.debug(
+                                f"Received None from {pipeline.network.name} removing pipeline"
+                            )
+                            self._pipelines.remove(pipeline)
+                            self.report_summary(pipeline)
+                        else:
+                            LOG.warning(f"Received None from unknown pipeline {pipeline}")
+                        continue
+                    elif result is _INTERRUPT_RAISED or self._interrupt_raised:
+                        LOG.debug("Stream interrupted, stopping...")
                         break
-                    if self.pipe_mgr.evaluator:
-                        self.pipe_mgr.evaluator.append_new_sample(result.meta)
+                    if pipeline.evaluator:
+                        pipeline.evaluator.append_new_sample(result.meta)
 
                 except queue.Empty:  # timeout
                     LOG.warning("Timeout for querying an inference")
@@ -198,8 +254,9 @@ class InferenceStream:
             self._done = True
             self._frames_executed = max(n - 2, 0)
             self._timer.stop()
-            self.pipe_mgr.stop_pipe()
-            self.report_summary()
+            for pipeline in self._pipelines:
+                pipeline.stop_pipe()
+                self.report_summary(pipeline)
 
     def stream_select(self, streams: Iterable[int] | str) -> None:
         '''Configure streams to be in paused or resumed state.
@@ -211,17 +268,27 @@ class InferenceStream:
         NOTE: For compatiblity reasons a string of the form '0,2,3' is also supported, but
               this is deprecated and will raise a DeprecationWarning.
         '''
-        with self.lock:
-            self.pipe_mgr.stream_select(streams)
+
+        used = set()
+        all = set(streams)
+        with self._stream_lock:
+            for pipeline in self._pipelines:
+                this_pipeline = pipeline.sources.keys() & all
+                pipeline.stream_select(list(this_pipeline))
+                used |= this_pipeline
+        if used != all:
+            LOG.warning("Did not find the correct pipeline for the following stream_id ")
 
     def get_stream_select(self) -> list[int]:
         '''Get the list of currently playing streams, as configured by stream_select().
 
         NOTE: This is only supported by GStreamer pipelines.
         '''
-        with self.lock:
-            ids = self.pipe_mgr.get_stream_select()
-        sids = set(ids)
+
+        sids = set()
+        with self._stream_lock:
+            for p in self._pipelines:
+                sids |= p.get_stream_select()
         valid_ids = set(self.sources.keys())
         if paused := valid_ids - sids:
             spaused = ' '.join(str(x) for x in paused)
@@ -229,34 +296,46 @@ class InferenceStream:
         if unknown := sids - valid_ids:
             sunknown = ' '.join(str(x) for x in unknown)
             LOG.error(f"stream ids in stream_select but not in sources (unknown): {sunknown}")
-        return ids
+        return sorted(sids)
 
-    def add_source(self, source: str, source_id: int = -1) -> int:
+    def add_source(
+        self,
+        source: str | config.Source,
+        source_id: int = -1,
+        pipeline: pipe.PipeManager | int = 0,
+    ) -> int:
         '''Add a new source to the pipeline.
+
         Args:
-            source: The source to add. (see.... TODO)
+            source: The source to add.
             source_id: The source id of the source to add. If -1, a new source_id will be assigned.
+            pipeline: Reference to the pipeline to add, or the index of the pipeline to add to.
         Returns:
             The source id of the new source.
         NOTE: This is only supported by GStreamer pipelines.
         '''
-        with self.lock:
-            self.pipe_mgr.pause_pipe()
-            source_id = self.pipe_mgr.add_source(source, source_id)
-            self.pipe_mgr.play_pipe()
+        source = config.Source(source)
+        pipeline = pipeline or self._pipelines[pipeline]
+        with self._stream_lock:
+            pipeline.pause_pipe()
+            source_id = pipeline.add_source(source, source_id)
+            pipeline.play_pipe()
         LOG.info(f"Added new source: {source} as {source_id=}")
         return source_id
 
-    def remove_source(self, source_id):
+    def remove_source(self, source_id: int):
         '''Remove a source from the pipeline.
+
         Args:
             source_id: The source id of the source to remove.
         NOTE: This is only supported by GStreamer pipelines.
         '''
-        with self.lock:
-            self.pipe_mgr.pause_pipe()
-            self.pipe_mgr.remove_source(source_id)
-            self.pipe_mgr.play_pipe()
+        pipelines = {sid: p for p in self._pipelines for sid in p.sources.keys()}
+        pipeline = pipelines[source_id]
+        with self._stream_lock:
+            pipeline.pause_pipe()
+            pipeline.remove_source(source_id)
+            pipeline.play_pipe()
 
     @property
     def is_interrupted(self) -> bool:
@@ -269,7 +348,7 @@ class InferenceStream:
         # otherwise the queue may be being fed by the producer
         while 1:
             try:
-                self._queue.put(None, timeout=0)  # unblock the queue
+                self._queue.put((None, _INTERRUPT_RAISED), timeout=0)  # unblock the queue
                 break
             except queue.Full:
                 pass
@@ -280,16 +359,16 @@ class InferenceStream:
                     break
 
     def is_single_image(self) -> bool:
-        '''True if the input stream is a single image.'''
-        return self.pipe_mgr.is_single_image()
+        '''True if any input stream is a single image.'''
+        return any(p.is_single_image() for p in self._pipelines)
 
-    def report_summary(self):
+    def report_summary(self, pipeline: pipe.PipeManager) -> None:
         '''When evaluating, report the summary of the evaluation.'''
-        if self.pipe_mgr.evaluator:
+        if evaluator := pipeline.evaluator:
             duration_s = self._timer.time
-            self.pipe_mgr.evaluator.evaluate_metrics(duration_s)
+            evaluator.evaluate_metrics(duration_s)
             output = io.StringIO()
-            self.pipe_mgr.evaluator.write_metrics(output)
+            evaluator.write_metrics(output)
             LOG.info(output.getvalue().strip())
 
     def get_all_metrics(self) -> dict[str, TraceMetric]:
@@ -301,26 +380,99 @@ class InferenceStream:
         See examples/application.py for an example of how to use this method.
         '''
         metrics = {}
-        for t in self.pipe_mgr.pipeout.tracers:
-            metrics.update({m.key.strip('_'): m for m in t.get_metrics()})
+        for p in self._pipelines:
+            # TODO should we have tracers per pipeline or per InferenceStream?
+            for t in p.tracers:
+                metrics.update({m.key.strip('_'): m for m in t.get_metrics()})
         return metrics
 
 
-def create_inference_stream(config: InferenceConfig | None = None, **kwargs) -> InferenceStream:
-    """Factory function to create appropriate stream type
+def create_inference_stream(
+    system_config: config.SystemConfig | None = None,
+    stream_config: config.InferenceStreamConfig | None = None,
+    pipeline_configs: config.PipelineConfig | list[config.PipelineConfig] | None = None,
+    logging_config: config.LoggingConfig | None = None,
+    deploy_config: config.DeployConfig | None = None,
+    *,
+    log_level: int | None = None,
+    tracers: list[Tracer] | None = None,
+    **kwargs,
+) -> InferenceStream:
+    """Factory function to create appropriate stream type.
+
     Args:
-        config: Optional InferenceConfig object
-        **kwargs: If config is None, these kwargs will be used to construct an InferenceConfig
+        system_config: Optional SystemConfig object, if not provided, a default will be created.
+        stream_config: Optional InferenceConfig object, if not provided, a default will be created.
+        pipeline_configs: Optional PipelineConfig objects, if not provided, and suitable kwargs are found
+        logging_config: Optional LoggingConfig object, if not provided, a default will be created.
+        deploy_config: Optional DeployConfig object, if not provided, a default will be created.
+        then a PipelineConfig will be created.
+
+    Additional keyword only arguments:
+        log_level: Optional log level, if provided this will override that set in logging_config.
+        tracers: Optional list of Tracer objects, if not provided no tracers will be configured.
+
+    Additional keyword arguments:
+        All other keyword arguments are passed to the SystemConfig, InferenceStreamConfig and
+        PipelineConfig as appropriate this allows you to override any of the default values in the
+        configs.  For example `allow_hardware_codec=True` will override the value of
+        `allow_hardware_codec` in the SystemConfig (whether SystemConfig was passed in or a default
+        created).
+
+        **kwargs: these kwargs will override any of the settings in the above configs
     Returns:
         InferenceStream: Configured inference stream
-    """
-    if config is None:
-        if 'network' not in kwargs or 'sources' not in kwargs:
-            raise ValueError(
-                "When config is not provided, 'network' and 'sources' must be specified in kwargs"
-            )
-        config = InferenceConfig.from_kwargs(**kwargs)
-    elif kwargs:
-        raise ValueError("Cannot specify both config object and kwargs")
 
-    return InferenceStream.from_config(config)
+    TODO        Blah de blah
+    For example:
+
+            parser = config.create_inference_argparser()
+            args = parser.parse_args()
+            stream = stream.create_inference_stream(
+                config.SystemConfig.from_parsed_args(args),
+                config.InferenceStreamConfig.from_parsed_args(args),
+                config.PipelineConfig.from_parsed_args(args),
+            )
+
+
+    """
+    if logging_config is None:
+        logging_config = config.LoggingConfig()
+    if log_level is not None:
+        logging_config.console_level = log_level
+    logging_utils.configure_logging(logging_config)
+
+    system_config = system_config or config.SystemConfig()
+    system_config.update_from_kwargs(kwargs)
+    system_config.hardware_caps = system_config.hardware_caps.detect_caps()
+    stream_config = stream_config or config.InferenceStreamConfig()
+    stream_config.update_from_kwargs(kwargs)
+    deploy_config = deploy_config or config.DeployConfig()
+    deploy_config.update_from_kwargs(kwargs)
+    default = config.PipelineConfig.from_kwargs(kwargs)
+    if isinstance(pipeline_configs, config.PipelineConfig):
+        # if a single pipeline config is passed, convert it to a list
+        pipeline_configs = [pipeline_configs]
+    pipeline_configs = pipeline_configs or []
+    if default.sources or default.ax_precompiled_gst:
+        # create a pipeline config from kwargs
+        pipeline_configs.append(default)
+        # then reset the defaults for the active fields
+        d = config.PipelineConfig()
+        default = dataclasses.replace(
+            default, sources=d.sources, ax_precompiled_gst=d.ax_precompiled_gst
+        )
+
+    if kwargs:
+        unexp = ', '.join(kwargs.keys())
+        all_valid = (
+            config.SystemConfig.valid_kwargs()
+            | config.InferenceStreamConfig.valid_kwargs()
+            | config.PipelineConfig.valid_kwargs()
+            | config.DeployConfig.valid_kwargs()
+        )
+        valid = ', '.join(f"{k}" for k in all_valid)
+        raise ValueError(f"Unexpected keyword arguments: {unexp}, valid kwargs are {valid}")
+    return InferenceStream(
+        system_config, stream_config, deploy_config, default, pipeline_configs, tracers
+    )

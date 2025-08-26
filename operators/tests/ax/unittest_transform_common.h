@@ -3,7 +3,7 @@
 
 struct FormatParam {
   AxVideoFormat format;
-  int bgra_out;
+  int out_format;
 };
 
 class Transformer : public Plugin

@@ -1,4 +1,6 @@
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
+from __future__ import annotations
+
 import ctypes
 import dataclasses
 import importlib
@@ -8,7 +10,11 @@ import warnings
 import numpy as np
 
 warnings.filterwarnings("ignore", category=ImportWarning, module="importlib")
-from gi.repository import Gst
+
+try:
+    from gi.repository import Gst
+except ModuleNotFoundError as e:
+    pass
 
 from .. import logging_utils
 from .base import AxTaskMeta
@@ -154,7 +160,8 @@ def _decode_single(data, field, dtype):
 def decode_stream_meta(data):
     stream_id = int(_decode_single(data, "stream_id", np.int32))
     ts = int(_decode_single(data, "timestamp", np.uint64)) / 1000000000
-    return stream_id, ts
+    inferences = int(_decode_single(data, "inferences", np.int32))
+    return stream_id, ts, inferences
 
 
 def load_meta_dll(meta_dll: str = "libgstaxstreamer.so"):

@@ -148,6 +148,9 @@ Ax::OpenCV::render(const AxMetaBase &detections, cv::Mat &buffer, const RenderOp
   for (auto &&submeta_name : submeta_names) {
     auto submetas = detections.get_submetas(submeta_name);
     for (auto &&[n, sub] : Ax::Internal::enumerate(submetas)) {
+      if (!sub) {
+        continue;
+      }
       auto roi = bboxes ? bboxes->get_box_xyxy(n) :
                           BboxXyxy{ 0, 0, buffer.cols, buffer.rows };
       cv::Mat subbuffer(

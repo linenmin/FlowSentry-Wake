@@ -147,9 +147,10 @@ class _AipuDeviceManager(DeviceManager):
     def configure_boards_and_tracers(self, nn, tracers):
         core_clocks = self._configure_boards(nn)
         new_tracers = []
+        devices = [d.name for d in self.devices]
         for tracer in tracers:
             try:
-                tracer.initialize_models(nn.model_infos, self.metis, core_clocks)
+                tracer.initialize_models(nn.model_infos, self.metis, core_clocks, devices)
             except Exception as e:
                 LOG.warning(f"{e}, skip trace")
             else:

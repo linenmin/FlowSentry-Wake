@@ -46,17 +46,30 @@ def build_class_sieve(label_filter, labels):
     raise ValueError(f"Type of label filter not supported, must be all int or all str")
 
 
-def insert_color_convert(gst, vaapi, opencl, format, **kwargs):
+def insert_color_convert(gst, format, vaapi=False, opencl=False, opencv=False):
+    if not isinstance(format, str):
+        format = format.name
+    if format.lower() in ['rgb', 'bgr']:
+        color_format = f'{format.upper()}A'
+    else:
+        color_format = f'{format.upper()}8'
     if bool(opencl) is True:
-        gst.axtransform(
-            lib="libtransform_colorconvert.so", options=f'format:{format.lower()}', **kwargs
-        )
+        gst.axtransform(lib="libtransform_colorconvert_cl.so", options=f'format:{format.lower()}')
     elif bool(vaapi) is True:
-        gst.vaapipostproc(format=f'{format.lower()}a')
-        gst.axinplace(**kwargs)
+        # For grayscale, use videoconvert instead of vaapipostproc
+        if format.lower() == 'gray':
+            gst.videoconvert()
+            gst.capsfilter(caps=f'video/x-raw,format={color_format}')
+            gst.axinplace()
+        else:
+            gst.vaapipostproc(format=f'{color_format.lower()}')
+            gst.videoconvert()
+            gst.axinplace()
+    elif bool(opencv) is True:
+        gst.axtransform(lib="libtransform_colorconvert.so", options=f'format:{format.lower()}')
     else:
         gst.videoconvert()
-        gst.capsfilter(caps=f'video/x-raw,format={format.upper()}A', **kwargs)
+        gst.capsfilter(caps=f'video/x-raw,format={color_format}')
 
 
 def inspect_resize_status(context: PipelineContext):

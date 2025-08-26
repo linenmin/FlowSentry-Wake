@@ -250,6 +250,51 @@ class Environment:
         '''Set to 1 to show the current render queue buffer on the display.'''
         return False
 
+    @_var
+    def render_speedometers_on_saved_outputs(self) -> bool:
+        '''When saving output images/videos, whether to include performance metrics (speedometers).
+
+        If set to false, only the visualization elements configured in the render_config will be shown.
+        If set to true, all visualization elements, including performance metrics, will be shown.
+
+        Usage:
+        - Set to disable: export AXELERA_RENDER_SPEEDOMETERS_ON_SAVED_OUTPUTS=0
+        - Default: true (shows all visualization elements)
+
+        Accepts: 1, true, yes (case-insensitive) for true; all other values for false.
+        '''
+        return True
+
+    @_var
+    def render_bbox_class(self) -> bool:
+        '''Whether to show class labels when drawing bounding boxes.
+
+        When enabled, bounding boxes will display the predicted class name (e.g., "duck", "car").
+        When disabled, only the bounding box outline and confidence score (if enabled) are shown.
+
+        Usage:
+        - Set to disable: export AXELERA_RENDER_BBOX_CLASS=0
+        - Default: true (shows class labels)
+
+        Accepts: 1, true, yes (case-insensitive) for true; all other values for false.
+        '''
+        return True
+
+    @_var
+    def render_bbox_score(self) -> bool:
+        '''Whether to show confidence scores when drawing bounding boxes.
+
+        When enabled, bounding boxes will display the confidence score (e.g., "0.85", "0.92").
+        When disabled, only the bounding box outline and class label (if enabled) are shown.
+
+        Usage:
+        - Set to disable: export AXELERA_RENDER_BBOX_SCORE=0
+        - Default: true (shows confidence scores)
+
+        Accepts: 1, true, yes (case-insensitive) for true; all other values for false.
+        '''
+        return True
+
     # this makes the main instance of Environment behave like a module,
     # e.g. config.env.UseDmaBuf.INPUTS
     UseDmaBuf = globals()['UseDmaBuf']
@@ -351,6 +396,25 @@ class Environment:
         Defaults to "gl,3,3" for OpenGL 3.3.
         '''
         return 'gl,3,3'
+
+    @_var
+    def low_latency(self) -> bool:
+        '''Enable optimisations for lower latency.
+
+        Enabling this option causes the application framework and inference to favor low latency
+        over throughput.
+
+        This option::
+
+         * disables double buffering in OpenCL.
+         * disables double buffering in Metis.
+         * disables batch mode in Metis.
+         * disables output DMA buffers.
+         * reduces the size of all queues in the pipeline to 1.
+         * disables all rendering buffering.
+
+        '''
+        return False
 
     def show_help(self) -> str:
         lines = [

@@ -12,6 +12,7 @@
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
+#include "AxMetaBBox.hpp"
 #include "AxMetaClassification.hpp"
 #include "AxStreamerUtils.hpp"
 

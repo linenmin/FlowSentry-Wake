@@ -3,8 +3,6 @@ axelera-model-format: 1.0.0
 name: yolov7-coco-onnx
 
 description: YOLOv7-v0.1 ONNX (COCO)
-# converted from https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7.pt with opset=12
-# !python export.py --weights yolov7.pt --grid
 
 pipeline:
   - detections:
@@ -13,26 +11,28 @@ pipeline:
         type: image
       preprocess:
         - letterbox:
-            width: ${{input_width}}
             height: ${{input_height}}
-            scaleup: True
+            scaleup: true
+            width: ${{input_width}}
         - torch-totensor:
+      inference:
+        handle_all: false
       postprocess:
         - decodeyolo:
-            max_nms_boxes: 30000
-            conf_threshold: 0.25
-            nms_iou_threshold: 0.45
-            nms_class_agnostic: False
-            nms_top_k: 300
             box_format: xywh
-            normalized_coord: False
+            conf_threshold: 0.25
             label_filter: ${{label_filter}}
-            use_multi_label: False
-            eval: # overrides for evaluating accuracy
+            max_nms_boxes: 30000
+            nms_class_agnostic: false
+            nms_iou_threshold: 0.45
+            nms_top_k: 300
+            normalized_coord: false
+            use_multi_label: false
+            eval:
               conf_threshold: 0.001
+              nms_class_agnostic: false
               nms_iou_threshold: 0.65
-              use_multi_label: True
-              nms_class_agnostic: False
+              use_multi_label: true
 
 models:
   yolov7-coco-onnx:
@@ -53,26 +53,15 @@ models:
       YOLO:
         anchors_path: training_yamls/yolov7.yaml
         anchors_url: https://media.axelera.ai/artifacts/model_cards/artifacts/yolo/object_detection/cfgs/yolov7.yaml
-        # from https://github.com/WongKinYiu/yolov7/raw/main/cfg/deploy/yolov7.yaml
         anchors_md5: ff7a2574a06faaeb265ee84b56cb6189
-        #anchors: # or, specified explicitly
-        #- [anchor, anchor, anchor]
-        #- [anchor, anchor, anchor]
-        #- [anchor, anchor, anchor]
-        # strides: [8, 16, 32]  # specify if you are using a special version
 
-datasets: # Python dataloader
+datasets:
   CocoDataset-COCO2017:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     label_type: COCO2017
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
-    # without val, will use the default coco2017 val set
-    # val: /path/to/your/val_custom.json or dir with darknet label txt files
 
 operators:
   decodeyolo:

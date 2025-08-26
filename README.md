@@ -1,7 +1,7 @@
 ![image](/docs/images/Ax_Voyager_SDK_Repo_Banner_1600x457_01.png)
 
 # Voyager SDK repository
-v1.3.3 : [Release notes](/RELEASE_NOTES.md)
+v1.4.0 : [Release notes](/RELEASE_NOTES.md)
 
 - [Voyager SDK repository](#voyager-sdk-repository)
   - [Install SDK and get started](#install-sdk-and-get-started)
@@ -81,10 +81,11 @@ This section provides links to additional documentation available in the Voyager
 |:---------------------------------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | [Advanced deployment tutorials](/ax_models/tutorials/general/tutorials.md) | Advanced deployment options [experimental]                                                                                                                                             |
 | [AxRunmodel manual](/docs/reference/axrunmodel.md)                         | AxRunModel is a tool that can run deployed models on Metis hardware using different features available in the AxRuntime API (such as DMA buffers, double buffering and multiple cores) |
-| [Compiler CLI](/docs/reference/compiler_cli.md)                                                | Compiler Command Line Interface [beta]                                                                                                                                                 |
-| [ONNX operator support](/docs/reference/onnx-opset14-support.md)           | List of ONNX operators supported by the Axelera AI compiler |
-| [Thermal Guide](/docs/reference/thermal_guide.md) | Document detailing the thermal behavior for Metis and instructions to make changes |
-| [SLM/LLM inference tutorial](/docs/tutorials/llm.md)        | Explains how to run Language Models on Metis devices [experimental]                                                                                                      |
+| [Compiler CLI](/docs/reference/compiler_cli.md)                            | Compiler Command Line Interface [beta]                                                                                                                                                 |
+| [Compiler API](/docs/reference/compiler_api.md)                            | Python Compiler API [experimental]                                                                                                                                                     |
+| [ONNX operator support](/docs/reference/onnx-opset17-support.md)           | List of ONNX operators supported by the Axelera AI compiler                                                                                                                            |
+| [Thermal Guide](/docs/reference/thermal_guide.md)                          | Document detailing the thermal behavior for Metis and instructions to make changes                                                                                                     |
+| [SLM/LLM inference tutorial](/docs/tutorials/llm.md)                       | Explains how to run Language Models on Metis devices [experimental]                                                                                                                    |
 
 ## Further support
 

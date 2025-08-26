@@ -43,6 +43,22 @@ class CustomDataAdapter(types.DataAdapter):
         return ClassificationEvaluator()
 
 
+# 4.3: Custom Data Adapter with Calibration Data
+class CustomDataAdapterWithCalData(CustomDataAdapter):
+    def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
+        assert 'cal_data' in kwargs, "cal_data is required in the YAML dataset config"
+        return torch.utils.data.DataLoader(
+            build_dataset(root / kwargs['cal_data'], transform=transform),
+            batch_size=batch_size,
+            shuffle=True,
+            collate_fn=lambda x: x,
+            num_workers=0,
+        )
+
+    def reformat_for_calibration(self, batched_data):
+        return torch.stack([data for data, _ in batched_data], 0)
+
+
 # Tutorial-8: Custom Data Adapter with Custom Evaluator
 def organize_results(top_k, accuracy, top_k_accuracy, class_report=None):
     """

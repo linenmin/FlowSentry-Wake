@@ -9,6 +9,11 @@ preprocess:
   - normalize: # normalize pixels
       mean: [0.485, 0.456, 0.406]
       std: [0.229, 0.224, 0.225]
+inference:
+  handle_preamble: True # S2D on the host
+  handle_transpose: False
+  handle_dequantization_and_depadding: False
+  handle_postamble: False
 postprocess:
   - decodeyolo:
       box_format: xywh # box format of the model output

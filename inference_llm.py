@@ -9,7 +9,7 @@ from llm.cli_ui import display_plain, display_rich_factory
 from llm.conversation import ChatEncoder, stream_response
 from llm.generation_stats import GenerationStats
 from llm.model_instance import AxInstance, TorchInstance
-from llm.ui import build_llm_ui
+from llm.ui import build_llm_ui, build_llm_ui_native
 from rich.console import Console
 
 from axelera.app import config, inf_tracers, logging_utils, schema, utils, yaml_parser
@@ -17,7 +17,7 @@ from axelera.app import config, inf_tracers, logging_utils, schema, utils, yaml_
 LOG = logging_utils.getLogger(__name__)
 
 
-def get_tokenizer_from_url(tokenizer_url, model_name, build_root):
+def get_tokenizer_from_url(tokenizer_url, tokenizer_md5, model_name, build_root):
     """
     Download and extract tokenizer zip from tokenizer_url if not already present.
     Returns the local directory containing the tokenizer files as a string.
@@ -28,16 +28,25 @@ def get_tokenizer_from_url(tokenizer_url, model_name, build_root):
     extracted_flag = local_dir / ".extracted_tokenizer"
     zip_path = local_dir / "tokenizer.zip"
 
-    if not extracted_flag.exists():
+    existing_md5 = None
+    if extracted_flag.exists():
+        with open(extracted_flag, "r") as f:
+            existing_md5 = f.read().strip()
+
+    expected_md5 = tokenizer_md5 or "done"
+
+    if not existing_md5 or existing_md5 != expected_md5:
         LOG.info(f"Downloading and extracting tokenizer from {tokenizer_url} ...")
-        utils.download_and_extract_asset(tokenizer_url, zip_path, md5=None, delete_archive=True)
-        extracted_flag.write_text("done")
+        utils.download_and_extract_asset(
+            tokenizer_url, zip_path, md5=tokenizer_md5, delete_archive=True
+        )
+        extracted_flag.write_text(expected_md5)
 
     return str(local_dir)
 
 
 def load_tokenizer(
-    tokenizer_dir: str, tokenizer_url: str, model_name: str, build_root: Path
+    tokenizer_dir: str, tokenizer_url: str, tokenizer_md5: str, model_name: str, build_root: Path
 ) -> 'AutoTokenizer':
     """Load tokenizer following priority order:
     1. Local tokenizer directory if specified
@@ -67,9 +76,11 @@ def load_tokenizer(
             attempts.append(f"local directory: {tokenizer_dir}")
             input_source = tokenizer_dir
         elif tokenizer_url:
-            LOG.info(f"Attempting to download tokenizer from URL: {tokenizer_url}")
+            LOG.info(f"Attempting to use tokenizer from URL: {tokenizer_url}")
             attempts.append(f"URL: {tokenizer_url}")
-            input_source = get_tokenizer_from_url(tokenizer_url, model_name, build_root)
+            input_source = get_tokenizer_from_url(
+                tokenizer_url, tokenizer_md5, model_name, build_root
+            )
         else:
             LOG.info(f"Attempting to load tokenizer directly from model: {model_name}")
             attempts.append(f"model: {model_name}")
@@ -88,18 +99,10 @@ def load_tokenizer(
 
 def find_available_port(starting_port):
     """Find an available port starting from the specified port."""
-    import socket
-
-    port = starting_port
-    while True:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('', port))
-                return port
-        except OSError:
-            port += 1
-            if port > 65535:
-                raise RuntimeError("No available ports found")
+    for port in range(starting_port, 65536):
+        if is_port_available(port):
+            return port
+    raise RuntimeError("No available ports found")
 
 
 def is_port_available(port):
@@ -136,6 +139,7 @@ def _main(args, tracers):
         if not model_name:
             raise ValueError("No 'model_name' found in extra_kwargs for torch pipeline.")
         tokenizer_url = extra_kwargs.get('tokenizer_url', None)
+        tokenizer_md5 = extra_kwargs.get('tokenizer_md5', '')
 
         system_prompt = args.system_prompt
         if 'Velvet' in model_name and system_prompt is config.GENAI_SYSTEM_PROMPT:
@@ -147,6 +151,7 @@ def _main(args, tracers):
         tokenizer = load_tokenizer(
             tokenizer_dir=args.tokenizer_dir,
             tokenizer_url=tokenizer_url,
+            tokenizer_md5=tokenizer_md5,
             model_name=model_name,
             build_root=args.build_root,
         )
@@ -162,6 +167,7 @@ def _main(args, tracers):
                 yaml=network_yaml,
                 build_root=args.build_root,
                 ddr_requirement_gb=ddr_requirement_gb,
+                device_selector=args.devices,
             )
             embedding_processor = model_instance.embedding_processor
         elif pipeline == 'transformers':
@@ -191,8 +197,6 @@ def _main(args, tracers):
 
         # --- Mode selection: CLI or UI ---
         if args.ui:
-            from llm.ui import build_llm_ui_native
-
             if args.ui in ('local_simple', 'share_simple'):
                 demo = build_llm_ui_native(
                     model_instance,
@@ -202,7 +206,8 @@ def _main(args, tracers):
                     system_prompt,
                     temperature,
                     model_name,
-                    no_history=args.no_history,
+                    end_token_id,
+                    keep_history=args.history,
                     tracers=tracers,
                 )
             else:
@@ -214,7 +219,8 @@ def _main(args, tracers):
                     system_prompt,
                     temperature,
                     model_name,
-                    no_history=args.no_history,
+                    end_token_id,
+                    keep_history=args.history,
                     tracers=tracers,
                 )
             demo.queue()
@@ -275,7 +281,7 @@ def _main(args, tracers):
                     eos_token_id,
                     end_token_id,
                     LOG,
-                    no_history=args.no_history,
+                    keep_history=args.history,
                     tracers=tracers,
                 )
     except Exception:
@@ -337,7 +343,7 @@ def run_chat_loop(
     eos_token_id,
     end_token_id,
     LOG,
-    no_history=False,
+    keep_history=True,
     tracers=None,
 ):
     while True:
@@ -384,8 +390,8 @@ def run_chat_loop(
 
         history.append((user_input, response))
 
-        if no_history:
-            LOG.debug("--no-history flag set, clearing conversation history after response")
+        if not keep_history:
+            LOG.debug("--no-history flag is set, clearing conversation history after response")
             history.clear()
             # Reset history but preserve system prompt to avoid unnecessary reprocessing
             chat_encoder.reset(preserve_system_prompt=True)

@@ -4,6 +4,7 @@
 #include "AxInference.hpp"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
+#include "AxMetaStreamId.hpp"
 #include "AxStreamerUtils.hpp"
 
 #include <atomic>
@@ -321,12 +322,16 @@ class TransformOp : public Ax::Operator
       unsigned int number_of_subframes, Ax::MetaMap &meta_map) override
   {
     (void) video;
-    auto use_double_buffer = Ax::get_env("AXELERA_USE_CL_DOUBLE_BUFFER", "1");
     if (!input) {
       return dbl_buffer.inbuffer ? finish_previous_transform({}, {}, [] {}) : input;
     }
     auto out = set_output_interface(*input, plugin.subplugin_data.get(), logger);
-
+    if (number_of_subframes == 0) {
+      auto output_buffer = out_buf ? out_buf : pool->new_batched_buffer(out, true);
+      auto output = get_shared_view_of_batch_buffer(output_buffer, current_batch);
+      return dbl_buffer.inbuffer ? finish_previous_transform(input, output, [] {}) :
+                                   batch_output(output.underlying());
+    }
     if (plugin.fns.set_output_interface_from_meta) {
       out = plugin.fns.set_output_interface_from_meta(*input,
           plugin.subplugin_data.get(), subframe_index, number_of_subframes,
@@ -375,7 +380,7 @@ class TransformOp : public Ax::Operator
       auto complete = plugin.fns.transform_async(*input, *output,
           plugin.subplugin_data.get(), subframe_index, number_of_subframes,
           meta_map, logger);
-      if (use_double_buffer == "1") {
+      if (Ax::enable_opencl_double_buffering()) {
         return finish_previous_transform(
             input, get_shared_view_of_batch_buffer(output_buffer, 0), complete);
       }
@@ -468,7 +473,7 @@ class InplaceOp : public Ax::Operator
       unsigned int number_of_subframes, Ax::MetaMap &meta_map) override
   {
     (void) video; // not used
-    if (!input) {
+    if (!input || !number_of_subframes) {
       return input;
     }
     plugin.fns.inplace(*input, plugin.subplugin_data.get(), subframe_index,
@@ -836,6 +841,13 @@ AxInferenceNet::inference_thread(const int batch_size)
       last_good_input = frame->op_input;
     }
     auto batched_input = last_good_input.underlying();
+    if (frame->meta_map != nullptr) {
+      auto it = frame->meta_map->find("stream_id");
+      if (it != frame->meta_map->end() && it->second) {
+        auto *stream_id_meta = dynamic_cast<AxMetaStreamId *>(it->second.get());
+        stream_id_meta->inference_count++;
+      }
+    }
     pending_frames.push(std::move(frame));
     if (++current_batch != batched_input->batch_size()) {
       log_latency("inference", current);
@@ -944,15 +956,32 @@ AxInferenceNet::init_frame(Ax::Frame &frame)
   frame.op_input = get_shared_view_of_batch_buffer(input, 0);
 }
 
+static AxMetaBase &
+get_meta(const MetaMap &meta_map, const std::string &key,
+    const std::string &source, const std::string &extra_err = {})
+{
+  auto meta_itr = meta_map.find(key);
+  if (meta_itr == meta_map.end()) {
+    std::string valid_keys;
+    for (const auto &pair : meta_map) {
+      if (!valid_keys.empty()) {
+        valid_keys += ",";
+      }
+      valid_keys += pair.first;
+    }
+    throw std::runtime_error(
+        source + ": " + key + " not found in meta map " + valid_keys + extra_err);
+  }
+  return *meta_itr->second;
+}
+
+
 static size_t
 get_number_of_subframes(const MetaMap &axmetamap, const std::string &meta_to_distribute)
 {
   if (!meta_to_distribute.empty()) {
-    auto meta = axmetamap.find(meta_to_distribute);
-    if (meta == axmetamap.end()) {
-      throw std::runtime_error("Meta " + meta_to_distribute + " not found, cannot distribute");
-    }
-    return meta->second->get_number_of_subframes();
+    auto &meta = get_meta(axmetamap, meta_to_distribute, "filter", ", cannot distribute");
+    return meta.get_number_of_subframes();
   }
   return 1;
 }

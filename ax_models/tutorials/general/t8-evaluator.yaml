@@ -5,7 +5,7 @@ name: t8-evaluator
 description: Tutorial-8 - An example demonstrating how to build your own types.Evaluator and wrap the results into types.EvalResult
 
 pipeline:
-  - classifier:
+  - classifications:
       model_name: model1
       input:
           type: image

@@ -12,7 +12,7 @@ operators:
 
 # Define a pipeline without preprocess section
 pipeline:
-  - classifier:            # Name of the vision classification task
+  - classifications:            # Name of the vision classification task
       model_name: model1   # References model defined in models section
       input:
           type: image

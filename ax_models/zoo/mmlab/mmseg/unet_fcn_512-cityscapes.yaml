@@ -5,26 +5,30 @@ name: unet_fcn_512-cityscapes
 description: U-Net FCN from MMSegmentation with 512x512 input size
 
 pipeline:
-  - unet_fcn_512-cityscapes:
+  - segmentations:
+      model_name: unet_fcn_512-cityscapes
       input:
         type: image
         color_format: RGB
       preprocess:
         - resize:
-            width: 512     # {{model_width}}
-            height: 512     # {{model_height}}
+            height: 512
+            width: 512
         - torch-totensor:
-            scale: False
+            scale: false
         - normalize:
             mean: 123.675, 116.28, 103.53
             std: 58.395, 57.12, 57.375
+      inference:
+        handle_transpose: false
+        handle_postamble: false
       postprocess:
         - semantic-segmentation:
-            width: 512     # {{model_width}}
-            height: 512     # {{model_height}}
+            height: 512
+            width: 512
             eval:
-              width: 2048
               height: 1024
+              width: 2048
 
 models:
   unet_fcn_512-cityscapes:
@@ -45,18 +49,10 @@ models:
 
 datasets:
   Cityscapes:
-    class: MMSegDataAdapter # CityscapesDataset
+    class: MMSegDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/mmseg.py
-    data_dir_name: cityscapes # CityscapesDataset
-    # if repr_imgs is not specified, use val dataset for calibration
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
+    data_dir_name: cityscapes
 
 model-env:
-  dependencies:
-    - mmcv==2.1.0 --no-cache-dir
-    - mmsegmentation>=1.2.2
-    - ftfy==6.2.0
-    - cityscapesscripts
-    - regex
+  dependencies: ['mmcv==2.1.0 --no-cache-dir -f https://download.openmmlab.com/mmcv/dist/cpu/torch1.13/index.html',
+    mmsegmentation>=1.2.2, ftfy==6.2.0, cityscapesscripts, regex]

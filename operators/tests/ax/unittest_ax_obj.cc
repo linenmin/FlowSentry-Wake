@@ -24,7 +24,7 @@ TEST(AxMetaObjDetection, meta_with_a_single_box_has_one_subframe)
   auto classes = std::vector<int>{};
   auto meta = AxMetaObjDetection(boxes, scores, classes);
   EXPECT_EQ(meta.num_elements(), 1);
-  EXPECT_EQ(meta.is_multi_class(), false);
+  EXPECT_EQ(meta.has_class_id(), false);
   EXPECT_FLOAT_EQ(meta.score(0), 0.6);
   EXPECT_EQ(meta.class_id(0), -1);
   auto actual_box = meta.get_box_xyxy(0);
@@ -93,7 +93,7 @@ TEST(AxMetaObjDetection, meta_with_a_multiple_box_requisite_subframes)
   auto classes = std::vector<int>{ 7, 9, 3 };
   auto meta = AxMetaObjDetection(boxes, scores, classes);
   EXPECT_EQ(meta.num_elements(), 3);
-  EXPECT_EQ(meta.is_multi_class(), true);
+  EXPECT_EQ(meta.has_class_id(), true);
   EXPECT_FLOAT_EQ(meta.score(1), 0.7);
   EXPECT_EQ(meta.class_id(1), 9);
   auto actual_box = meta.get_box_xyxy(2);
@@ -110,8 +110,8 @@ TEST(AxMetaObjDetection, meta_with_a_multiple_box_requisite_subframes_checked)
   auto classes = std::vector<int>{ 7, 9, 3 };
   auto meta = AxMetaObjDetection(boxes, scores, classes);
   EXPECT_EQ(meta.num_elements(), 3);
-  EXPECT_EQ(meta.is_multi_class(), true);
-  EXPECT_FLOAT_EQ(meta.score_at(1), 0.7);
+  EXPECT_EQ(meta.has_class_id(), true);
+  EXPECT_FLOAT_EQ(meta.score(1), 0.7);
   EXPECT_EQ(meta.class_id_at(1), 9);
   auto actual_box = meta.get_box_xyxy_at(2);
   auto expected_box = box_xyxy{ 30, 30, 50, 50 };

@@ -1,14 +1,14 @@
 // Copyright Axelera AI, 2025
 #pragma once
 
-#include "AxMetaBBox.hpp"
+#include <opencv2/opencv.hpp>
 
+#include <AxMeta.hpp>
+#include "AxUtils.hpp"
 
 class AxMetaClassification : public AxMetaBase
 {
   public:
-  static inline const auto red = cv::Scalar(255, 0, 0);
-
   using scores_vec = std::vector<std::vector<float>>;
   using classes_vec = std::vector<std::vector<int32_t>>;
   using labels_vec = std::vector<std::vector<std::string>>;
@@ -26,6 +26,7 @@ class AxMetaClassification : public AxMetaBase
   void draw(const AxVideoInterface &video,
       const std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map) override
   {
+    static const auto red = cv::Scalar(255, 0, 0);
     if (video.info.format != AxVideoFormat::RGB && video.info.format != AxVideoFormat::RGBA) {
       throw std::runtime_error("Labels can only be drawn on RGB or RGBA");
     }
@@ -112,11 +113,10 @@ class AxMetaEmbeddings : public AxMetaBase
   std::vector<extern_meta> get_extern_meta() const override
   {
     std::vector<extern_meta> result;
-    int num_embeddings = embeddings_.size();
+    num_embeddings_ = embeddings_.size();
 
-    if (embeddings_.empty()) {
-      total_size = 0;
-    } else {
+    size_t total_size = 0;
+    if (!embeddings_.empty()) {
       total_size = embeddings_.size() * embeddings_[0].size() * 4;
     }
 
@@ -133,8 +133,10 @@ class AxMetaEmbeddings : public AxMetaBase
 
     result.push_back({ embeddings_meta, "data", static_cast<int>(total_size),
         reinterpret_cast<const char *>(buffer.data()) });
-    result.push_back({ embeddings_meta, "size", static_cast<int>(sizeof(size_t)),
-        reinterpret_cast<const char *>(&total_size) });
+    result.push_back({ embeddings_meta, "num_of_embeddings", int(sizeof(num_embeddings_)),
+        reinterpret_cast<const char *>(&num_embeddings_) });
+
+
     return result;
   }
 
@@ -149,8 +151,8 @@ class AxMetaEmbeddings : public AxMetaBase
   }
 
   private:
-  mutable size_t total_size;
   mutable std::vector<std::byte> buffer;
   embeddings_vec embeddings_;
   std::string decoder_name;
+  mutable int num_embeddings_;
 };

@@ -12,9 +12,6 @@
 #include <unordered_set>
 
 struct nms_properties {
-#ifdef OPENCL
-  std::unique_ptr<CLNms> nms;
-#endif
   std::string meta_key;
   std::string master_meta{};
   int max_boxes{ 10000 };
@@ -24,12 +21,6 @@ struct nms_properties {
   bool flatten{ false };
   bool merge{ false };
 };
-
-bool
-is_valid_location(std::string_view location)
-{
-  return location == "GPU" || location == "CPU";
-}
 
 extern "C" const std::unordered_set<std::string> &
 allowed_properties()
@@ -64,18 +55,15 @@ init_and_set_static_properties(
   prop->flatten = Ax::get_property(
       input, "flatten_meta", "nms_static_properties", prop->flatten);
   prop->merge = Ax::get_property(input, "merge", "nms_static_properties", prop->merge);
-  if (!is_valid_location(prop->location)) {
+
+  if (prop->location == "GPU") {
+    logger(AX_WARN) << "OpenCL implementation of NMS is not available on this platform, running on CPU."
+                    << std::endl;
+  } else if (prop->location != "CPU") {
     logger(AX_WARN)
         << prop->location << " is not a valid location. Using CPU." << std::endl;
   }
-#ifdef OPENCL
-  prop->nms = std::make_unique<CLNms>();
-#else
-  if (prop->location == "GPU") {
-    logger(AX_WARN)
-        << "OpenCL not available on this platform, running on CPU." << std::endl;
-  }
-#endif
+  prop->location = "CPU";
   return prop;
 }
 
@@ -91,12 +79,6 @@ template <typename T>
 void
 run_on_cpu_or_gpu(T &meta, const nms_properties *details, Ax::Logger &logger)
 {
-  if (details->location == "GPU") {
-#ifdef OPENCL
-    meta = details->nms->run(meta, details->nms_threshold, details->class_agnostic);
-    return;
-#endif
-  }
   meta = non_max_suppression(meta, details->nms_threshold,
       details->class_agnostic, details->max_boxes, details->flatten);
 }

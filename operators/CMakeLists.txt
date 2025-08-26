@@ -20,6 +20,9 @@ add_compile_options(
     $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-declarations>
     $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-anon-enum-enum-conversion>
     $<$<COMPILE_LANGUAGE:CXX>:-Wno-return-type-c-linkage>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-pessimizing-move>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-maybe-uninitialized>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-error=class-memaccess>
 )
 # add_compile_options(-fsanitize=address,undefined)
 # add_link_options(-fsanitize=address,undefined)
@@ -103,6 +106,7 @@ endfunction()
 
 create_shared_library(trackerfilter_numsubtaskruns src/AxTrackerFilterNumSubtaskRuns.cpp)
 create_shared_library(trackerattribute_bestscore src/AxTrackerAttributeBestScore.cpp)
+create_shared_library(trackerattribute_mostfrequent src/AxTrackerAttributeMostFrequent.cpp)
 create_shared_library(decode_classification src/AxDecodeClassification.cpp)
 create_shared_library(decode_faceboxes src/AxDecodeFaceBoxes.cpp)
 create_shared_library(decode_facerec src/AxDecodeFaceRec.cpp)
@@ -117,6 +121,7 @@ create_shared_library(decode_to_raw_tensor src/AxDecodeToRawTensor.cpp)
 create_shared_library(decode_yolo "src/AxDecodeYolo.cpp;src/AxOnnxRuntimeHelper.cpp")
 create_shared_library(decode_yolov5 src/AxDecodeYolo5.cpp)
 create_shared_library(decode_yolov8 src/AxDecodeYolo8.cpp)
+create_shared_library(decode_yolov10_simple src/AxDecodeYolo10Simple.cpp)
 create_shared_library(decode_yolov8seg src/AxDecodeYolo8Seg.cpp)
 create_shared_library(decode_yolox src/AxDecodeYoloX.cpp)
 create_shared_library(inplace_addstreamid src/AxInPlaceAddStreamId.cpp)
@@ -126,6 +131,7 @@ create_shared_library(inplace_filterdetections src/AxInPlaceFilterDetections.cpp
 create_shared_library(inplace_hidemeta src/AxInPlaceHideMeta.cpp)
 create_shared_library(inplace_nms src/AxInPlaceNms.cpp)
 create_shared_library(transform_centrecropextra src/AxTransformCentreCropExtra.cpp)
+create_shared_library(transform_colorconvert src/AxTransformColorConvert.cpp)
 create_shared_library(transform_contrastnormalize src/AxTransformContrastNormalize.cpp)
 create_shared_library(transform_cropresize src/AxTransformCropResize.cpp)
 create_shared_library(transform_dequantize src/AxTransformDequantize.cpp)
@@ -139,9 +145,10 @@ create_shared_library(transform_postamble "src/AxTransformPostamble.cpp;src/AxOn
 create_shared_library(transform_yolopreproc src/AxTransformYoloPreProc.cpp)
 create_shared_library(decode_multihead src/AxDecodeMultihead.cc)
 create_shared_library(decode_embeddings src/AxDecodeEmbeddings.cc)
+create_shared_library(decode_facenet src/AxDecodeFacenet.cc)
 if (OpenCL_FOUND)
     create_shared_library(transform_barrelcorrect_cl src/AxTransformBarrelCorrectCl.cpp)
-    create_shared_library(transform_colorconvert src/AxTransformColorConvert.cpp)
+    create_shared_library(transform_colorconvert_cl src/AxTransformColorConvertCl.cpp)
     create_shared_library(transform_normalize_cl src/AxTransformNormalizeCl.cpp)
     create_shared_library(transform_perspective_cl src/AxTransformPerspectiveCl.cpp)
     create_shared_library(transform_resize_cl src/AxTransformResizeCl.cpp)
@@ -233,6 +240,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
     # For now the unit tests are gstreamer dependendent. Its not strictly necessary
     # and we should add non-gstreamer tests in the future.
     find_package(OpenCV 4 REQUIRED)
+    find_package(Eigen3 3.3 REQUIRED NO_MODULE)
     include_directories(
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src
@@ -242,7 +250,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
 
     if (OpenCL_FOUND)
     set(OPENCL_TEST_FILES
-        tests/ax/unittest_transform_colorconvert.cc
+        tests/ax/unittest_transform_colorconvert_cl.cc
         tests/ax/unittest_transform_normalize_cl.cc
         tests/ax/unittest_transform_barrelcorrect_cl.cc
         tests/ax/unittest_transform_perspective_cl.cc
@@ -253,6 +261,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
     endif()
 
     add_executable(unittest_ax
+        tests/ax/unittest_ax_filterdetections.cc
         tests/ax/unittest_ax_meta.cc
         tests/ax/unittest_ax_nms.cc
         tests/ax/unittest_ax_obj.cc
@@ -266,19 +275,24 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
         tests/ax/unittest_decode_yolo.cc
         tests/ax/unittest_decode_yolov5.cc
         tests/ax/unittest_decode_yolov8.cc
+        tests/ax/unittest_decode_yolo10simple.cc
         tests/ax/unittest_decode_yolox.cc
         tests/ax/unittest_decode_yolov8seg.cc
         tests/ax/unittest_decode_image.cc
         tests/ax/unittest_decode_to_raw_tensor.cc
         tests/ax/unittest_decode_ctc.cc
+        tests/ax/unittest_decode_facenet.cc
         tests/ax/unittest_inplace_normalize.cc
         tests/ax/unittest_inplace_addtiles.cc
         tests/ax/unittest_transform_centrecropextra.cc
+        tests/ax/unittest_transform_colorconvert.cc
         tests/ax/unittest_transform_dequantize.cc
         tests/ax/unittest_transform_padding.cc
         tests/ax/unittest_transform_paddingdequantize.cc
+        tests/ax/unittest_transform_postamble.cc
         tests/ax/unittest_transform_resize.cc
         tests/ax/unittest_transform_resizeratiocropexcess.cc
+        tests/ax/unittest_transform_facealign.cc
         tests/ax/unittest_utils.cc
         ${OPENCL_TEST_FILES}
     )
@@ -286,6 +300,8 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
     target_include_directories(unittest_ax
         PRIVATE
         ${GMODULE_INCLUDE_DIRS}
+        ${EIGEN3_INCLUDE_DIRS}
+        ${nlohmann_json_INCLUDE_DIRS}
         ${GST_INCLUDE_DIRS}
         ${CMAKE_SOURCE_DIR}/onnxruntime/onnxruntime/include
     )
@@ -323,8 +339,30 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
         COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/RunUnitTests.touch
         DEPENDS unittest_ax ${shared_libs}
     )
+
+    # Create assets directory in build directory
+    file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/assets)
+
+    # Copy ONNX file to assets directory
+    configure_file(
+        ${CMAKE_SOURCE_DIR}/tests/ax/assets/add_one.onnx
+        ${CMAKE_BINARY_DIR}/assets/add_one.onnx
+        COPYONLY
+    )
+
+    configure_file(
+        ${CMAKE_SOURCE_DIR}/tests/ax/assets/add_tensors.onnx
+        ${CMAKE_BINARY_DIR}/assets/add_tensors.onnx
+        COPYONLY
+    )
+
+    # Make sure the test has access to the ONNX file
+    target_compile_definitions(unittest_ax PRIVATE
+        TEST_ASSETS_DIR="${CMAKE_BINARY_DIR}/assets"
+    )
+
 else()
-    if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOUND)
+    if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND)
         message(WARNING "Unit tests will not be run. Please install libgtest-dev and libgmock-dev to enable unit tests.")
     else()
         message(WARNING "Unit tests will not be run. Currently they require gstreamer to be installed. Please install libgstreamer1.0-dev to enable unit tests.")

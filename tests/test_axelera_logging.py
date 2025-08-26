@@ -10,7 +10,7 @@ import unittest.mock
 
 import pytest
 
-from axelera.app import logging_utils
+from axelera.app import config, logging_utils
 from axelera.app.logging_utils import TRACE
 
 IT = logging_utils._ITALIC
@@ -120,32 +120,33 @@ def test_exit_with_error_log_exc_msg():
 @pytest.mark.parametrize(
     "cmdline, expected",
     [
-        ("-qq", (ERROR, logging.NOTSET, "", False)),
-        ("-q", (WARNING, logging.NOTSET, "", False)),
-        ("", (INFO, logging.NOTSET, "", False)),
-        ("--logtimestamp", (INFO, logging.NOTSET, "", True)),
-        ("-v", (DEBUG, logging.NOTSET, "", False)),
-        ("-vv", (TRACE, logging.NOTSET, "", False)),
-        ("-vvv", (TRACE, logging.NOTSET, "", False)),
-        ("-qq --logfile=x", (ERROR, ERROR, "x", False)),
-        ("-q --logfile=x", (WARNING, WARNING, "x", False)),
-        ("--logfile=x", (INFO, INFO, "x", False)),
-        ("-v --logfile=x", (DEBUG, DEBUG, "x", False)),
-        ("-vv --logfile=x", (TRACE, TRACE, "x", False)),
-        ("-vvv --logfile=x", (TRACE, TRACE, "x", False)),
-        ("-qq --logfile=x --loglevel=debug", (ERROR, DEBUG, "x", False)),
-        ("-q --logfile=x --loglevel=debug", (WARNING, DEBUG, "x", False)),
-        ("--logfile=x --loglevel=debug", (INFO, DEBUG, "x", False)),
-        ("-v --logfile=x --loglevel=info", (DEBUG, INFO, "x", False)),
-        ("-vv --logfile=x --loglevel=info", (TRACE, INFO, "x", False)),
-        ("-vvv --logfile=x --loglevel=error", (TRACE, ERROR, "x", False)),
+        ("-qq", (ERROR, logging.NOTSET, "", False, ERROR)),
+        ("-q", (WARNING, logging.NOTSET, "", False, ERROR)),
+        ("", (INFO, logging.NOTSET, "", False, WARNING)),
+        ("--logtimestamp", (INFO, logging.NOTSET, "", True, WARNING)),
+        ("-v", (DEBUG, logging.NOTSET, "", False, INFO)),
+        ("-vv", (TRACE, logging.NOTSET, "", False, DEBUG)),
+        ("-vvv", (TRACE, logging.NOTSET, "", False, TRACE)),
+        ("-qq --logfile=x", (ERROR, ERROR, "x", False, ERROR)),
+        ("-q --logfile=x", (WARNING, WARNING, "x", False, ERROR)),
+        ("--logfile=x", (INFO, INFO, "x", False, WARNING)),
+        ("-v --logfile=x", (DEBUG, DEBUG, "x", False, INFO)),
+        ("-vv --logfile=x", (TRACE, TRACE, "x", False, DEBUG)),
+        ("-vvv --logfile=x", (TRACE, TRACE, "x", False, TRACE)),
+        ("-qq --logfile=x --loglevel=debug", (ERROR, DEBUG, "x", False, ERROR)),
+        ("-q --logfile=x --loglevel=debug", (WARNING, DEBUG, "x", False, ERROR)),
+        ("--logfile=x --loglevel=debug", (INFO, DEBUG, "x", False, WARNING)),
+        ("-v --logfile=x --loglevel=info", (DEBUG, INFO, "x", False, INFO)),
+        ("-vv --logfile=x --loglevel=info", (TRACE, INFO, "x", False, DEBUG)),
+        ("-vvv --logfile=x --loglevel=error", (TRACE, ERROR, "x", False, TRACE)),
     ],
 )
 def test_get_config_from_args(cmdline, expected):
     parser = argparse.ArgumentParser()
     logging_utils.add_logging_args(parser)
     args = parser.parse_args(shlex.split(cmdline))
-    assert logging_utils.Config(*expected) == logging_utils.get_config_from_args(args)
+    expected = expected[:-1] + (False,) + expected[-1:]  # add brief, not tested here
+    assert config.LoggingConfig(*expected) == logging_utils.get_config_from_args(args)
 
 
 def test_get_config_from_args_with_invalid_loglevel():
@@ -176,7 +177,7 @@ def emit_messages(
     with unittest.mock.patch.object(logging.time, "time") as mock_time:
         mock_time.return_value = MOCK_NOW
         logging_utils.configure_logging(
-            logging_utils.Config(console_level, file_level, logfile, timestamp)
+            config.LoggingConfig(console_level, file_level, logfile, timestamp)
         )
         log = logging_utils.getLogger("test_axelera_logging")
         log.trace("This is a trace message")
@@ -315,7 +316,7 @@ def test_multiline_log_with_ansi(tmp_path, capsys):
     try:
         with unittest.mock.patch.object(logging_utils.sys.stdout, "isatty") as mock_isatty:
             mock_isatty.return_value = True
-            logging_utils.configure_logging(logging_utils.Config(WARNING, WARNING, logfile))
+            logging_utils.configure_logging(config.LoggingConfig(WARNING, WARNING, logfile))
             log = logging_utils.getLogger("test_axelera_logging")
             log.warning("This is a multi\nline message\nand a third line")
         out, _ = capsys.readouterr()

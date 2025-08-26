@@ -1,8 +1,6 @@
 # Copyright Axelera AI, 2025
 from __future__ import annotations
 
-import re
-
 from . import config
 
 
@@ -16,10 +14,16 @@ def element(f):
 
 
 class _OldBuilder(list):
-    def __init__(self, hw_config=None, tile=0, default_queue_max_size_buffers=16):
+    def __init__(
+        self,
+        hw_config=None,
+        tiling: config.TilingConfig | None = None,
+        default_queue_max_size_buffers=16,
+    ):
         self.hw_config = hw_config
         self.default_queue_max_size_buffers = default_queue_max_size_buffers
-        self.tile = tile
+        self.tiling = tiling or config.TilingConfig()
+        self.images = None
 
     def getconfig(self):
         return self.hw_config
@@ -242,15 +246,17 @@ class _OldBuilder(list):
 
 
 class Builder(_OldBuilder):
-    def __init__(self, hw_config=None, tile=0, default_queue_max_size_buffers=4):
-        super().__init__(
-            hw_config=hw_config, default_queue_max_size_buffers=default_queue_max_size_buffers
-        )
+    def __init__(
+        self,
+        hw_config,
+        tiling: config.TilingConfig | None,
+        default_queue_max_size_buffers,
+    ):
+        super().__init__(hw_config, tiling, default_queue_max_size_buffers)
         self.axinf_preops = []
         self.axinf_props = {}
         self.axinf_postops = []
         self.where = None
-        self.tile = tile
         self.building_axinference = False
 
     def start_axinference(self, props={}) -> None:

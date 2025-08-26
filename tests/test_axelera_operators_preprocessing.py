@@ -34,7 +34,7 @@ def _gen_gst(op, stream_idx=''):
     # note we use the old builder so we can test the gst output, the new builder
     # consumes the gst output in readiness for an axinferencenet. A forthcoming
     # PR will tidy this up  by having explicit begin/end axinferencenet
-    gst = gst_builder._OldBuilder()
+    gst = gst_builder._OldBuilder(None, None, 16)
     op.build_gst(gst, stream_idx)
     return list(gst)
 
@@ -725,6 +725,7 @@ def test_preprocess_operators_input_output_type(camera_matrix):
         },
         operators.Perspective: {
             'camera_matrix': camera_matrix,
+            'out_format': '3',
         },
         operators.ConvertColorInput: {
             'format': 'rgb',

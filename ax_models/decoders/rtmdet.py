@@ -34,9 +34,20 @@ class DecodeRTMDet(AxOperator):
     nms_top_k: int = 300
     # num_classes: int = 80
 
+    @classmethod
+    def handles_dequantization_and_depadding(cls):
+        return True
+
+    @classmethod
+    def handles_transpose(cls):
+        return True
+
+    @classmethod
+    def handles_postamble(cls):
+        return True
+
     def _post_init(self):
         super()._post_init()
-        self.cpp_decoder_does_all = True
 
     def configure_model_and_context_info(
         self,

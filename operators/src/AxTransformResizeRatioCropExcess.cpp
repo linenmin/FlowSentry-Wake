@@ -54,8 +54,9 @@ set_output_interface(const AxDataInterface &interface,
 
   AxDataInterface output = interface;
   auto &info = std::get<AxVideoInterface>(output).info;
-  if (info.format != AxVideoFormat::RGBA && info.format != AxVideoFormat::BGRA) {
-    throw std::runtime_error("resizeratiocropexcess expects RGBA/BGRA but got "
+  if (info.format != AxVideoFormat::RGBA && info.format != AxVideoFormat::BGRA
+      && info.format != AxVideoFormat::GRAY8) {
+    throw std::runtime_error("resizeratiocropexcess expects RGBA/BGRA/GRAY8 but got "
                              + AxVideoFormatToString(info.format));
   }
 
@@ -85,11 +86,11 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
       Ax::opencv_type_u8(output_video.info.format), output_video.data,
       output_video.info.stride);
 
-  if ((input_video.info.format != AxVideoFormat::RGBA
-          && input_video.info.format != AxVideoFormat::BGRA)
+  if ((input_video.info.format != AxVideoFormat::RGBA && input_video.info.format != AxVideoFormat::BGRA
+          && input_video.info.format != AxVideoFormat::GRAY8)
       || (input_video.info.format != output_video.info.format)) {
     throw std::runtime_error(
-        "resizeratiocropexcess expects and provides RGBA/BGRA only but got "
+        "resizeratiocropexcess expects and provides RGBA/BGRA/GRAY8 only but got "
         + AxVideoFormatToString(input_video.info.format) + " input and "
         + AxVideoFormatToString(output_video.info.format) + " output");
   }

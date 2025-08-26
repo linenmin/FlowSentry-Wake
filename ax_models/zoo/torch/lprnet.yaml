@@ -1,5 +1,3 @@
-# Copyright Axelera AI, 2025
-
 axelera-model-format: 1.0.0
 
 name: lprnet
@@ -14,11 +12,11 @@ pipeline:
         color_format: RGB
       preprocess:
         - resize:
-            width: ${{input_width}}
             height: ${{input_height}}
+            width: ${{input_width}}
         - torch-totensor:
-            scale: False
-        - normalize:     # orgininal impl: (p - 127.5) * 0.0078125
+            scale: false
+        - normalize:
             mean: 127.5
             std: 128
       postprocess:
@@ -38,7 +36,7 @@ models:
     num_classes: 68
     dataset: LPRNetDataset
     extra_kwargs:
-      trimmed_labels: False
+      trimmed_labels: false
       LPRNet:
         lpr_max_len: 8
 
@@ -48,6 +46,3 @@ datasets:
     class_path: $AXELERA_FRAMEWORK/ax_datasets/license_plate_recog.py
     data_dir_name: license_plate_recog
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/lprnet-char.yaml
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa

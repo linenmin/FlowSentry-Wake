@@ -291,6 +291,17 @@ def find_values_in_dict(key, dictionary):
     return values
 
 
+def list_images_recursive(directory):
+    """Recursively search for images in a directory and its subdirectories"""
+    image_files = [
+        file_path
+        for file_path in directory.rglob('*')
+        if file_path.is_file() and file_path.suffix.lower() in IMAGE_EXTENSIONS
+    ]
+
+    return sorted(image_files)
+
+
 def _check_tar_gz(path: Path):
     return path.suffix == '.gz' and path.stem.endswith('.tar')
 
@@ -348,7 +359,9 @@ def download(url: str, path: Path, checksum=""):
                     progress.update(len(chunk))
             progress.close()
     if checksum and not md5_validates(path, checksum):
-        raise RuntimeError(f"Downloaded file {path} failed CRC check")
+        raise RuntimeError(
+            f"Downloaded file {path} failed CRC check; expected {checksum}, got {generate_md5(path)}"
+        )
     return True
 
 

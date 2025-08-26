@@ -4,29 +4,31 @@ name: yolov8lpose-coco
 
 description: yolov8l pose estimation ultralytics v8.1.0, 640x640 (COCO), native PyTorch
   model
-# converted from https://github.com/ultralytics/ultralytics
 
 pipeline:
-  - yolov8lpose-coco:
+  - keypoint_detections:
+      model_name: yolov8lpose-coco
       input:
         type: image
       preprocess:
         - letterbox:
-            width: ${{input_width}}
             height: ${{input_height}}
-            scaleup: True
+            scaleup: true
+            width: ${{input_width}}
         - torch-totensor:
+      inference:
+        handle_all: false
       postprocess:
         - decodeyolopose:
-            max_nms_boxes: 30000
+            box_format: xywh
             conf_threshold: 0.25
+            max_nms_boxes: 30000
             nms_iou_threshold: 0.45
             nms_top_k: 300
+            normalized_coord: false
             eval:
               conf_threshold: 0.001
               nms_iou_threshold: 0.65
-            box_format: xywh
-            normalized_coord: False
 
 models:
   yolov8lpose-coco:
@@ -45,24 +47,15 @@ models:
       m2:
         mvm_limitation: 57
 
-datasets: # Python dataloader
+datasets:
   CocoDataset-keypoint-COCO2017:
     class: KptDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     label_type: COCO2017
-    # TODO: study which representative images are the best
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
-    # without val, will use the default coco2017 val set
-    # val_data: dir with yolo label txt files or annotations/person_keypoints_val2017.json
-    # if using COCO json format, please specify cal_img_dir / val_img_dir
-    # val_img_dir_name: images/val2017
 
 model-env:
-  dependencies:
-    - ultralytics
+  dependencies: [ultralytics]
 
 operators:
   decodeyolopose:

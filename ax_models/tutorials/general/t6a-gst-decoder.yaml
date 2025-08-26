@@ -5,7 +5,7 @@ name: t6a-gst-decoder
 description: ONNX Tutorial-6a - A simplified example demonstrating how to build your own GStreamer plugin and integrate it into your AxOperator for building an end-to-end pipeline.
 
 pipeline:
-  - classifier:
+  - classifications:
       model_name: model1
       input:
           type: image

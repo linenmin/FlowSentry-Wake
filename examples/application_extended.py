@@ -25,19 +25,46 @@ stream = create_inference_stream(
     tracers=tracers,
     specified_frame_rate=10,
     # rtsp_latency=500,
+    render_config=config.RenderConfig(
+        detections=config.TaskRenderConfig(
+            show_annotations=False,
+            show_labels=False,
+        ),
+    ),
 )
+
+
+def toggle_task_render_config(stream, start_time, interval=30, show_time=5):
+    """Dynamically toggle render settings for demo/testing
+    Toggle render settings every 'interval' seconds, showing labels for 'show_time' seconds.
+    """
+    now = time.time()
+    elapsed = now - start_time
+    if (elapsed % interval) < show_time:
+        stream.manager.detections.set_render(
+            show_annotations=False,
+            show_labels=True,
+        )
+        print(f"Render settings toggled: detection labels shown for {show_time}s")
+    else:
+        stream.manager.detections.set_render(
+            show_annotations=False,
+            show_labels=False,
+        )
 
 
 def main(window, stream):
     window.options(0, title="Traffic 1")
     window.options(1, title="Traffic 2")
     counter = window.text(
-        ('20px', '10%'),
+        '20px, 10%',
         "Vehicles: 00",
     )
     last_temp_report = time.time()
     CLASS = stream.manager.detections.classes
+    render_toggle_start = time.time()
     for frame_result in stream:
+        toggle_task_render_config(stream, render_toggle_start)
         window.show(frame_result.image, frame_result.meta, frame_result.stream_id)
         core_temp = stream.get_all_metrics()['core_temp']
         end_to_end_fps = stream.get_all_metrics()['end_to_end_fps']

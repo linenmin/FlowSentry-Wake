@@ -658,6 +658,7 @@ def test_get_backend_opengl_version_error(version):
 
 
 def test_is_opengl_available_import_error():
+    utils.is_opengl_available.cache_clear()
     with patch.object(builtins, '__import__') as m:
         m.side_effect = ImportError('spam')
         assert not utils.is_opengl_available("gl,3,3")

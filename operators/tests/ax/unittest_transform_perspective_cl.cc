@@ -29,8 +29,8 @@ class ColorFormatFixture : public ::testing::TestWithParam<FormatParam>
 
 INSTANTIATE_TEST_SUITE_P(PerspectiveTestSuite, ColorFormatFixture,
     ::testing::Values(
-        FormatParam{ AxVideoFormat::RGB, 1 }//, FormatParam{ AxVideoFormat::BGR, 1 }
-        /*FormatParam{ AxVideoFormat::BGR, 0 }, FormatParam{ AxVideoFormat::NV12, 0 },
+        FormatParam{ AxVideoFormat::RGB, 3 }, FormatParam{ AxVideoFormat::BGR, 4 },
+        FormatParam{ AxVideoFormat::RGB, 5 }, FormatParam{ AxVideoFormat::GRAY8, 5 }/*,
         FormatParam{ AxVideoFormat::I420, 0 }, FormatParam{ AxVideoFormat::YUY2, 0 }*/ ));
 
 TEST_P(ColorFormatFixture, color_fusing_test)
@@ -41,13 +41,15 @@ TEST_P(ColorFormatFixture, color_fusing_test)
   }
   std::unordered_map<std::string, std::string> input = {
     { "matrix", "1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0" },
-    { "bgra_out", std::to_string(format.bgra_out) },
+    { "out_format", std::to_string(format.out_format) },
   };
 
   Transformer perspective("libtransform_perspective_cl.so", input);
 
-  std::vector<int8_t> in_buf(1920 * 1080 * 3, 0);
-  std::vector<int8_t> out_buf(1920 * 1080 * 3, 0);
+  auto out_bbp = (format.out_format == 5) ? 1 : 3;
+  auto in_bbp = (format.format == AxVideoFormat::GRAY8) ? 1 : 3;
+  std::vector<int8_t> in_buf(1920 * 1080 * in_bbp, 0);
+  std::vector<int8_t> out_buf(1920 * 1080 * out_bbp, 0);
   std::iota(in_buf.begin(), in_buf.end(), 1);
 
   std::vector<size_t> strides;
@@ -64,6 +66,9 @@ TEST_P(ColorFormatFixture, color_fusing_test)
   } else if (format.format == AxVideoFormat::RGB || format.format == AxVideoFormat::BGR) {
     strides = { 1920 * 3 };
     offsets = { 0 };
+  } else if (format.format == AxVideoFormat::GRAY8) {
+    strides = { 1920 };
+    offsets = { 0 };
   } else {
     strides = { 1920 * 4 };
     offsets = { 0 };
@@ -72,16 +77,19 @@ TEST_P(ColorFormatFixture, color_fusing_test)
   auto in = AxVideoInterface{ { 1920, 1080, int(strides[0]), 0, format.format },
     in_buf.data(), strides, offsets, -1 };
 
-  auto out = AxVideoInterface{
-    { 1920, 1080, 1920 * 3, 0, format.bgra_out ? AxVideoFormat::BGR : AxVideoFormat::RGB },
-    out_buf.data(), { 1920 * 3 }, { 0 }, -1
-  };
+  auto out = AxVideoInterface{ { 1920, 1080, 1920 * out_bbp, 0,
+                                   format.out_format == 4 ? AxVideoFormat::BGR :
+                                   format.out_format == 5 ? AxVideoFormat::GRAY8 :
+                                                            AxVideoFormat::RGB },
+    out_buf.data(), { 1920 * static_cast<size_t>(out_bbp) }, { 0 }, -1 };
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
   EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
-  if (format.format == AxVideoFormat::RGB && format.bgra_out == 0) {
+  if (format.format == AxVideoFormat::RGB && format.out_format == 3) {
     EXPECT_EQ(in_buf, out_buf);
-  } else if (format.format == AxVideoFormat::BGR && format.bgra_out == 1) {
+  } else if (format.format == AxVideoFormat::BGR && format.out_format == 4) {
+    EXPECT_EQ(in_buf, out_buf);
+  } else if (format.format == AxVideoFormat::GRAY8 && format.out_format == 5) {
     EXPECT_EQ(in_buf, out_buf);
   } else {
     EXPECT_NE(in_buf, out_buf);

@@ -23,7 +23,7 @@ def main(window, stream):
         print(f"Classified as {class_id} with score {score}")
 
 
-with display.App(visible=True, opengl=stream.manager.hardware_caps.opengl) as app:
+with display.App(visible=True, opengl=stream.hardware_caps.opengl) as app:
     wnd = app.create_window("Business logic demo", (900, 600))
     app.start_thread(main, (wnd, stream), name='InferenceThread')
     app.run(interval=1 / 10)

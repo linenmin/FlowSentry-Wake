@@ -204,6 +204,40 @@ __kernel void yuyv_resize_bl(__global const uchar4 *in_y, __global uchar4 *out, 
     out[row * strideO + col] = pixel;
 }
 
+__kernel void gray8_resize_bl(__global const uchar *in, __global uchar *out, int in_width, int in_height,
+                            int crop_x, int crop_y, int out_width, int out_height, int strideIn, int strideOut,
+                            float xscale, float yscale, int scaled_width, int scaled_height, uchar fill, float mul, float add) {
+
+    const int col = get_global_id(0);
+    const int row = get_global_id(1);
+
+    int xoffset = (out_width - scaled_width) / 2;
+    int yoffset = (out_height - scaled_height) / 2;
+
+    int strideO = strideOut / sizeof(uchar);
+    if (col < xoffset || row < yoffset || col >= scaled_width + xoffset || row >= scaled_height + yoffset) {
+      if (row < out_height && col < out_width) {
+        uchar pixel = fill;
+        if (mul != 0.0F) {
+          char pix = convert_char_sat_rte(mad(convert_float(pixel), mul, add));
+          pixel = convert_uchar(pix);
+        }
+        out[row * strideO + col] = pixel;
+      }
+      return;
+    }
+
+    gray8_image img = {in_width, in_height, strideIn, crop_x, crop_y};
+    float src_x = ((col - xoffset) + 0.5F) * xscale;
+    float src_y = ((row - yoffset) + 0.5F) * yscale;
+    uchar pixel = gray8_sampler_bl(in, src_x, src_y, &img);
+    if (mul != 0.0F) {
+      char pix = convert_char_sat_rte(mad(convert_float(pixel), mul, add));
+      pixel = convert_uchar(pix);
+    }
+    out[row * strideO + col] = pixel;
+}
+
 )##";
 
 using ax_utils::buffer_details;
@@ -232,7 +266,9 @@ class CLResize
         rgb_resize{ program.get_kernel("rgb_resize_bl") }, //
         nv12_resize{ program.get_kernel("nv12_resize_bl") },
         i420_resize{ program.get_kernel("i420_resize_bl") }, //
-        yuyv_resize{ program.get_kernel("yuyv_resize_bl") }
+        yuyv_resize{ program.get_kernel("yuyv_resize_bl") }, gray8_resize{
+          program.get_kernel("gray8_resize_bl")
+        }
   {
   }
 
@@ -361,8 +397,14 @@ class CLResize
 
       return run_kernel(yuyv_resize, out, inbuf_y, outbuf);
 
+    } else if (in.format == AxVideoFormat::GRAY8) {
+      auto inbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
+      program.set_kernel_args(gray8_resize, 0, *inbuf, *outbuf, in.width, in.height,
+          in.crop_x, in.crop_y, out.width, out.height, in.stride, out.stride, xscale,
+          yscale, scaled_width, scaled_height, fill, prop.mul[0], prop.add[0]);
+      return run_kernel(gray8_resize, out, inbuf, outbuf);
     } else {
-      throw std::runtime_error("Unsupported input format in resize_cl: "
+      throw std::runtime_error("Unsupported input format in resize_cl2: "
                                + AxVideoFormatToString(in.format));
     }
     return {};
@@ -376,6 +418,7 @@ class CLResize
   kernel nv12_resize;
   kernel i420_resize;
   kernel yuyv_resize;
+  kernel gray8_resize;
   struct last_buffer_details {
     buffer mem{ nullptr };
     buffer_details in{};
@@ -519,11 +562,15 @@ set_output_interface(const AxDataInterface &interface,
     out_info.info.format = prop->format == AxVideoFormat::UNDEFINED ?
                                add_alpha(in_info.info.format) :
                                prop->format;
+    out_info.info.stride
+        = out_info.info.width * ax_utils::get_bytes_per_pixel(out_info.info.format);
     output = out_info;
   }
   if (prop->to_tensor) {
     auto &info = std::get<AxVideoInterface>(output).info;
-    AxTensorsInterface output = { { { 1, info.height, info.width, 4 }, 1, nullptr } };
+    const auto channels = info.format == AxVideoFormat::GRAY8 ? 1 : 4;
+    AxTensorsInterface output
+        = { { { 1, info.height, info.width, channels }, 1, nullptr } };
     return output;
   }
   return output;
@@ -576,6 +623,7 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
     AxVideoFormat::NV12,
     AxVideoFormat::I420,
     AxVideoFormat::YUY2,
+    AxVideoFormat::GRAY8,
   };
   if (std::none_of(valid_formats.begin(), valid_formats.end(), [input_details](auto format) {
         return format == input_details[0].format;
@@ -589,7 +637,8 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
                                    prop->format;
   }
   if (output_details[0].format != AxVideoFormat::RGBA
-      && output_details[0].format != AxVideoFormat::BGRA) {
+      && output_details[0].format != AxVideoFormat::BGRA
+      && output_details[0].format != AxVideoFormat::GRAY8) {
     throw std::runtime_error("Resize does not work with the output format: "
                              + AxVideoFormatToString(output_details[0].format));
   }

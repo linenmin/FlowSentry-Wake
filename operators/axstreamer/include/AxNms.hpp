@@ -6,36 +6,6 @@
 #include "AxMetaPoseSegmentsDetection.hpp"
 #include "AxMetaSegmentsDetection.hpp"
 
-#include "AxOpenCl.hpp"
-
-class CLNms
-{
-  public:
-  using buffer = ax_utils::CLProgram::ax_buffer;
-  using kernel = ax_utils::CLProgram::ax_kernel;
-
-  explicit CLNms(int max_size, Ax::Logger &logger);
-
-  AxMetaObjDetection run(const AxMetaObjDetection &meta, float threshold,
-      int class_agnostic, int max_size, int &error);
-
-  static AxMetaObjDetection remove_suppressed(
-      const AxMetaObjDetection &meta, const std::vector<char> &keep);
-
-  private:
-  ax_utils::CLProgram program;
-  int error{};
-  buffer boxes;
-  buffer scores;
-  buffer classes;
-  buffer ious;
-  buffer suppressed;
-  kernel map_kernel;
-  kernel reduce_kernel;
-  int max_size_;
-};
-
-
 ///
 /// @brief Remove boxes that overlap too much
 /// @param meta   The meta boxes to remove from

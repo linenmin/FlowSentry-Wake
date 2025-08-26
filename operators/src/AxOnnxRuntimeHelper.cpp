@@ -23,7 +23,8 @@ print_shape(const std::vector<std::int64_t> &v)
   return ss.str();
 }
 
-OnnxRuntimeInference::OnnxRuntimeInference(const std::string &model_path, Ax::Logger &logger)
+OnnxRuntimeInference::OnnxRuntimeInference(const std::string &model_path,
+    Ax::Logger &logger, int intra_op_num_threads, int inter_op_num_threads)
     : env(nullptr), session(nullptr), first_call(true), logger_(logger)
 {
   logger_(AX_INFO) << "Initializing ONNX Runtime for model: " << model_path << std::endl;
@@ -33,9 +34,13 @@ OnnxRuntimeInference::OnnxRuntimeInference(const std::string &model_path, Ax::Lo
   session_options.SetGraphOptimizationLevel(ORT_ENABLE_ALL);
   session_options.EnableCpuMemArena();
   session_options.EnableMemPattern();
-  // Uncomment and set thread counts (adjust as needed for your hardware)
-  session_options.SetIntraOpNumThreads(4); // 4 threads for intra-op parallelism
-  session_options.SetInterOpNumThreads(4); // 4 threads for inter-op parallelism
+  // Set thread counts based on parameters
+  session_options.SetIntraOpNumThreads(intra_op_num_threads); // threads for intra-op parallelism
+  session_options.SetInterOpNumThreads(inter_op_num_threads); // threads for inter-op parallelism
+
+  logger_(AX_INFO) << "ONNX Runtime configured with " << intra_op_num_threads
+                   << " intra-op threads and " << inter_op_num_threads
+                   << " inter-op threads" << std::endl;
 
   // TODO: Add configuration for Execution Providers here
 
@@ -327,6 +332,16 @@ OnnxRuntimeInference::get_input_node_types() const
     types.push_back(tensor_info.GetElementType());
   }
   return types;
+}
+
+std::vector<size_t>
+OnnxRuntimeInference::get_input_node_ranks() const
+{
+  std::vector<size_t> ranks(input_node_names.size());
+  for (size_t i = 0; i < input_node_names.size(); ++i) {
+    ranks[i] = session.GetInputTypeInfo(i).GetTensorTypeAndShapeInfo().GetDimensionsCount();
+  }
+  return ranks;
 }
 
 std::vector<ONNXTensorElementDataType>

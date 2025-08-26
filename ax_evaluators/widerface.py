@@ -114,11 +114,11 @@ def _norm_score(pred):
     # pred {key: [[x1,y1,x2,y2,s]]}
     max_score = max(max(np.max(v[:, -1]) for v in k.values() if len(v) > 0) for k in pred.values())
     min_score = min(min(np.min(v[:, -1]) for v in k.values() if len(v) > 0) for k in pred.values())
-    diff = max_score - min_score
-    for k in pred.values():
-        for v in k.values():
-            if len(v) > 0:
-                v[:, -1] = (v[:, -1] - min_score) / diff
+    if diff := max_score - min_score:
+        for k in pred.values():
+            for v in k.values():
+                if len(v) > 0:
+                    v[:, -1] = (v[:, -1] - min_score) / diff
 
 
 def _image_eval(pred, gt, ignore, iou_thresh):
@@ -176,9 +176,11 @@ def _img_pr_info(thresh_num, pred_info, proposal_list, pred_recall):
 
 def _dataset_pr_info(thresh_num, pr_curve, count_face):
     _pr_curve = np.zeros((thresh_num, 2)).astype('float')
-    for i in range(thresh_num):
-        _pr_curve[i, 0] = pr_curve[i, 1] / pr_curve[i, 0]
-        _pr_curve[i, 1] = pr_curve[i, 1] / count_face
+    if count_face:
+        for i in range(thresh_num):
+            if pr_curve[i, 0]:
+                _pr_curve[i, 0] = pr_curve[i, 1] / pr_curve[i, 0]
+            _pr_curve[i, 1] = pr_curve[i, 1] / count_face
     return _pr_curve
 
 

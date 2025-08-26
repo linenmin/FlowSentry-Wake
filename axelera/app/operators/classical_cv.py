@@ -84,6 +84,7 @@ class Tracker(BaseClassicalCV):
     def _verify_params(self):
         if self.algo_params is None:
             return
+
         if self.algorithm == 'oc-sort':
             supported_params = [
                 'det_thresh',
@@ -93,8 +94,12 @@ class Tracker(BaseClassicalCV):
                 'delta',
                 'asso_func',
                 'inertia',
-                'use_byte',
+                'w_assoc_emb',
+                'alpha_fixed_emb',
                 'max_id',
+                'aw_enabled',
+                'aw_param',
+                'cmc_enabled',
             ]
         elif self.algorithm == 'bytetrack':
             supported_params = [
@@ -128,6 +133,12 @@ class Tracker(BaseClassicalCV):
                 t.write(json.dumps(self.algo_params))
             self._algo_params_json = Path(t.name)
 
+        embeddings_meta_key = (
+            str()
+            if self.embeddings_task_name is None
+            else f'embeddings_meta_key:{self.embeddings_task_name};'
+        )
+
         def _fill_callbacks_option(callbacks: Dict[str, Dict[str, Any]], name: str) -> str:
             if not callbacks:
                 return str()
@@ -159,11 +170,21 @@ class Tracker(BaseClassicalCV):
                 f'min_height:{self.min_height}',
             )
 
+        mode = ''
+        if (
+            self.algo_params
+            and 'cmc_enabled' in self.algo_params
+            and self.algo_params['cmc_enabled'] == True
+        ):
+            mode = 'read'
+
         gst.axinplace(
             lib='libinplace_tracker.so',
+            mode=mode,
             options=f'tracker_meta_key:{self.task_name};'
             f'input_meta_key:{input_to_tracker_meta};'
             f'output_meta_key:boxes_created_by_tracker_task_{self.task_name};'
+            f'{embeddings_meta_key}'
             f'history_length:{self.history_length};'
             f'algorithm:{self.algorithm.lower()};'
             f'algo_params_json:{self._algo_params_json};'

@@ -14,24 +14,26 @@ pipeline:
         imreader_backend: OpenCV
       preprocess:
         - letterbox:
-            scaleup: True
-            width: 840
             height: 840
+            scaleup: true
+            width: 840
         - torch-totensor:
-            scale: False
-        - linear-scaling:       # [0,1]
+            scale: false
+        - linear-scaling:
             mean: 1, 1, 1
             shift: -104, -117, -123
+      inference:
+        handle_all: false
       postprocess:
         - decode-retinaface:
             box_format: xywh
-            normalized_coord: True
-            max_nms_boxes: 5000
             conf_threshold: 0.2
+            max_nms_boxes: 5000
+            nms_class_agnostic: true
             nms_iou_threshold: 0.4
-            nms_class_agnostic: True
             nms_top_k: 200
-            eval:       # overrides for evaluating accuracy
+            normalized_coord: true
+            eval:
               conf_threshold: 0.02
               nms_iou_threshold: 0.5
               nms_top_k: 750
@@ -60,7 +62,7 @@ models:
           min_sizes: [[16, 32], [64, 128], [256, 512]]
           steps: [8, 16, 32]
           variance: [0.1, 0.2]
-          clip: False
+          clip: false
 
 datasets:
   WiderFace:
@@ -68,8 +70,4 @@ datasets:
     class_path: $AXELERA_FRAMEWORK/ax_datasets/widerface.py
     data_dir_name: widerface
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/face.names
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
-    # cal_data: train/label.txt
     val_data: val/label.txt

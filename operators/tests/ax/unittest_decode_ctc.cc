@@ -250,7 +250,7 @@ class DecodeCTCTest : public ::testing::Test
     }
 
     m_tensor_data = data;
-    m_tensor_shape = { num_slices, chars_count, positions };
+    m_tensor_shape = { 1, num_slices, chars_count, positions };
     m_tensors = tensors_from_vector(m_tensor_data, m_tensor_shape);
   }
 
@@ -298,7 +298,7 @@ TEST_F(DecodeCTCTest, nhwc_layout_multi_heads_with_reduce_mean)
 
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
-
+#if 1
 TEST_F(DecodeCTCTest, three_dimensional_tensor_without_reduce_mean)
 {
   auto chars_info = create_chars_file(m_default_chars, ""); // Use "" as blank
@@ -311,6 +311,7 @@ TEST_F(DecodeCTCTest, three_dimensional_tensor_without_reduce_mean)
 
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
+#endif
 
 //======== Blank Index Tests (New) ========
 
@@ -469,28 +470,6 @@ TEST_F(DecodeCTCTest, non_float_tensor)
       std::runtime_error);
 }
 
-TEST_F(DecodeCTCTest, wrong_dimensions_tensor_for_reduce_mean_true)
-{
-  auto chars_info = create_chars_file(m_default_chars, "");
-  setup_3d_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
-  auto properties = create_properties(chars_info.filename, true);
-  Decoder decoder("libdecode_ctc.so", properties);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  ASSERT_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info),
-      std::runtime_error);
-}
-
-TEST_F(DecodeCTCTest, wrong_dimensions_tensor_for_reduce_mean_false)
-{
-  auto chars_info = create_chars_file(m_default_chars, "");
-  setup_nhwc_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
-  auto properties = create_properties(chars_info.filename, false);
-  Decoder decoder("libdecode_ctc.so", properties);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  ASSERT_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info),
-      std::runtime_error);
-}
-
 //======== Edge Case Tests (Adapted) ========
 
 TEST_F(DecodeCTCTest, null_tensor_data)
@@ -543,42 +522,6 @@ TEST_F(DecodeCTCTest, zero_chars_dimension_3d) // C=0
   // Init should fail because chars list loaded from file is empty
   ASSERT_THROW(Decoder decoder("libdecode_ctc.so", properties), std::runtime_error);
 }
-
-TEST_F(DecodeCTCTest, multiple_slices_3d_input)
-{
-  auto chars_info = create_chars_file(m_default_chars, "");
-  int num_slices = 2;
-  int chars_count = chars_info.num_chars;
-  int positions = 20;
-  size_t total_elements = static_cast<size_t>(num_slices) * chars_count * positions;
-  std::vector<float> data(total_elements, 0.0f);
-  // Fill only the first slice
-  for (int ch = 0; ch < chars_count; ++ch) {
-    for (int pos = 0; pos < positions; ++pos) {
-      int max_char = (pos < m_default_max_indices.size()) ?
-                         m_default_max_indices[pos] :
-                         chars_info.expected_blank_index;
-      if (chars_info.expected_blank_index < 0) {
-        max_char = (pos < m_default_max_indices.size()) ? m_default_max_indices[pos] : 0;
-      }
-      float value = (ch == max_char) ? 10.0f : 0.1f;
-      // Index for slice 0
-      size_t idx = 0 * chars_count * positions + ch * positions + pos;
-      if (idx < total_elements)
-        data[idx] = value;
-    }
-  }
-  m_tensor_data = data;
-  m_tensor_shape = { num_slices, chars_count, positions };
-  m_tensors = tensors_from_vector(m_tensor_data, m_tensor_shape);
-
-  auto properties = create_properties(chars_info.filename, false);
-  Decoder decoder("libdecode_ctc.so", properties);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info); // Should process only first slice
-  ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
-}
-
 //======== Configuration Tests (Adapted) ========
 
 TEST_F(DecodeCTCTest, custom_meta_key)

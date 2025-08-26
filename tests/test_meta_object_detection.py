@@ -20,6 +20,12 @@ CLS1_COLOR = (255, 178, 125, 255)
 CLS2_COLOR = (255, 255, 255, 255)
 
 
+class MockTaskRenderConfig:
+    def __init__(self, show_labels=True, show_annotations=True):
+        self.show_labels = show_labels
+        self.show_annotations = show_annotations
+
+
 def mock_draw(width, height, monkeypatch):
     mock = Mock(ImageDraw.ImageDraw)
     monkeypatch.setattr(ImageFont.FreeTypeFont, "getbbox", lambda *args, **kwargs: (0, 0, 40, 8))
@@ -44,7 +50,7 @@ def mock_image_draw(draw):
                 call(((10, 10), (20, 20)), None, CLS1_COLOR, 2),
                 call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((10, 11), 'cls:1 30%', LABEL_FORE_COLOR, ANY, ANY)],
+            [call((10, 11), 'cls:1 30%', LABEL_FORE_COLOR, ANY)],
             "test box with no label names",
         ),
         pytest.param(
@@ -55,7 +61,7 @@ def mock_image_draw(draw):
                 call(((0, 0), (20, 20)), None, CLS0_COLOR, 2),
                 call(((0, 1), (40, 9)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((0, 1), 'cls:0 30%', LABEL_FORE_COLOR, ANY, ANY)],
+            [call((0, 1), 'cls:0 30%', LABEL_FORE_COLOR, ANY)],
             "test box with no label names",
         ),
         pytest.param(
@@ -69,8 +75,8 @@ def mock_image_draw(draw):
                 call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
             ],
             [
-                call((0, 1), 'cls:0 30%', LABEL_FORE_COLOR, ANY, ANY),
-                call((10, 11), 'cls:2 40%', LABEL_FORE_COLOR, ANY, ANY),
+                call((0, 1), 'cls:0 30%', LABEL_FORE_COLOR, ANY),
+                call((10, 11), 'cls:2 40%', LABEL_FORE_COLOR, ANY),
             ],
             "test multiple boxes with no label names",
         ),
@@ -83,6 +89,10 @@ def test_box_with_no_labels(
     output_height = 1280
     draw, image = mock_draw(output_width, output_height, monkeypatch)
     meta = ObjectDetectionMeta(boxes, scores, classes)
+    container_meta = create_container_with_render_config("detection_meta")
+    meta.set_container_meta(container_meta)
+    object.__setattr__(meta, 'meta_name', "detection_meta")
+
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
         display_draw = display_cv.CVDraw(image, [])
         meta.draw(display_draw)
@@ -103,7 +113,7 @@ def test_box_with_no_labels(
                 call(((20, 20), (40, 40)), None, CLS1_COLOR, 2),
                 call(((20, 10), (60, 18)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((20, 10), "car 30%", LABEL_FORE_COLOR, ANY, ANY)],
+            [call((20, 10), "car 30%", LABEL_FORE_COLOR, ANY)],
             "box with label names, name fits outside box",
         ),
         pytest.param(
@@ -114,7 +124,7 @@ def test_box_with_no_labels(
                 call(((20, 10), (40, 40)), None, CLS1_COLOR, 2),
                 call(((20, 11), (60, 19)), LABEL_BACK_COLOR, None, 1),
             ],
-            [call((20, 11), "car 30%", LABEL_FORE_COLOR, ANY, ANY)],
+            [call((20, 11), "car 30%", LABEL_FORE_COLOR, ANY)],
             "box with label names, name does not fit outside box",
         ),
         pytest.param(
@@ -128,8 +138,8 @@ def test_box_with_no_labels(
                 call(((20, 10), (60, 18)), LABEL_BACK_COLOR, None, 1),
             ],
             [
-                call((20, 11), "car 30%", ANY, ANY, ANY),
-                call((20, 10), "person 30%", ANY, ANY, ANY),
+                call((20, 11), "car 30%", ANY, ANY),
+                call((20, 10), "person 30%", ANY, ANY),
             ],
             "box with label names, multiple boxes both inside and outside",
         ),
@@ -149,6 +159,11 @@ def test_box_with_labels(
     output_height = 1280
     draw, image = mock_draw(output_width, output_height, monkeypatch)
     meta = ObjectDetectionMeta(boxes, scores, classes, labels=labels)
+
+    container_meta = create_container_with_render_config("detection_meta")
+    meta.set_container_meta(container_meta)
+    object.__setattr__(meta, 'meta_name', "detection_meta")
+
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
         display_draw = display_cv.CVDraw(image, [])
         meta.draw(display_draw)
@@ -310,3 +325,26 @@ def test_object_detection_meta_objects_enum_labels_is_a_tuple():
     assert not detections[0].is_a(("car", "bus"))
     assert detections[1].is_a(("car", "bus"))
     assert detections[2].is_a(("car", "bus"))
+
+
+def create_container_with_render_config(meta_name, show_labels=True, show_annotations=True):
+    """Create a container meta with proper render config for testing.
+
+    Args:
+        meta_name: The name to register for the meta in the render config
+        show_labels: Whether to show labels in rendering
+        show_annotations: Whether to show annotations in rendering
+
+    Returns:
+        container_meta: The configured AxMeta container
+    """
+    from axelera.app.config import RenderConfig
+    from axelera.app.meta import AxMeta
+
+    container_meta = AxMeta("test_image")
+    render_config = RenderConfig()
+    render_config.set_task(
+        meta_name, show_labels=show_labels, show_annotations=show_annotations, force_register=True
+    )
+    container_meta.set_render_config(render_config)
+    return container_meta

@@ -8,9 +8,12 @@ import shlex
 import sys
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
+from axelera import types
 from axelera.app import config, utils, yaml_parser
+from axelera.app.config import Source, SourceType
 
 
 @pytest.fixture
@@ -19,33 +22,70 @@ def mock_log():
         yield mock
 
 
-def _caps(vaapi, opencl, opengl, aipu_cores):
+def _caps(vaapi, opencl, opengl):
     return config.HardwareCaps(
         getattr(config.HardwareEnable, vaapi),
         getattr(config.HardwareEnable, opencl),
         getattr(config.HardwareEnable, opengl),
-        aipu_cores,
     )
 
 
 @pytest.mark.parametrize(
-    "args, exp_vaapi, exp_opencl, exp_opengl, exp_aipu_cores",
+    'creator', [config.create_inference_argparser, config.create_deploy_argparser]
+)
+def test_help_does_not_error(capsys, creator):
+    p = creator(NETWORK_YAML)
+    with pytest.raises(SystemExit):
+        p.parse_args(['--help'])
+    out = capsys.readouterr().out
+    assert '--help-network' in out
+    if creator == config.create_inference_argparser:
+        assert '--help-sources' in out
+    else:
+        assert '--help-sources' not in out
+
+
+@pytest.mark.parametrize(
+    'creator', [config.create_inference_argparser, config.create_deploy_argparser]
+)
+def test_help_network(capsys, creator):
+    p = creator(NETWORK_YAML)
+    with pytest.raises(SystemExit):
+        p.parse_args(['--help-network'])
+    out = capsys.readouterr().out
+    assert 'facerecog2' in out
+
+
+def test_deploy_help_does_not_error(capsys):
+    p = config.create_deploy_argparser(NETWORK_YAML)
+    with pytest.raises(SystemExit):
+        p.parse_args(['--help'])  # Should not raise an error
+
+    out = capsys.readouterr().out
+    assert '--help-sources' not in out
+    assert '--help-network' in out
+    with pytest.raises(SystemExit):
+        p.parse_args(['--help-network'])
+    with pytest.raises(SystemExit):
+        p.parse_args(['--help-sources'])
+
+
+@pytest.mark.parametrize(
+    "args, exp_vaapi, exp_opencl, exp_opengl",
     [
-        ('', 'disable', 'disable', 'detect', 4),
-        ('--auto-vaapi', 'detect', 'disable', 'detect', 4),
-        ('--enable-vaapi', 'enable', 'disable', 'detect', 4),
-        ('--disable-vaapi', 'disable', 'disable', 'detect', 4),
-        ('--auto-opencl', 'disable', 'detect', 'detect', 4),
-        ('--enable-opencl', 'disable', 'enable', 'detect', 4),
-        ('--disable-opencl', 'disable', 'disable', 'detect', 4),
-        ('--auto-opengl', 'disable', 'disable', 'detect', 4),
-        ('--enable-opengl', 'disable', 'disable', 'enable', 4),
-        ('--disable-opengl', 'disable', 'disable', 'disable', 4),
-        ('--aipu-cores=1', 'disable', 'disable', 'detect', 1),
-        ('--aipu-cores=4', 'disable', 'disable', 'detect', 4),
+        ('', 'disable', 'disable', 'detect'),
+        ('--auto-vaapi', 'detect', 'disable', 'detect'),
+        ('--enable-vaapi', 'enable', 'disable', 'detect'),
+        ('--disable-vaapi', 'disable', 'disable', 'detect'),
+        ('--auto-opencl', 'disable', 'detect', 'detect'),
+        ('--enable-opencl', 'disable', 'enable', 'detect'),
+        ('--disable-opencl', 'disable', 'disable', 'detect'),
+        ('--auto-opengl', 'disable', 'disable', 'detect'),
+        ('--enable-opengl', 'disable', 'disable', 'enable'),
+        ('--disable-opengl', 'disable', 'disable', 'disable'),
     ],
 )
-def test_hardware_caps_argparser(args, exp_vaapi, exp_opencl, exp_opengl, exp_aipu_cores):
+def test_hardware_caps_argparser(args, exp_vaapi, exp_opencl, exp_opengl):
     parser = argparse.ArgumentParser()
     defaults = config.HardwareCaps(
         vaapi=config.HardwareEnable.disable,
@@ -55,28 +95,24 @@ def test_hardware_caps_argparser(args, exp_vaapi, exp_opencl, exp_opengl, exp_ai
     config.HardwareCaps.add_to_argparser(parser, defaults)
     args = parser.parse_args(shlex.split(args))
     caps = config.HardwareCaps.from_parsed_args(args)
-    exp = _caps(exp_vaapi, exp_opencl, exp_opengl, exp_aipu_cores)
+    exp = _caps(exp_vaapi, exp_opencl, exp_opengl)
     assert caps == exp
 
 
 @pytest.mark.parametrize(
-    "vaapi, opencl, opengl, aipu_cores, exp_args",
+    "vaapi, opencl, opengl, exp_args",
     [
-        ('disable', 'disable', 'detect', 4, ''),
-        ('detect', 'disable', 'detect', 4, '--auto-vaapi'),
-        ('enable', 'disable', 'detect', 4, '--enable-vaapi'),
-        ('disable', 'disable', 'detect', 4, ''),
-        ('disable', 'detect', 'detect', 4, '--auto-opencl'),
-        ('disable', 'enable', 'detect', 4, '--enable-opencl'),
-        ('disable', 'disable', 'detect', 4, ''),
-        ('disable', 'disable', 'detect', 1, '--aipu-cores=1'),
-        ('disable', 'disable', 'detect', 4, ''),
-        ('disable', 'disable', 'enable', 4, '--enable-opengl'),
-        ('disable', 'disable', 'disable', 4, '--disable-opengl'),
+        ('disable', 'detect', 'detect', ''),
+        ('detect', 'detect', 'detect', '--auto-vaapi'),
+        ('enable', 'detect', 'detect', '--enable-vaapi'),
+        ('disable', 'disable', 'detect', '--disable-opencl'),
+        ('disable', 'enable', 'detect', '--enable-opencl'),
+        ('disable', 'detect', 'enable', '--enable-opengl'),
+        ('disable', 'detect', 'disable', '--disable-opengl'),
     ],
 )
-def test_hardware_caps_as_argv(vaapi, opencl, opengl, aipu_cores, exp_args):
-    got = _caps(vaapi, opencl, opengl, aipu_cores).as_argv()
+def test_hardware_caps_as_argv(vaapi, opencl, opengl, exp_args):
+    got = _caps(vaapi, opencl, opengl).as_argv()
     assert got == exp_args
 
 
@@ -162,9 +198,9 @@ def test_hardware_caps_detect(vaapi, opencl, opengl, avails, exp_vaapi, exp_open
     with patch.object(utils, 'is_vaapi_available', return_value='vaapi' in avails):
         with patch.object(utils, 'is_opencl_available', return_value='opencl' in avails):
             with patch.object(utils, 'is_opengl_available', return_value='opengl' in avails):
-                got = _caps(vaapi, opencl, opengl, 4).detect_caps()
+                got = _caps(vaapi, opencl, opengl).detect_caps()
 
-    exp = _caps(exp_vaapi, exp_opencl, exp_opengl, 4)
+    exp = _caps(exp_vaapi, exp_opencl, exp_opengl)
     assert got == exp
 
 
@@ -490,3 +526,441 @@ def test_deploy_parser(args, exp):
         args = p.parse_args(shlex.split(args))
         actual = {k: getattr(args, k) for k in exp.keys()}
         assert actual == exp
+
+
+def test_task_render_config_dataclass():
+    """Test that TaskRenderConfig is properly configured as a dataclass."""
+    settings = config.TaskRenderConfig()
+    assert settings.show_annotations is True
+    assert settings.show_labels is True
+
+    settings = config.TaskRenderConfig(show_annotations=False, show_labels=False)
+    assert settings.show_annotations is False
+    assert settings.show_labels is False
+
+    # Test direct attribute access instead of to_dict
+    assert hasattr(settings, 'show_annotations')
+    assert hasattr(settings, 'show_labels')
+
+
+def test_render_config_creation():
+    """Test creating a RenderConfig with and without tasks."""
+    # Test empty config
+    render_config = config.RenderConfig()
+    assert len(render_config._config) == 0
+
+    # Test with task list using keyword-based initialization
+    render_config = config.RenderConfig(
+        detections=config.TaskRenderConfig(),
+        segmentation=config.TaskRenderConfig(),
+    )
+    assert len(render_config._config) == 2
+    assert 'detections' in render_config._config
+    assert 'segmentation' in render_config._config
+
+    # Default settings should be True for both options
+    assert render_config._config['detections'].show_annotations is True
+    assert render_config._config['detections'].show_labels is True
+
+    # Test keyword-based initialization with custom settings
+    render_config2 = config.RenderConfig(
+        detections=config.TaskRenderConfig(show_annotations=False, show_labels=False),
+        tracker=config.TaskRenderConfig(show_annotations=True, show_labels=False),
+    )
+    assert 'detections' in render_config2._config
+    assert 'tracker' in render_config2._config
+    assert render_config2['detections'].show_annotations is False
+    assert render_config2['tracker'].show_labels is False
+
+
+def test_render_config_set_task():
+    """Test setting task configuration in RenderConfig."""
+    render_config = config.RenderConfig(detections=config.TaskRenderConfig())
+
+    # Test method chaining
+    result = render_config.set_task('detections', False, False)
+    assert result is render_config  # Should return self for chaining
+
+    # Test settings were applied
+    assert render_config._config['detections'].show_annotations is False
+    assert render_config._config['detections'].show_labels is False
+
+    # Test updating existing task
+    render_config.set_task('detections', True, False)
+    assert render_config._config['detections'].show_annotations is True
+    assert render_config._config['detections'].show_labels is False
+
+    # Test KeyError for non-existent task without force_register
+    with pytest.raises(KeyError):
+        render_config.set_task('new_task', False, False)
+
+    # Test registering new task with force_register
+    render_config.set_task('new_task', False, False, force_register=True)
+    assert render_config._config['new_task'].show_annotations is False
+    assert render_config._config['new_task'].show_labels is False
+
+
+def test_render_config_get_item():
+    """Test __getitem__ functionality of RenderConfig."""
+    render_config = config.RenderConfig(existing=config.TaskRenderConfig())
+
+    settings = render_config['existing']
+    assert settings.show_annotations is True
+    assert settings.show_labels is True
+
+    with pytest.raises(KeyError):
+        _ = render_config['new_task']
+
+    # Register and access
+    render_config.set_task('new_task', False, False, force_register=True)
+    settings = render_config['new_task']
+    assert settings.show_annotations is False
+    assert settings.show_labels is False
+
+
+def test_render_config_to_dict():
+    """Test converting RenderConfig to dictionary format directly."""
+    render_config = config.RenderConfig(
+        task1=config.TaskRenderConfig(),
+        task2=config.TaskRenderConfig(),
+    )
+    render_config.set_task('task1', True, True)
+    render_config.set_task('task2', False, False)
+
+    assert len(render_config._config) == 2
+    assert 'task1' in render_config._config
+    assert 'task2' in render_config._config
+
+    assert render_config._config['task1'].show_annotations is True
+    assert render_config._config['task1'].show_labels is True
+    assert render_config._config['task2'].show_annotations is False
+    assert render_config._config['task2'].show_labels is False
+
+
+def test_task_render_config_from_dict():
+    d = {'show_annotations': False, 'show_labels': True}
+    settings = config.TaskRenderConfig.from_dict(d)
+    assert isinstance(settings, config.TaskRenderConfig)
+    assert settings.show_annotations is False
+    assert settings.show_labels is True
+
+    d_unknown = {'show_annotations': True, 'show_labels': True, 'extra': 1}
+    with pytest.raises(ValueError, match='Unknown keys'):
+        config.TaskRenderConfig.from_dict(d_unknown)
+
+
+@pytest.mark.parametrize(
+    'source_str, exp',
+    [
+        ('path with spaces.mp4', Source.VIDEO_FILE('path with spaces.mp4')),
+        ('cwd/cwd-based.mp4', Source.VIDEO_FILE('cwd/cwd-based.mp4')),
+        (
+            '~/videos/special_chars-123!@#$.mp4',
+            Source.VIDEO_FILE('/homer/videos/special_chars-123!@#$.mp4'),
+        ),
+        (
+            'http://example.com/video.mp4?param=value',
+            Source.HLS('http://example.com/video.mp4?param=value'),
+        ),
+        (
+            'https://example.com/video.mp4#fragment',
+            Source.HLS('https://example.com/video.mp4#fragment'),
+        ),
+        (
+            'rtsp://example.com:8554/stream?auth=token',
+            Source.RTSP('rtsp://example.com:8554/stream?auth=token'),
+        ),
+        (
+            'http://user:pass@example.com/video.mp4',
+            Source.HLS('http://user:pass@example.com/video.mp4'),
+        ),
+        (
+            'rtsp://admin:password@192.168.1.100:554/stream',
+            Source.RTSP('rtsp://admin:password@192.168.1.100:554/stream'),
+        ),
+        ('http://example.com/path/', Source.HLS('http://example.com/path/')),
+        ('rtsp://example.com:8554/stream/', Source.RTSP('rtsp://example.com:8554/stream/')),
+        ('usb', Source.USB('0')),
+        ('usb:1', Source.USB('1')),
+        ('usb:1:640x480', Source.USB('1', width=640, height=480)),
+        ('usb@22', Source.USB('0', fps=22)),
+        ('usb:0:640x480@21', Source.USB('0', width=640, height=480, fps=21)),
+        ('usb:/dev/video0', Source.USB('/dev/video0')),
+        ('usb:/dev/video1', Source.USB('/dev/video1')),
+        ('usb:/dev/video1:640x480', Source.USB('/dev/video1', width=640, height=480)),
+        ('usb:/dev/video0@22', Source.USB('/dev/video0', fps=22)),
+        ('usb:/dev/video0:640x480@24', Source.USB('/dev/video0', width=640, height=480, fps=24)),
+        (
+            'usb:0:640x480@22/image/jpeg',
+            Source.USB('0', width=640, height=480, fps=22, codec='image/jpeg'),
+        ),
+        ('usb:/dev/video7:/yuyv', Source.USB('/dev/video7', codec='yuyv')),
+        ('fakevideo', Source.FAKE_VIDEO(width=1280, height=720, fps=30)),
+        ('fakevideo:1024x768', Source.FAKE_VIDEO(width=1024, height=768, fps=30)),
+        ('fakevideo:1024x768@22', Source.FAKE_VIDEO(width=1024, height=768, fps=22)),
+        ('fakevideo@30', Source.FAKE_VIDEO(width=1280, height=720, fps=30)),
+        ('/image/a.jpg', Source.IMAGE_FILES('/image/a.jpg', images=[Path('/image/a.jpg')])),
+        ('/dir/', Source.IMAGE_FILES('/dir', images=[Path('/dir/a.jpg'), Path('/dir/b.jpg')])),
+        ('dataset', Source.DATASET('val')),
+        ('dataset:wibble', Source.DATASET('wibble')),
+    ],
+)
+def test_source_from_str(source_str, exp):
+    with contextlib.ExitStack() as stack:
+        enter = stack.enter_context
+        enter(patch.object(Path, 'resolve', lambda p: Path(str(p).replace('cwd/', '/cwd/'))))
+        enter(patch.object(Path, 'expanduser', lambda p: Path(str(p).replace('~', '/homer'))))
+        isfile = exp.type == SourceType.VIDEO_FILE or (
+            exp.type == SourceType.IMAGE_FILES and len(exp.images) == 1
+        )
+        isdir = exp.type == SourceType.IMAGE_FILES and not isfile
+        files = [Path('/dir/a.jpg'), Path('/dir/b.jpg')] if isdir else []
+        enter(patch.object(Path, 'is_file', return_value=isfile))
+        enter(patch.object(Path, 'is_dir', return_value=isdir))
+        enter(patch.object(utils, 'list_images_recursive', return_value=files))
+        assert Source(source_str) == exp
+
+
+def test_source_ctor_from_source():
+    source = Source('usb:/dev/video0:640x480@30')
+    assert source == Source(source)
+    with pytest.raises(TypeError, match=r'Source\(\) takes 1 string'):
+        Source(source, 'invalid_type', 'bob')
+    source2 = Source('usb:/dev/video1:640x480@30')
+    assert source2 == Source(source, location='/dev/video1')
+
+
+def test_source_ctor_invalid():
+    with pytest.raises(TypeError, match=r'Source\(\) takes 1 string'):
+        Source('invalid_source', 'invalid_type')
+    with pytest.raises(TypeError, match=r'Source\(\) takes 1 string'):
+        Source(0, 'invalid_type')
+    with pytest.raises(TypeError, match=r'Source\(\) takes 1 string'):
+        Source(0, 'invalid_type')
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(Path, 'is_file', return_value=False))
+        stack.enter_context(patch.object(Path, 'is_dir', return_value=True))
+        stack.enter_context(patch.object(Path, 'rglob', return_value=[Path('a.txt')]))
+        with pytest.raises(RuntimeError, match=r'Failed to locate any images in /dir'):
+            Source('/dir/')
+
+    with pytest.raises(ValueError, match=r'Unrecognized source:'):
+        Source('notavalid:type')
+
+
+def test_source_typo_in_usb():
+    with pytest.raises(ValueError, match=r'Badly formatted stream properties:'):
+        Source('usb:/dev/video0:640x480x30')
+
+
+def test_pipeline_config_dataset():
+
+    with pytest.raises(ValueError, match=r'Dataset source cannot be used with multiple sources'):
+        config.PipelineConfig('yolov5s-v7-coco', ['dataset:test', 'rtsp://hello/'])
+
+    with pytest.raises(ValueError, match=r'Dataset source cannot be used with multiple sources'):
+        config.PipelineConfig('yolov5s-v7-coco', ['rtsp://hello/', 'dataset:test'])
+
+    with pytest.raises(ValueError, match=r'Dataset source cannot be used with multiple sources'):
+        config.PipelineConfig('yolov5s-v7-coco', [config.Source.DATASET('test'), 'rtsp://hello/'])
+
+
+def test_calibration_batch_raises_warning(caplog):
+    caplog.set_level('WARNING')
+    parser = config.create_deploy_argparser(NETWORK_YAML)
+    args = parser.parse_args(['yolo', '--calibration-batch', '4'])
+    r = caplog.records[0]
+    assert r.levelname == 'WARNING'
+    assert r.message.startswith('Please note --calibration-batch is not supported')
+    assert args.calibration_batch == 1
+    parser = config.create_inference_argparser(NETWORK_YAML)
+    args = parser.parse_args(['yolo', 'fakevideo', '--calibration-batch', '4'])
+    r = caplog.records[0]
+    assert r.levelname == 'WARNING'
+    assert r.message.startswith('Please note --calibration-batch is not supported')
+    assert args.calibration_batch == 1
+
+
+@pytest.mark.parametrize(
+    's, args',
+    [
+        ('', []),
+        ('1', ['1']),
+        ('1,2', ['1', '2']),
+        ('1,[2,3]', ['1', '[2,3]']),
+        ('1,[2,3],4', ['1', '[2,3]', '4']),
+        ('1,format=2,3, [4,5]', ['1', 'format=2', '3', '[4,5]']),
+        ('1, [ 2,3,4,5,6 ]', ['1', '[ 2,3,4,5,6 ]']),
+        ('[1],2,3,4,5,6,[7]', ['[1]', '2', '3', '4', '5', '6', '[7]']),
+        ('format=[1],2,3,4,5,6,[7]', ['format=[1]', '2', '3', '4', '5', '6', '[7]']),
+    ],
+)
+def test_split_args(s, args):
+    """Test the _split_args function."""
+    assert config._split_args(s) == args
+
+
+# some common image preproc operators for testing
+_rotate90 = config.ImagePreproc('videoflip', (config.VideoFlipMethod.clockwise,), {})
+_rotate180 = config.ImagePreproc('videoflip', (config.VideoFlipMethod.rotate_180,), {})
+_rotate270 = config.ImagePreproc('videoflip', (config.VideoFlipMethod.counterclockwise,), {})
+_perspective = config.ImagePreproc('perspective', ([0.1, 0.2, 0.3], ''), {})
+_perspective_rgb = config.ImagePreproc('perspective', ([0.1, 0.2, 0.3], 'rgb'), {})
+_camera_undistort = config.ImagePreproc(
+    'camera_undistort',
+    (
+        0.614,
+        1.091,
+        0.488,
+        0.482,
+        [-0.37793616, 0.11966818, -0.00067655, 0.0, -0.00115868],
+        True,
+        types.ColorFormat.RGB,
+    ),
+    {},
+)
+_vflip = config.ImagePreproc('videoflip', (config.VideoFlipMethod.vertical_flip,), {})
+
+
+@pytest.mark.parametrize(
+    'src, remaining, ops',
+    [
+        ('videoflip:rtsp://localhost', 'rtsp://localhost', [_rotate90]),
+        ('videoflip:v.mp4', 'v.mp4', [_rotate90]),
+        ('videoflip[]:v.mp4', 'v.mp4', [_rotate90]),
+        ('rotate90:v.mp4', 'v.mp4', [_rotate90]),
+        ('rotate180:v.mp4', 'v.mp4', [_rotate180]),
+        ('rotate270:v.mp4', 'v.mp4', [_rotate270]),
+        ('videoflip[counterclockwise]:v.mp4', 'v.mp4', [_rotate270]),
+        ('videoflip[method=vertical_flip]:v.mp4', 'v.mp4', [_vflip]),
+        ('perspective[[0.1,0.2,0.3]]:v.mp4', 'v.mp4', [_perspective]),
+        ('perspective[[0.1,0.2,0.3],rgb]:v.mp4', 'v.mp4', [_perspective_rgb]),
+        (
+            'camera_undistort[0.614,1.091,0.488,0.482,[-0.37793616, 0.11966818, -0.00067655, 0, -0.00115868],normalized=True]:v.mp4',
+            'v.mp4',
+            [_camera_undistort],
+        ),
+    ],
+)
+def test_parse_image_preprocs(src, remaining, ops):
+    gotremaining, gotops = config._parse_image_preprocs(src)
+    assert gotremaining == remaining
+    assert gotops == ops
+
+
+@pytest.mark.parametrize(
+    'src,cfg_contents,ops',
+    [
+        ('source_config[myconfig.txt]:v.mp4', 'rotate90', [_rotate90]),
+        ('source_config[myconfig.txt]:v.mp4', 'rotate90:', [_rotate90]),
+        (
+            'source_config[myconfig.txt]:v.mp4',
+            'rotate90:perspective[[0.1,0.2,0.3]]',
+            [_rotate90, _perspective],
+        ),
+        (
+            'source_config[myconfig.txt]:v.mp4',
+            'rotate90\nperspective[[0.1,0.2,0.3]]',
+            [_rotate90, _perspective],
+        ),
+        (
+            'source_config[myconfig.txt]:v.mp4',
+            'rotate90:\nperspective[[0.1,0.2,0.3]]',
+            [_rotate90, _perspective],
+        ),
+        ('source_config[myconfig.txt]:rotate270:v.mp4', 'rotate90', [_rotate90, _rotate270]),
+    ],
+)
+def test_parse_image_preprocs_load_source(src, cfg_contents, ops):
+    with patch.object(Path, 'is_file', return_value=True):
+        with patch.object(Path, 'read_text', return_value=cfg_contents):
+            got = config.Source(src)
+    assert Path(got.location).name == 'v.mp4'
+    assert got.type == config.SourceType.VIDEO_FILE
+    assert got.preprocessing == ops
+
+
+@pytest.mark.parametrize(
+    'src, err',
+    [
+        (
+            'perspective:v.mp4',
+            "Invalid arguments for perspective: missing a required argument: 'camera_matrix'",
+        ),
+        (
+            'perspective[]:v.mp4',
+            "Invalid arguments for perspective: missing a required argument: 'camera_matrix'",
+        ),
+        (
+            'videoflip[reverse=False]:v.mp4',
+            "Invalid arguments for videoflip: got an unexpected keyword argument 'reverse'",
+        ),
+        ('videoflip[1]:v.mp4', "Invalid value '1' for enum VideoFlipMethod in param 'method'"),
+        (
+            'videoflip[klokwize]:v.mp4',
+            "Invalid value 'klokwize' for enum VideoFlipMethod in param 'method'",
+        ),
+        (
+            'videoflip[too,many,args]:v.mp4',
+            "Invalid arguments for videoflip: too many positional arguments",
+        ),
+    ],
+)
+def test_parse_image_preprocs_errors(src, err):
+    with pytest.raises(Exception, match=err):
+        remaining, ops = config._parse_image_preprocs(src)
+        assert False, f"did not raise, but returned {remaining=} {ops=}"
+
+
+def image_generator():
+    for i in range(3):
+        yield np.zeros((480, 640, 3), dtype=np.uint8)
+
+
+def types_image_generator():
+    for img in image_generator():
+        yield types.Image.fromarray(img)
+
+
+def test_source_data_source_from_np_generator():
+    gen = image_generator()
+    source = Source(gen)
+
+    assert source.type == SourceType.DATA_SOURCE
+    assert source.reader is gen
+    assert source.preprocessing == []
+
+
+def test_source_data_source_in_pipeline_config():
+    source = Source(image_generator())
+    conf = config.PipelineConfig("yolo.yaml", source)
+    assert conf.sources[0].type == SourceType.DATA_SOURCE
+
+
+def test_source_data_source_multiple_sources():
+    source = Source(image_generator())
+    with pytest.raises(
+        ValueError, match=r"Data Source source cannot be used with multiple sources"
+    ):
+        config.PipelineConfig("yolo.yaml", [source, "rtsp://example.com/stream"])
+
+
+def test_source_data_source_with_types_image():
+    gen = types_image_generator()
+    source = Source(gen)
+    assert source.type == SourceType.DATA_SOURCE
+    assert source.reader is gen
+
+
+def test_source_data_source_invalid():
+    with pytest.raises(TypeError):
+        Source([1, 2, 3])
+
+
+def test_source_data_source_copy_with_reader():
+    gen1 = image_generator()
+    source1 = Source(gen1)
+
+    gen2 = image_generator()
+    source2 = Source(source1, reader=gen2)
+    assert source2.reader is gen2

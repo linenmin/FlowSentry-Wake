@@ -13,6 +13,8 @@
     - [Visualisation without metadata](#visualisation-without-metadata)
   - [Using Raw Tensor Output in Your Application](#using-raw-tensor-output-in-your-application)
     - [Pipeline configuration for raw tensor output](#pipeline-configuration-for-raw-tensor-output)
+      - [Performance optimization (advanced)](#performance-optimization-advanced)
+    - [Performance note](#performance-note)
     - [Example: Extracting the tensor in Python](#example-extracting-the-tensor-in-python)
   - [List of example applications](#list-of-example-applications)
 
@@ -311,7 +313,7 @@ a good tradeoff between latency and reliability in many typical network conditio
 
 ## Customizing visualisation
 
-The file [fruit_demo.py](/examples/fruit_demo.py) shows how to configure the visualiser in a number
+The file [fruit_demo.py](/examples/demos/fruit_demo.py) shows how to configure the visualiser in a number
 of different ways.
 
 ```python
@@ -352,7 +354,7 @@ such as text and images, in the visualiser.
 def main(window, stream):
     ...
     counter = window.text(
-        ('20px', '10%'),
+        '20px, 10%',
         "Vehicles: 00",
     )
     ...
@@ -365,7 +367,7 @@ def main(window, stream):
 
 The method `window.text` creates a text box on the window, and returns a handle to the text box which can be used for future modification.
 
-- The text box will be located at the given css-style string position `('20px', '10%')`. This means the anchor point of the text box (default top left) will be located 20 screen pixels from the lext of the window, and 10% down from the top. This illustrates the two methods of providing layer locations. In absolute pixel terms, or relative to the window/stream size.
+- The text box will be located at the given css-style string position `'20px, 10%'`. This means the anchor point of the text box (default top left) will be located 20 screen pixels from the left of the window, and 10% down from the top. This illustrates the two methods of providing layer locations. In absolute pixel terms, or relative to the window/stream size.
   - Note that the counter example is constructed without a `stream_id`. If a `stream_id` is provided, the layer will be rendered to the stream, not the window. As such, the positions will be relative to the indicated `stream_id`, not relative to the window.
 - The text box will contain the text "Vehicles: 00" after initialization, to serve as a counter of the number of vehicles currently in the frame.
 
@@ -373,6 +375,7 @@ Later, when processing the stream, we update the text in the text box to whateve
 
 > [!TIP]
 > You can also update fields by kwarg with the `set` method on the handle, including multiple fields at once.
+> Position coordinates can be provided in tuple form, like `('20px', '10%')`.
 > Other layers, such as images, may be displayed in a similar fashion.
 > There are many other customisations and methods provided by the handle. See the [`Window` and `LayerHandle` class definitions](/axelera/app/display.py) for further details.
 
@@ -386,17 +389,47 @@ In some cases, you may want your pipeline to return the raw output tensor from y
 
 ### Pipeline configuration for raw tensor output
 
-To receive the raw tensor, configure your YAML pipeline to use a `get-raw-tensor` postprocess step instead of a standard decoder. For example:
+To receive the raw tensor output that matches your original ONNX or PyTorch model, configure your YAML pipeline like this:
 
 ```yaml
+inference:
+  handle_all: True  # Default: produces output matching your original model
 postprocess:
   - get-raw-tensor:
-      dequantized_and_depadded: True
-      transposed: True
-      postamble_processed: True
 ```
 
+This gives you the same tensor output as your original ONNX or PyTorch model - fully dequantized, with correct dimensions and layout.
+
+#### Performance optimization (advanced)
+
+For improved performance, especially with smaller models, you can handle processing steps yourself:
+
+**Option 1 - Handle nothing (maximum performance potential):**
+```yaml
+inference:
+  handle_all: False  # You handle all processing steps yourself
+postprocess:
+  - get-raw-tensor:
+```
+
+**Option 2 - Fine-grained control:**
+```yaml
+inference:
+  # Don't set handle_all, configure individual steps
+  handle_dequantization_and_depadding: True
+  handle_transpose: False
+  handle_postamble: False
+postprocess:
+  - get-raw-tensor:
+```
+
+With `handle_all: False`, you take responsibility for all processing steps yourself, but this can enable additional optimizations in the pipeline.
+
 This will produce an `.axnet` where the output meta contains a tensor, not decoded detections.
+
+### Performance note
+
+The raw tensor output path is intended for flexibility, experimentation, and integration - not for maximum speed. If you want maximum performance in production applications, consider building a standard decoder as done for models in the Axelera model zoo, which allows the pipeline to use fully optimized postprocessing.
 
 ### Example: Extracting the tensor in Python
 
@@ -416,7 +449,7 @@ for frame_result in stream:
 > - **For InferenceStream, we highly recommend using the standard pipeline path for production and real applications.** The raw tensor output path is intended primarily for educational purposes, experimentation, or quick prototyping, and it significantly reduces performance compared to the standard pipeline.
 > - You can use the raw tensor output path for quick prototyping or exploration. After that, you can either:
 >   - Move to a production solution with AxInferenceNet ([AxInferenceNet C++ Integration Tutorial](/docs/tutorials/axinferencenet.md)), or
->   - Finish your implementation and use InferenceStream properly with a standard pipeline ([Advanced model and pipeline deployment](/ax_models/tutorials/general/tutorials.md)).
+>   - Finish your implementation and use InferenceStream properly with a standard pipeline ([Tutorials](/ax_models/tutorials/general/tutorials.md)).
 
 
 See the [axinferencenet_tensor.cpp](/examples/axinferencenet/axinferencenet_tensor.cpp) and [application_tensor.py](/examples/application_tensor.py) examples for more details on working with raw tensor output.
@@ -428,5 +461,5 @@ See the [axinferencenet_tensor.cpp](/examples/axinferencenet/axinferencenet_tens
 | :------ | :---------- |
 | [`/examples/application.py`](/examples/application.py) | Simple integration of vehicle tracker into an application including visualisation and basic analytics |
 | [`/examples/application_extended.py`](/examples/application_extended.py) | Adds advanced customization and monitoring to the simple vehicle tracker example |
-| [`/examples/fruit_demo.py`](/examples/fruit_demo.py) | Renders segmentation of fruits held by people in colour against a grayscale background |
+| [`/examples/demos/fruit_demo.py`](/examples/demos/fruit_demo.py) | Renders segmentation of fruits held by people in colour against a grayscale background |
 | [`/examples/application_tensor.py`](/examples/application_tensor.py) | Demonstrates how to extract and postprocess the raw tensor output from a YOLOv8 model |

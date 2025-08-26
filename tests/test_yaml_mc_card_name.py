@@ -36,8 +36,10 @@ model_name_to_card_name_dict = {
 'efficientnet_b4-imagenet'                : 'EfficientNet-B4',
 'efficientnet_b4-imagenet-onnx'           : 'EfficientNet-B4',
 'facenet-lfw'                             : 'FaceNet - InceptionResnetV1',
+'facenet-lfw-onnx'                        : 'FaceNet - InceptionResnetV1',
 'fake_cfg'                                : 'NO CARD NAME',
 'fastdepth-nyudepthv2-onnx'               : 'FastDepth',
+'dinov2-depth-nyudepth2-onnx'             : 'DINOv2-DPT Depth',
 'inception_v3-imagenet'                   : 'Inception V3',
 'inception_v3-imagenet-onnx'              : 'Inception V3',
 'lprnet'                                  : 'LPRNet',
@@ -64,7 +66,7 @@ model_name_to_card_name_dict = {
 'mobilenetv4_large-imagenet-onnx'         : 'MobileNetV4-large',
 'mobilenetv4_aa_large-imagenet'           : 'MobileNetV4-aa_large',
 'mobilenetv4_aa_large-imagenet-onnx'      : 'MobileNetV4-aa_large',
-'osnet-x1-0-onnx'                         : 'OSNet x1_0',
+'osnet-x1-0-market1501-onnx'              : 'OSNet x1_0',
 'parallel-yolov8spose-retinaface'         : 'NO CARD NAME',
 'real-esrgan-x4plus-onnx'                 : 'Real-ESRGAN-x4plus',
 'regnet_x_1_6gf-imagenet'                 : 'RegNetX-1_6GF',
@@ -184,6 +186,9 @@ model_name_to_card_name_dict = {
 'yolov9m-coco-onnx'                       : 'YOLOv9m',
 'yolov9s-coco-onnx'                       : 'YOLOv9s',
 'yolov9t-coco-onnx'                       : 'YOLOv9t',
+'yolov10n-coco-onnx'                      : 'YOLOv10n',
+'yolov10b-coco-onnx'                      : 'YOLOv10b',
+'yolov10s-coco-onnx'                      : 'YOLOv10s',
 'yolo11n-coco-onnx'                       : 'YOLO11n',
 'yolo11n-coco'                            : 'YOLO11n',
 'yolo11s-coco-onnx'                       : 'YOLO11s',
@@ -252,7 +257,9 @@ def _is_expected_value(model_name, card_name, expected_card_name, full_path):
 
 def test_card_names():
     file_dir_path = os.path.dirname(os.path.realpath(__file__))
-    network_yaml_info = yaml_parser.get_network_yaml_info(model_cards_only=True)
+    network_yaml_info = yaml_parser.get_network_yaml_info(
+        model_cards_only=True, llm_in_model_cards=False
+    )
     release_models_path = os.path.join(
         file_dir_path, '..', 'internal_tools', 'model_release_candidates.yaml'
     )

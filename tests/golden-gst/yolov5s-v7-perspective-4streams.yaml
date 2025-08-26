@@ -69,9 +69,6 @@
   - instance: videoconvert
   - instance: capsfilter
     caps: video/x-raw,format=RGBA
-  - instance: videoconvert
-  - instance: capsfilter
-    caps: video/x-raw,format=RGBA
   - instance: queue
     connections:
       src: inference-task0.sink_%u
@@ -91,9 +88,6 @@
     name: decodebin-link3
     mode: meta
     options: stream_id:3
-  - instance: videoconvert
-  - instance: capsfilter
-    caps: video/x-raw,format=RGBA
   - instance: videoconvert
   - instance: capsfilter
     caps: video/x-raw,format=RGBA

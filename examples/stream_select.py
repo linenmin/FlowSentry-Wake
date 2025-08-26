@@ -46,13 +46,13 @@ commands = [
 
 
 def _short_source(source):
-    return source[:50] + '...' if len(source) > 50 else source
+    loc = str(source.location)
+    return loc[:50] + '...' if len(loc) > 50 else loc
 
 
 def control_func(window, stream):
     stopped = {}
-    sources = stream.sources.copy()
-    for stream_id, source in sources.items():
+    for stream_id, source in stream.sources.items():
         window.options(stream_id, title=f"{_short_source(source)} : PLAYING")
     for cmdn, (cmd, *args) in zip(itertools.count(), itertools.cycle(commands)):
         if cmd == 'sleep':
@@ -80,8 +80,7 @@ def control_func(window, stream):
                 if existing_source is not None:
                     LOG.warning(f"Stream {stream_id} is already playing as {existing_source}")
                     continue
-                source = sources[stream_id]
-                del stopped[stream_id]
+                source = stopped.pop(stream_id)
                 stream.add_source(source, stream_id)
                 state = 'added'
             else:
@@ -89,7 +88,7 @@ def control_func(window, stream):
                 stopped[stream_id] = existing_source
                 state = 'removed'
         elif cmd == 'check':
-            if set(stream.get_stream_select()) == set(range(len(sources))):
+            if set(stream.get_stream_select()) == set(stream.sources.keys()):
                 LOG.debug("All streams are present and playing")
             else:
                 LOG.warning("The command list has not restored the starting state")
@@ -99,7 +98,7 @@ def control_func(window, stream):
             continue
         window.options(stream_id, title=f"{_short_source(source)} : {state.upper()}")
         play = set(stream.get_stream_select())
-        pause = set(range(len(sources))) - play - set(stopped.keys())
+        pause = set(stream.sources.keys()) - play
         fmt = lambda streams: ' '.join(str(i) for i in sorted(streams)).ljust(10)
         desc = f"#{cmdn:<4d}: {cmd} {stream_id}"
         LOG.info(f"{desc:<20s} Playing {fmt(play)} Paused {fmt(pause)} Removed {fmt(stopped)}")
@@ -137,6 +136,7 @@ if __name__ == '__main__':
         tracers=tracers,
         specified_frame_rate=30,
         device_selector=args.devices,
+        aipu_cores=args.aipu_cores,
     )
     try:
         with App(visible=args.display, opengl=stream.hardware_caps.opengl) as app:

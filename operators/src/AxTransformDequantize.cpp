@@ -5,19 +5,29 @@
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
-#include "AxUtils.hpp"
+#include "AxOpUtils.hpp"
 
+using lookups = std::array<float, 256>;
 struct dequant_properties {
   std::vector<float> dequant_scale{};
   std::vector<float> dequant_zeropoint{};
-  bool do_transpose = false;
+  std::vector<lookups> dequantize_tables{};
+  bool do_transpose{ false };
+  bool dequant_lut{ true };
 };
+
+float
+dequantize(int8_t value, const float *the_table)
+{
+  int index = value + 128;
+  return the_table[index];
+}
 
 extern "C" const std::unordered_set<std::string> &
 allowed_properties()
 {
   static const std::unordered_set<std::string> allowed_properties{ "dequant_scale",
-    "dequant_zeropoint", "transpose" };
+    "dequant_zeropoint", "transpose", "dequant_lut" };
   return allowed_properties;
 }
 
@@ -44,7 +54,12 @@ init_and_set_static_properties(
     throw std::logic_error(
         "dequant_scale and dequant_zeropoint must be the same size in transform_dequantize");
   }
-  prop->do_transpose = Ax::get_property(input, "transpose", "transform_dequantize", false);
+  prop->do_transpose = Ax::get_property(
+      input, "transpose", "transform_dequantize", prop->do_transpose);
+  prop->dequant_lut = Ax::get_property(
+      input, "dequant_lut", "transform_postamble", prop->dequant_lut);
+  prop->dequantize_tables = ax_utils::build_dequantization_tables(
+      prop->dequant_zeropoint, prop->dequant_scale);
   return prop;
 }
 
@@ -104,6 +119,7 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     int z = static_cast<int>(prop->dequant_zeropoint[i]);
     float *outptr = static_cast<float *>(output_tensor.data);
     int8_t *inptr = static_cast<int8_t *>(input_tensor.data);
+    const auto &dequantize_lookups = prop->dequantize_tables[i].data();
 
     if (prop->do_transpose && N == in0 && H == in1 && W == in2 && C == in3) {
       for (int iN = 0; iN < N; ++iN) {
@@ -111,7 +127,9 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
           for (int iH = 0; iH < H; ++iH) {
             for (int iW = 0; iW < W; ++iW) {
               int input_index = iN * H * W * C + iH * W * C + iW * C + iC;
-              *outptr++ = s * (inptr[input_index] - z);
+              *outptr++ = prop->dequant_lut ?
+                              dequantize(inptr[input_index], dequantize_lookups) :
+                              s * (static_cast<float>(inptr[input_index]) - z);
             }
           }
         }

@@ -18,6 +18,8 @@ pipeline:
             height: 640
             scaleup: True
         - torch-totensor:
+      inference:
+        handle_all: False
       postprocess:
         - decodeyolo:
             box_format: xywh # box format of the model output
@@ -65,7 +67,8 @@ datasets:
     dataset_drop_dirs: 0
     # tools/list_relative_image_paths.py can be used to generate the following 2 files
     label_type: YOLOv8
-    # Support both options: either point to a directory under data_dir_name that contains images and labels subdirectories, or point to a file with a list of image paths.
-    cal_data: valid # val.txt
-    val_data: test # test.txt
-    labels_path: $AXELERA_FRAMEWORK/ax_models/tutorials/yolo/licenseplate.names
+    ultralytics_data_yaml: data.yaml
+    # # Support both options: either point to a directory under data_dir_name that contains images and labels subdirectories, or point to a file with a list of image paths.
+    # cal_data: valid # val.txt
+    # val_data: test # test.txt
+    # labels_path: $AXELERA_FRAMEWORK/ax_models/tutorials/yolo/licenseplate.names

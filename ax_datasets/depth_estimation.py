@@ -53,9 +53,6 @@ class DepthEstimationDataAdapter(types.DataAdapter):
         )
 
     def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
-        if repr_dataloader := self.check_representative_images(transform, batch_size, **kwargs):
-            return repr_dataloader
-
         data_utils.check_and_download_dataset(
             dataset_name='NYUDepthV2',
             data_root_dir=root,
@@ -69,6 +66,7 @@ class DepthEstimationDataAdapter(types.DataAdapter):
             NYUDepthV2(os.path.join(root, kwargs['cal_data']), transform),
             batch_size=batch_size,
             shuffle=True,
+            generator=kwargs.get('generator'),
             collate_fn=lambda x: x,
             num_workers=0,
         )

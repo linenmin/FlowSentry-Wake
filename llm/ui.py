@@ -3,18 +3,91 @@
 ui.py
 Reusable Gradio UI builder for LLM chat, with a Axelera-Customized and a native UI.
 """
-
-import pathlib
-
-from llm.conversation import stream_response
-import numpy as np
-
 from axelera.app import config, logging_utils
 
 LOG = logging_utils.getLogger(__name__)
 
+GRADIO_AVAILABLE = False
+try:
+    import gradio as gr
+
+    GRADIO_AVAILABLE = True
+except ImportError:
+    LOG.warning("Gradio not available! Please install it to use the UI features.")
+
+from llm.conversation import stream_response
+
 ASSET_DIR = config.env.llm_root / "assets/file"
 CSS_PATH = config.env.llm_root / "assets/styles.css"
+
+
+def _create_chat_logic(
+    keep_history,
+    model_instance,
+    chat_encoder,
+    tokenizer,
+    max_tokens,
+    temperature,
+    end_token_id,
+    error_status_message="Error",
+    tracers=None,
+):
+    """Helper function to create chat logic (chat_fn and clear_history)."""
+
+    def chat_fn(message, history):
+        import time
+
+        if history is None:
+            history = []
+
+        chat_history = [] if not keep_history else [(h[0], h[1]) for h in history if h[0] and h[1]]
+
+        history = history + [[message, ""]]
+        yield history, "", "Ready"
+
+        try:
+            input_ids, embedding_features = chat_encoder.encode(message, chat_history)
+            response = ""
+            for new_text, stats in stream_response(
+                model_instance,
+                chat_encoder,
+                tokenizer,
+                input_ids,
+                embedding_features,
+                max_tokens,
+                temperature,
+                tokenizer.eos_token_id,
+                end_token_id,
+                tracers=tracers,
+            ):
+                response = new_text
+                history[-1][1] = response
+                status_str = f"TTFT: {stats['ttft']:.2f}s | Tokens/sec: {stats['tokens_per_sec']:.2f} | Tokens: {stats['tokens']}"
+
+                if tracers:
+                    status_str += format_system_metrics(tracers)
+                yield history, "", status_str
+
+            chat_encoder.add_to_history(message, response)
+            LOG.info(f"User message processed, response length: {len(response)}")
+
+            if not keep_history:
+                LOG.debug(
+                    "--history flag not enabled, clearing conversation history after response"
+                )
+                chat_encoder.reset(preserve_system_prompt=True)
+        except Exception as e:
+            LOG.error(f"Error processing message: {str(e)}")
+            error_message = f"Sorry, an error occurred: {str(e)}"
+            history[-1][1] = error_message
+            yield history, "", error_status_message
+
+    def clear_history():
+        chat_encoder.reset(preserve_system_prompt=True)
+        LOG.info("Chat history cleared.")
+        return [], "", "Ready"
+
+    return chat_fn, clear_history
 
 
 def load_css():
@@ -49,8 +122,6 @@ def format_system_metrics(tracers):
 
 
 def create_header_html():
-    import gradio as gr
-
     # Use the merged logo if you demo on Arduinio platform
     # logo_path = str(ASSET_DIR / "merged_logo.png")
     logo_path = str(ASSET_DIR / "Axelera-AI-logo-White.png")
@@ -97,6 +168,132 @@ def get_short_model_name(model_name):
     return "Unknown Model"
 
 
+def _build_chat_interface(current_system_prompt):
+    """Builds the chat interface elements."""
+    with gr.Column(elem_classes="chatbox"):
+        chatbot = gr.Chatbot(
+            show_label=False,
+            elem_classes="chat-display",
+            avatar_images=(None, str(ASSET_DIR / "AX-TOP-Icon-.png")),
+            resizeable=True,
+        )
+        with gr.Row(elem_classes="input-container"):
+            msg = gr.Textbox(
+                show_label=False,
+                placeholder="Ask me something...",
+                container=False,
+                elem_classes="message-input",
+                scale=9,
+                submit_btn='➤',
+            )
+            clear = gr.ClearButton(value="Clear", scale=1, elem_classes="clear-btn")
+    return chatbot, msg, clear
+
+
+def _build_system_prompt_modal(current_system_prompt, chat_encoder):
+    """Builds the system prompt modal and its interactions."""
+    system_prompt_state = gr.State(current_system_prompt)
+    with gr.Group(visible=False) as modal_group:
+        gr.Markdown("### System Prompt Settings")
+        system_prompt_input = gr.Textbox(
+            label="", value=current_system_prompt, lines=5, elem_classes="system-prompt-input"
+        )
+        with gr.Row():
+            update_prompt_btn = gr.Button("Update", elem_classes="update-prompt-btn")
+            cancel_btn = gr.Button("Cancel", elem_classes="cancel-btn")
+
+    def show_modal(current_prompt_val):
+        return gr.Group(visible=True), gr.update(value=current_prompt_val)
+
+    def hide_modal():
+        return gr.Group(visible=False), gr.update()
+
+    def update_prompt(new_prompt):
+        chat_encoder.update_system_prompt(new_prompt)
+        LOG.info(f"System prompt updated: {new_prompt}")
+        return gr.Group(visible=False), new_prompt
+
+    return (
+        modal_group,
+        system_prompt_input,
+        update_prompt_btn,
+        cancel_btn,
+        system_prompt_state,
+        show_modal,
+        hide_modal,
+        update_prompt,
+    )
+
+
+def _build_settings_and_status_bar():
+    """Builds the settings button and status bar."""
+    with gr.Row(elem_classes="status-container"):
+        with gr.Column(scale=1, min_width=45):
+            settings_btn = gr.Button(
+                value="",
+                icon=str(ASSET_DIR / "setting.png"),
+                elem_classes="settings-btn",
+            )
+        with gr.Column(scale=5):
+            pass  # Placeholder for status messages if needed
+        with gr.Column(scale=4):
+            pass  # Placeholder for system info if needed
+    status = gr.Markdown(value="Ready", elem_classes="status-text")
+    return settings_btn, status
+
+
+def _get_auto_scroll_js(selector='.chat-display'):
+    """Returns JavaScript code for auto-scrolling chat windows.
+    Typically, Gradio has this feature built-in adn defaults to true.
+    However, it sometimes fails to work, so we add this as a workaround.
+
+    Args:
+        selector: The CSS selector to find the chat container elements.
+
+    Returns:
+        JavaScript code as a string for attaching auto-scroll behavior.
+    """
+    return f"""
+function setupAutoScroll() {{
+    const chatContainers = document.querySelectorAll('{selector}');
+    if (chatContainers && chatContainers.length > 0) {{
+        chatContainers.forEach(container => {{
+            const observer = new MutationObserver(() => {{
+                container.scrollTop = container.scrollHeight;
+            }});
+
+            observer.observe(container, {{
+                childList: true,
+                subtree: true,
+                characterData: true
+            }});
+        }});
+        console.log('Auto-scroll enabled for {selector}');
+    }} else {{
+        setTimeout(setupAutoScroll, 100);
+    }}
+}}
+setupAutoScroll();
+"""
+
+
+def _get_esc_key_handler_js():
+    """Returns JavaScript code for ESC key handling to clear chat history.
+
+    Returns:
+        JavaScript code as a string for handling ESC key press.
+    """
+    return """
+// ESC key to clear chat history
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        const clearBtn = document.querySelector('button.clear-btn');
+        if (clearBtn) clearBtn.click();
+    }
+});
+"""
+
+
 def build_llm_ui(
     model_instance,
     chat_encoder,
@@ -105,22 +302,18 @@ def build_llm_ui(
     system_prompt,
     temperature,
     model_name,
-    no_history=False,
+    end_token_id,
+    keep_history=True,
     tracers=None,
 ):
     """
     Build a Gradio Blocks UI for LLM chat, matching phi3_demo.py.
     Returns a Gradio Blocks app.
     """
-    import gradio as gr
 
-    # Ensure the UI uses the current system prompt from the encoder
-    # This allows the UI to properly show the correct prompt even after page refresh
-    current_system_prompt = getattr(chat_encoder, 'system_prompt', system_prompt)
-
-    # Update the system prompt only if it's not already set in the encoder
-    if not hasattr(chat_encoder, 'system_prompt'):
-        chat_encoder.update_system_prompt(system_prompt)
+    # chat_encoder.system_prompt is the source of truth.
+    # system_prompt param is used for initial UI state.
+    current_system_prompt = chat_encoder.system_prompt
 
     css = load_css()
     LOG.info("Building LLM Gradio UI...")
@@ -128,68 +321,17 @@ def build_llm_ui(
     # Extract short model name for display
     short_model_name = get_short_model_name(model_name)
 
-    def chat_fn(message, history):
-        import time
-
-        if history is None:
-            history = []
-
-        # If no_history is enabled, only keep the visual history in the UI
-        # but don't pass it to the encoder - treat each message independently
-        chat_history = [] if no_history else [(h[0], h[1]) for h in history if h[0] and h[1]]
-
-        # Show user message immediately
-        history = history + [[message, ""]]
-        yield history, "", "Ready"
-
-        try:
-            input_ids, embedding_features = chat_encoder.encode(message, chat_history)
-            response = ""
-            # Use stream_response for streaming output
-            for new_text, stats in stream_response(
-                model_instance,
-                chat_encoder,
-                tokenizer,
-                input_ids,
-                embedding_features,
-                max_tokens,
-                temperature,
-                tokenizer.eos_token_id,
-                getattr(model_instance, 'end_token_id', None),
-            ):
-                response = new_text
-                history[-1][1] = response
-                status_str = f"TTFT: {stats['ttft']:.2f}s | Tokens/sec: {stats['tokens_per_sec']:.2f} | Tokens: {stats['tokens']}"
-
-                if tracers:
-                    status_str += format_system_metrics(tracers)
-
-                yield history, "", status_str
-
-            # We need to add the message-response pair to history to make the stateless approach work
-            # since we need to properly consume the generated text
-            chat_encoder.add_to_history(message, response)
-            LOG.info(f"User message processed, response length: {len(response)}")
-
-            # Clear history if no_history flag is set
-            if no_history:
-                LOG.debug(
-                    "--no-history flag enabled, clearing conversation history after response"
-                )
-                # Clear history but preserve system prompt to avoid unnecessary reprocessing
-                chat_encoder.reset(preserve_system_prompt=True)
-        except Exception as e:
-            # Handle any exceptions that occur during processing
-            LOG.error(f"Error processing message: {str(e)}")
-            error_message = f"Sorry, an error occurred: {str(e)}"
-            history[-1][1] = error_message
-            yield history, "", "Error"
-
-    def clear_history():
-        # Reset but preserve the system prompt to avoid unnecessary reprocessing
-        chat_encoder.reset(preserve_system_prompt=True)
-        LOG.info("Chat history cleared.")
-        return [], "", "Ready"
+    chat_fn, clear_history = _create_chat_logic(
+        keep_history,
+        model_instance,
+        chat_encoder,
+        tokenizer,
+        max_tokens,
+        temperature,
+        end_token_id,
+        error_status_message="Error",  # Specific for this UI
+        tracers=tracers,
+    )
 
     with gr.Blocks(
         theme=gr.themes.Soft(primary_hue="blue", secondary_hue="gray").set(
@@ -219,87 +361,46 @@ def build_llm_ui(
         gr.Markdown(
             f'<div class="chat-header"><b>Chat with the <span style="color:#FBBE18">{short_model_name}</span> model.<br>Enter your message and see the AI respond in real-time.</b></div>'
         )
-        # Add a state to store the current system prompt
-        system_prompt_state = gr.State(current_system_prompt)
-        with gr.Column(elem_classes="chatbox"):
-            chatbot = gr.Chatbot(
-                show_label=False,
-                elem_classes="chat-display",
-                avatar_images=(None, str(ASSET_DIR / "AX-TOP-Icon-.png")),
-                resizeable=True,
-            )
-            with gr.Row(elem_classes="input-container"):
-                msg = gr.Textbox(
-                    show_label=False,
-                    placeholder="Ask me something...",
-                    container=False,
-                    elem_classes="message-input",
-                    scale=9,
-                    submit_btn='➤',
-                )
-                clear = gr.ClearButton(value="Clear", scale=1, elem_classes="clear-btn")
-        # Modal for system prompt
-        with gr.Group(visible=False) as modal_group:
-            gr.Markdown("### System Prompt Settings")
-            # Bind the textbox value to the state
-            system_prompt_input = gr.Textbox(
-                label="", value=current_system_prompt, lines=5, elem_classes="system-prompt-input"
-            )
-            with gr.Row():
-                update_prompt_btn = gr.Button("Update", elem_classes="update-prompt-btn")
-                cancel_btn = gr.Button("Cancel", elem_classes="cancel-btn")
-        # Add settings button with icon for system prompt
-        with gr.Row(elem_classes="status-container"):
-            with gr.Column(scale=1, min_width=45):
-                settings_btn = gr.Button(
-                    value="",
-                    icon=str(ASSET_DIR / "setting.png"),
-                    elem_classes="settings-btn",
-                )
-            with gr.Column(scale=5):
-                pass  # Placeholder for status messages if needed
-            with gr.Column(scale=4):
-                pass  # Placeholder for system info if needed
 
-        def show_modal(current_prompt):
-            # Set the textbox value to the current system prompt
-            return gr.Group(visible=True), gr.update(value=current_prompt)
+        chatbot, msg, clear = _build_chat_interface(current_system_prompt)
 
-        def hide_modal():
-            return gr.Group(visible=False), gr.update()
+        (
+            modal_group,
+            system_prompt_input,
+            update_prompt_btn,
+            cancel_btn,
+            system_prompt_state,
+            show_modal_fn,
+            hide_modal_fn,
+            update_prompt_fn,
+        ) = _build_system_prompt_modal(current_system_prompt, chat_encoder)
 
-        def update_prompt(new_prompt):
-            chat_encoder.update_system_prompt(new_prompt)
-            LOG.info(f"System prompt updated: {new_prompt}")
-            return gr.Group(visible=False), new_prompt
+        settings_btn, status = _build_settings_and_status_bar()
 
-        # Add a status bar
-        status = gr.Markdown(value="Ready", elem_classes="status-text")
         msg.submit(chat_fn, [msg, chatbot], [chatbot, msg, status], queue=True, api_name="chat")
         clear.click(clear_history, None, [chatbot, msg, status], queue=False)
+
         update_prompt_btn.click(
-            fn=update_prompt,
+            fn=update_prompt_fn,
             inputs=[system_prompt_input],
             outputs=[modal_group, system_prompt_state],
         )
-        cancel_btn.click(fn=hide_modal, outputs=[modal_group, system_prompt_input])
-        # When opening the modal, set the textbox value to the current system prompt
+        cancel_btn.click(fn=hide_modal_fn, outputs=[modal_group, system_prompt_input])
         settings_btn.click(
-            fn=show_modal, inputs=[system_prompt_state], outputs=[modal_group, system_prompt_input]
+            fn=show_modal_fn,
+            inputs=[system_prompt_state],
+            outputs=[modal_group, system_prompt_input],
         )
 
-        # ESC key to clear chat history
+        # Add keyboard shortcuts and auto-scroll functionality
         demo.load(
             fn=None,
             inputs=None,
             outputs=None,
-            js="""() => {
-                document.addEventListener('keydown', function(e) {
-                    if (e.key === 'Escape') {
-                        document.querySelector('button.clear-btn').click();
-                    }
-                });
-            }""",
+            js=f"""() => {{
+                {_get_esc_key_handler_js()}
+                {_get_auto_scroll_js('.chat-display')}
+            }}""",
         )
     return demo
 
@@ -312,41 +413,28 @@ def build_llm_ui_native(
     system_prompt,
     temperature,
     model_name=None,
-    no_history=False,
+    end_token_id=None,
+    keep_history=True,
     tracers=None,
 ):
     """
     Build a modern, native Gradio UI for LLM chat using only Gradio's built-in themes and components.
+    This version supports temperature adjustment.
+
     Returns a Gradio Blocks app.
     """
-    import gradio as gr
-
-    # Ensure the UI uses the current system prompt from the encoder
-    # This allows the UI to properly show the correct prompt even after page refresh
-    current_system_prompt = getattr(chat_encoder, 'system_prompt', system_prompt)
-
-    # Update the system prompt only if it's not already set in the encoder
-    if not hasattr(chat_encoder, 'system_prompt'):
-        chat_encoder.update_system_prompt(system_prompt)
-    else:
-        LOG.info(f"Using existing system prompt from encoder: {current_system_prompt}")
-
+    current_system_prompt = chat_encoder.system_prompt
     LOG.info("Building native Gradio LLM UI...")
-
-    # Extract short model name for display
     short_model_name = get_short_model_name(model_name)
 
-    def chat_fn(message, history):
-        import time
+    temperature_value = [temperature]
 
+    def temp_aware_chat_fn(message, history):
+        current_temp = temperature_value[0]
         if history is None:
             history = []
 
-        # If no_history is enabled, only keep the visual history in the UI
-        # but don't pass it to the encoder - treat each message independently
-        chat_history = [] if no_history else [(h[0], h[1]) for h in history if h[0] and h[1]]
-
-        # Show user message immediately
+        chat_history = [] if not keep_history else [(h[0], h[1]) for h in history if h[0] and h[1]]
         history = history + [[message, ""]]
         yield history, "", "Ready"
 
@@ -360,9 +448,9 @@ def build_llm_ui_native(
                 input_ids,
                 embedding_features,
                 max_tokens,
-                temperature,
+                current_temp,
                 tokenizer.eos_token_id,
-                getattr(model_instance, 'end_token_id', None),
+                end_token_id,
             ):
                 response = new_text
                 history[-1][1] = response
@@ -373,101 +461,107 @@ def build_llm_ui_native(
 
                 yield history, "", status_str
 
-            # We need to add the message-response pair to history to make the stateless approach work
-            # since we need to properly consume the generated text
             chat_encoder.add_to_history(message, response)
             LOG.info(f"User message processed, response length: {len(response)}")
 
-            # Clear history if no_history flag is set
-            if no_history:
+            if not keep_history:
                 LOG.debug(
-                    "--no-history flag enabled, clearing conversation history after response"
+                    "--history flag not enabled, clearing conversation history after response"
                 )
-                # Clear history but preserve system prompt to avoid unnecessary reprocessing
                 chat_encoder.reset(preserve_system_prompt=True)
         except Exception as e:
-            # Handle any exceptions that occur during processing
             LOG.error(f"Error processing message: {str(e)}")
             error_message = f"Sorry, an error occurred: {str(e)}"
             history[-1][1] = error_message
-            yield history, "", f"<span style='color:red;font-weight:bold;'>Error</span>"
+            yield history, "", "Error"
 
     def clear_history():
-        # Reset but preserve the system prompt to avoid unnecessary reprocessing
         chat_encoder.reset(preserve_system_prompt=True)
         LOG.info("Chat history cleared.")
         return [], "", "Ready"
 
-    with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue", secondary_hue="gray")) as demo:
-        with gr.Row():
-            gr.Image(
-                str(ASSET_DIR / "Axelera-AI-logo-White.png"),
-                show_label=False,
-                height=16,
-                elem_id="logo",
-            )
-        gr.Markdown(
-            f"""
-        <style>
-        @media (prefers-color-scheme: light) {{
-            .axelera-title {{ color: #1a237e !important; }}
-            .slm-demo {{ color: #0D1223 !important; }}
-            .slm-desc {{ color: #444 !important; }}
-            .model-name {{ color: #1565c0 !important; font-weight: bold; }}
-        }}
-        @media (prefers-color-scheme: dark) {{
-            .axelera-title {{ color: #FBBE18 !important; }}
-            .slm-demo {{ color: #fff !important; }}
-            .slm-desc {{ color: #b0b0b0 !important; }}
-            .model-name {{ color: #FBBE18 !important; font-weight: bold; }}
-        }}
-        </style>
-        <div style='text-align:center; margin-top: 0.5em; margin-bottom: 0.5em;'>
-            <span class='axelera-title' style='font-size: 1.7em; font-weight: bold;'>Axelera AI</span><br>
-            <span class='slm-demo' style='font-size: 1.1em;'>SLM Demo</span><br>
-            <span class='slm-desc' style='font-size: 1em;'>
-                {'Chat with <span class="model-name" style="color:#1565c0;font-weight:bold;">' + short_model_name + '</span> on Metis' if short_model_name != 'Unknown Model' else 'Chat with a Small Language Model on Metis'}
-            </span>
-        </div>
-        """
+    with gr.Blocks(
+        theme=gr.themes.Soft(
+            primary_hue="indigo",
+            secondary_hue="blue",
+            neutral_hue="slate",
+            radius_size="lg",
+            font=(gr.themes.GoogleFont("Inter"), gr.themes.GoogleFont("IBM Plex Mono")),
         )
-        gr.Markdown("")  # Spacer
-        with gr.Row():
-            with gr.Column():
-                with gr.Group():
-                    chatbot = gr.Chatbot(
-                        height=400,
-                        bubble_full_width=False,
-                        avatar_images=(None, str(ASSET_DIR / "AX-TOP-Icon-.png")),
-                    )
-        with gr.Row():
-            msg = gr.Textbox(placeholder="Type your message...", show_label=False, scale=8)
-            clear = gr.ClearButton(value="Clear", scale=1)
-        gr.Markdown("")  # Spacer
-        with gr.Row():
-            status = gr.Markdown(
-                "<span style='color:#FBBE18;font-weight:bold;'>Ready</span>", elem_id="status-bar"
+    ) as demo:
+        with gr.Row(equal_height=True):
+            with gr.Column(scale=1, min_width=60):
+                gr.Image(
+                    str(ASSET_DIR / "Axelera-AI-logo-White.png"),
+                    show_label=False,
+                    height=40,
+                    container=False,
+                    interactive=False,
+                    show_download_button=False,
+                    show_fullscreen_button=False,
+                )
+            with gr.Column(scale=5):
+                gr.Markdown(f"# SLM Demo\n### Chat with {short_model_name} on Metis")
+
+        with gr.Group(visible=True):
+            chatbot = gr.Chatbot(
+                value=[],
+                height=450,
+                show_label=False,
+                avatar_images=(None, str(ASSET_DIR / "AX-TOP-Icon-.png")),
+                bubble_full_width=False,
+                autoscroll=True,
             )
-        msg.submit(chat_fn, [msg, chatbot], [chatbot, msg, status], queue=True)
-        clear.click(clear_history, None, [chatbot, msg, status], queue=False)
+
+        with gr.Row():
+            msg = gr.Textbox(
+                placeholder="Type your message...",
+                show_label=False,
+                scale=9,
+                autofocus=True,
+                container=True,
+                lines=1,
+                submit_btn="➤",
+            )
+            clear = gr.ClearButton(value="Clear", size="sm", scale=1)
+
+        with gr.Row():
+            status = gr.Markdown("**Status:** Ready", elem_id="status-bar")
+
         with gr.Accordion("Settings", open=False):
-            system_prompt_box = gr.Textbox(
-                label="System Prompt", value=current_system_prompt, lines=2
-            )
-            temp_slider = gr.Slider(
-                label="Temperature", minimum=0, maximum=1.5, value=temperature, step=0.05
-            )
+            with gr.Row():
+                with gr.Column(scale=3):
+                    system_prompt_box = gr.Textbox(
+                        label="System Prompt",
+                        value=current_system_prompt,
+                        lines=3,
+                        max_lines=5,
+                    )
+                with gr.Column(scale=1):
+                    temp_slider = gr.Slider(
+                        label="Temperature",
+                        minimum=0,
+                        maximum=1.5,
+                        value=temperature,
+                        step=0.05,
+                    )
 
-            def update_settings(new_prompt, new_temp):
+            def update_system_prompt(new_prompt):
                 chat_encoder.update_system_prompt(new_prompt)
-                nonlocal temperature
-                temperature = new_temp
-                return new_prompt, new_temp
 
-            system_prompt_box.change(
-                update_settings, [system_prompt_box, temp_slider], [system_prompt_box, temp_slider]
-            )
-            temp_slider.change(
-                update_settings, [system_prompt_box, temp_slider], [system_prompt_box, temp_slider]
-            )
+            def update_temperature(new_temp):
+                temperature_value[0] = new_temp
+                LOG.info(f"Temperature updated to {new_temp}")
+
+            system_prompt_box.change(update_system_prompt, inputs=[system_prompt_box])
+            temp_slider.change(update_temperature, inputs=[temp_slider])
+
+        msg.submit(temp_aware_chat_fn, [msg, chatbot], [chatbot, msg, status], queue=True)
+        clear.click(clear_history, None, [chatbot, msg, status], queue=False)
+
+        # Add ESC key handler
+        demo.load(
+            fn=None, inputs=None, outputs=None, js=f"""() => {{ {_get_esc_key_handler_js()} }}"""
+        )
+
     return demo

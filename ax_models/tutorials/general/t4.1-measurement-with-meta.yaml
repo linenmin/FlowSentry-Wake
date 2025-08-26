@@ -9,7 +9,7 @@ description: Tutorial-4.1 - An example demonstrating how to measure the model's 
 
 
 pipeline:
-  - classifier:
+  - classifications:
       model_name: model1
       input:
           type: image

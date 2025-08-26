@@ -3,7 +3,7 @@
 #include "AxOpUtils.hpp"
 #include "AxUtils.hpp"
 
-extern "C" std::shared_ptr<AxMetaBase>
+extern "C" std::unique_ptr<AxMetaBase>
 determine_object_attribute(const void *props, int first_id, int frame_id, uint8_t key,
     const std::unordered_map<int, TrackingElement> &frame_id_to_element, Ax::Logger &)
 {
@@ -31,7 +31,7 @@ determine_object_attribute(const void *props, int first_id, int frame_id, uint8_
       best_score = current_score;
     }
   }
-  return std::make_shared<AxMetaClassification>(
+  return std::make_unique<AxMetaClassification>(
       std::vector<std::vector<float>>{ { best_score } },
       std::vector<std::vector<int32_t>>{ { best_class_id } },
       std::vector<std::vector<std::string>>{ { "" } });

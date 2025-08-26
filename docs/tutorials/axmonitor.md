@@ -14,7 +14,13 @@ The `axmonitor` application enables users to monitor key metrics from Axelera AI
 - Core & Board Temperatures
 - Kernels Per Second (KPS)
 
+Kernels on Axelera accelerators are always a number of fused compute operations together. They can refer to an inference or inference and a few mathematical functions combined. This parameter shows the number of these fused kernels executed per second on the hardware. For vision pipelines it is often the same as frames per second.
+- Power Usage
+
 These metrics are retrieved periodically (every 1 second) over a TCP/IP network connection to the Axelera System Service (`axsystemservice`), a host system service for device monitoring and management.
+
+> [!NOTE]  
+> Power measurements are supported only on [4-Metis AIPU PCIe cards](https://store.axelera.ai/products/pcie-ai-accelerator-card-powered-by-4-metis-aipu).
 
 ## Usage
 
@@ -80,7 +86,7 @@ The axmonitor interface is structured into multiple pages:
 
 Displays top-level system information and general status of connected Axelera AI devices.
 
-#### AXL page
+#### MONITOR page
 
 Provides additional data for all metrics, offering deeper insight into the device behavior.
 
@@ -139,7 +145,7 @@ The available topics are:
 
 - `DEV0`, `DEV1`, ..., `DEVN` where `N` is the number of connected devices. By default, the first device (`DEV0`) is chosen if no topic is specified.
 
-To subscribe to a specific device, use the `--topics` option followed by a comma-separated list of topics:
+To subscribe to a specific device, use the `--topics` option followed by a space-separated list of topics:
 
 ```bash
 axmonitor --server-address "127.0.0.1:5555" --topics DEV0 DEV1

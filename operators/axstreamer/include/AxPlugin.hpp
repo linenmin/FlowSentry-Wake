@@ -80,7 +80,7 @@ struct Decoder : Base {
 };
 
 struct DetermineObjectAttribute : Base {
-  std::shared_ptr<AxMetaBase> (*determine_object_attribute)(const void *props,
+  std::unique_ptr<AxMetaBase> (*determine_object_attribute)(const void *props,
       int first_id, int frame_id, uint8_t key,
       const std::unordered_map<int, TrackingElement> &frame_id_to_element, Logger &logger)
       = nullptr;

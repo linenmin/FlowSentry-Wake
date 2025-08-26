@@ -78,7 +78,9 @@ ScalarMOTWrapper::ScalarMOTWrapper(const TrackerParams &params)
 }
 
 const std::vector<ax::TrackedObject>
-ScalarMOTWrapper::Update(const std::vector<ax::ObservedObject> &detections)
+ScalarMOTWrapper::Update(const std::vector<ax::ObservedObject> &detections,
+    const std::vector<std::vector<float>> &embeddings,
+    const std::optional<Eigen::Matrix<float, 2, 3>> &transform)
 {
   std::vector<axtracker::BboxXyxyRelative> inputs;
   for (const auto &det : detections) {
@@ -113,7 +115,9 @@ SORTWrapper::SORTWrapper(const TrackerParams &params)
 }
 
 const std::vector<ax::TrackedObject>
-SORTWrapper::Update(const std::vector<ax::ObservedObject> &detections)
+SORTWrapper::Update(const std::vector<ax::ObservedObject> &detections,
+    const std::vector<std::vector<float>> &embeddings,
+    const std::optional<Eigen::Matrix<float, 2, 3>> &transform)
 {
   std::vector<axtracker::BboxXyxyRelative> inputs;
   for (const auto &det : detections) {
@@ -169,7 +173,9 @@ BytetrackWrapper::BytetrackWrapper(const TrackerParams &params)
 }
 
 const std::vector<ax::TrackedObject>
-BytetrackWrapper::Update(const std::vector<ax::ObservedObject> &detections)
+BytetrackWrapper::Update(const std::vector<ax::ObservedObject> &detections,
+    const std::vector<std::vector<float>> &embeddings,
+    const std::optional<Eigen::Matrix<float, 2, 3>> &transform)
 {
   std::vector<Object> inputs;
   std::vector<ax::TrackedObject> outputs;
@@ -194,12 +200,33 @@ BytetrackWrapper::Update(const std::vector<ax::ObservedObject> &detections)
 #endif
 
 #ifdef HAVE_OC_SORT
-Eigen::Matrix<float, Eigen::Dynamic, 6>
-Vector2Matrix(const std::vector<std::array<float, 6>> &data)
+template <int Cols>
+Eigen::Matrix<float, Eigen::Dynamic, Cols>
+VectorOfArrays2Matrix(const std::vector<std::array<float, Cols>> &data)
 {
-  Eigen::Matrix<float, Eigen::Dynamic, 6> matrix(data.size(), 6);
+  Eigen::Matrix<float, Eigen::Dynamic, Cols> matrix(data.size(), Cols);
   for (int i = 0; i < data.size(); ++i) {
-    for (int j = 0; j < 6; ++j) {
+    for (int j = 0; j < Cols; ++j) {
+      matrix(i, j) = data[i][j];
+    }
+  }
+  return matrix;
+}
+
+Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic>
+VectorOfVectors2Matrix(const std::vector<std::vector<float>> &data)
+{
+  if (data.empty()) {
+    return Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic>();
+  }
+  int rows = data.size();
+  int cols = data[0].size();
+  Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic> matrix(rows, cols);
+  for (int i = 0; i < rows; ++i) {
+    if (data[i].size() != cols) {
+      throw std::runtime_error("All rows must have the same number of columns");
+    }
+    for (int j = 0; j < cols; ++j) {
       matrix(i, j) = data[i][j];
     }
   }
@@ -209,20 +236,27 @@ Vector2Matrix(const std::vector<std::array<float, 6>> &data)
 
 OCSortWrapper::OCSortWrapper(const TrackerParams &params)
     : tracker_(GetParamOrDefault<float>(params, "det_thresh", 0),
-        GetParamOrDefault<int>(params, "max_age", 50),
-        GetParamOrDefault<int>(params, "min_hits", 1),
-        GetParamOrDefault<float>(params, "iou_threshold", 0.22136877277096445),
-        GetParamOrDefault<int>(params, "delta", 1),
-        GetParamOrDefault<std::string>(params, "asso_func", "giou"),
-        GetParamOrDefault<float>(params, "inertia", 0.3941737016672115),
-        GetParamOrDefault<bool>(params, "use_byte", true),
+        GetParamOrDefault<int>(params, "max_age", 30),
+        GetParamOrDefault<int>(params, "min_hits", 3),
+        GetParamOrDefault<float>(params, "iou_threshold", 0.3),
+        GetParamOrDefault<int>(params, "delta", 3),
+        GetParamOrDefault<std::string>(params, "asso_func", "iou"),
+        GetParamOrDefault<float>(params, "inertia", 0.2),
+        GetParamOrDefault<float>(params, "w_assoc_emb", 0.75),
+        GetParamOrDefault<float>(params, "alpha_fixed_emb", 0.95),
         // default as 0 for measurement which never reset id; 999 for demo
-        GetParamOrDefault<int>(params, "max_id", 999))
+        GetParamOrDefault<int>(params, "max_id", 999),
+        // Deep-OC-SORT parameters
+        !GetParamOrDefault<bool>(params, "aw_enabled", false),
+        GetParamOrDefault<float>(params, "aw_param", 0.5),
+        !GetParamOrDefault<bool>(params, "cmc_enabled", false))
 {
 }
 
 const std::vector<ax::TrackedObject>
-OCSortWrapper::Update(const std::vector<ax::ObservedObject> &detections)
+OCSortWrapper::Update(const std::vector<ax::ObservedObject> &detections,
+    const std::vector<std::vector<float>> &embeddings,
+    const std::optional<Eigen::Matrix<float, 2, 3>> &transform)
 {
   std::vector<ax::TrackedObject> outputs;
   std::vector<std::array<float, 6>> inputs;
@@ -232,7 +266,14 @@ OCSortWrapper::Update(const std::vector<ax::ObservedObject> &detections)
     inputs.emplace_back(std::array<float, 6>{ det.bbox.x1, det.bbox.y1,
         det.bbox.x2, det.bbox.y2, det.score, static_cast<float>(det.class_id) });
   }
-  std::vector<Eigen::RowVectorXf> res = tracker_.update(Vector2Matrix(inputs));
+  // Use CMC transform directly - no conversion needed!
+  Eigen::Matrix<float, 2, 3> cmc_transform = Eigen::Matrix<float, 2, 3>::Identity();
+  if (transform.has_value()) {
+    cmc_transform = transform.value();
+  }
+
+  std::vector<Eigen::RowVectorXf> res = tracker_.update(VectorOfArrays2Matrix<6>(inputs),
+      VectorOfVectors2Matrix(embeddings), cmc_transform);
   outputs.reserve(res.size()); // Reserve memory based on the expected size
 
   for (const auto &det : res) {

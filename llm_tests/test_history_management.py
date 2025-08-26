@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def test_chat_history_management_no_history():
-    """Test the core history behavior when no_history=True, without UI dependencies."""
+def test_chat_history_management_keep_history_false():
+    """Test the core history behavior when keep_history=False, without UI dependencies."""
 
     # Create mocks for the required components
     mock_encoder = MagicMock()
@@ -20,16 +20,16 @@ def test_chat_history_management_no_history():
             [("Response text", {"ttft": 0.5, "tokens_per_sec": 10, "tokens": 5})]
         )
 
-        # Core history behavior test when no_history=True:
-        no_history = True
+        # Core history behavior test when keep_history=False:
+        keep_history = False
 
         # Simulate history data
         history = [("Previous question", "Previous answer")]
 
         # Simulate what happens in the chat function
-        chat_history = [] if no_history else [(h[0], h[1]) for h in history if h[0] and h[1]]
+        chat_history = [] if not keep_history else [(h[0], h[1]) for h in history if h[0] and h[1]]
 
-        # Verify empty history is used when no_history=True
+        # Verify empty history is used when keep_history=False
         assert chat_history == []
 
         # Test encode with empty history
@@ -39,16 +39,16 @@ def test_chat_history_management_no_history():
         # Simulate adding new message to the history
         mock_encoder.add_to_history("New message", "Response text")
 
-        # Simulate clearing history after response (when no_history=True)
-        if no_history:
+        # Simulate clearing history after response (when keep_history=False)
+        if not keep_history:
             mock_encoder.reset(preserve_system_prompt=True)
 
         # Verify reset was called
         mock_encoder.reset.assert_called_once_with(preserve_system_prompt=True)
 
 
-def test_chat_history_management_with_history():
-    """Test the core history behavior when no_history=False, without UI dependencies."""
+def test_chat_history_management_with_history_when_keep_history_true():
+    """Test the core history behavior when keep_history=True, without UI dependencies."""
 
     # Create mocks for the required components
     mock_encoder = MagicMock()
@@ -60,16 +60,16 @@ def test_chat_history_management_with_history():
             [("Response text", {"ttft": 0.5, "tokens_per_sec": 10, "tokens": 5})]
         )
 
-        # Core history behavior test when no_history=False:
-        no_history = False
+        # Core history behavior test when keep_history=True:
+        keep_history = True
 
         # Simulate history data
         history = [("Previous question", "Previous answer")]
 
         # Simulate what happens in the chat function
-        chat_history = [] if no_history else [(h[0], h[1]) for h in history if h[0] and h[1]]
+        chat_history = [] if not keep_history else [(h[0], h[1]) for h in history if h[0] and h[1]]
 
-        # Verify history is preserved when no_history=False
+        # Verify history is preserved when keep_history=True
         assert chat_history == [("Previous question", "Previous answer")]
 
         # Test encode with existing history
@@ -81,8 +81,8 @@ def test_chat_history_management_with_history():
         # Simulate adding new message to the history
         mock_encoder.add_to_history("New message", "Response text")
 
-        # Simulate clearing history after response (when no_history=True)
-        if no_history:
+        # Simulate clearing history after response (when keep_history=False)
+        if not keep_history:
             mock_encoder.reset(preserve_system_prompt=True)
 
         # Verify reset was NOT called

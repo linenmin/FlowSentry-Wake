@@ -21,6 +21,7 @@ class FrameResult:
     stream_id: int = 0
     src_timestamp: int = 0
     sink_timestamp: int = 0
+    inferences: int = 0
     render_timestamp: int = 0
 
     def __getattr__(self, attr):

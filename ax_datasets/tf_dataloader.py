@@ -106,12 +106,11 @@ class TfrecordsClassificationDataAdapter(types.DataAdapter):
             raise Exception("Model requires a dataset to calibrate")
 
     def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
-        if repr_dataloader := self.check_representative_images(transform, batch_size, **kwargs):
-            return repr_dataloader
         return data.DataLoader(
             TFRecordDataset(transform, root, 'cal', **kwargs),
             batch_size=batch_size,
             shuffle=True,
+            generator=kwargs.get('generator'),
             collate_fn=lambda x: x,
             num_workers=0,
         )

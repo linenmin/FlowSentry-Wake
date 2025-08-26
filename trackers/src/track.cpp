@@ -132,8 +132,7 @@ convertDetections(const std::vector<DetectedResult> &detections, const cv::Size 
   std::vector<ax::ObservedObject> convertedDetections;
   for (const auto &det : detections) {
     ax::ObservedObject obs = ax::ObservedObject::FromLTWH(det.bbox.x,
-        det.bbox.y, det.bbox.width, det.bbox.height, det.class_id, det.score,
-        frameSize.width, frameSize.height);
+        det.bbox.y, det.bbox.width, det.bbox.height, det.class_id, det.score);
     convertedDetections.push_back(obs);
   }
   return convertedDetections;
@@ -239,7 +238,7 @@ main(int argc, char **argv)
     std::vector<ax::ObservedObject> convertedDetections
         = convertDetections(detections, frame.size());
 
-    const auto &activeTrackers = tracker->Update(convertedDetections);
+    const auto &activeTrackers = tracker->Update(convertedDetections, {});
     double duration = (cv::getTickCount() - start) / cv::getTickFrequency();
     if (duration > 0) {
       fps = 1.0 / duration;
@@ -250,7 +249,7 @@ main(int argc, char **argv)
 
     for (const auto &tkr : activeTrackers) {
       // Draw the last bounding box of each track
-      const auto &bbox = tkr.GetXyxy(frame.cols, frame.rows);
+      const auto &bbox = tkr.GetXyxy();
       int id = tkr.track_id;
       cv::Scalar color = getColorForTracker(id);
 

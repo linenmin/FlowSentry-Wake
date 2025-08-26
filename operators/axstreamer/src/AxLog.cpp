@@ -15,7 +15,7 @@ class AxLogger : public std::streambuf
 {
   //  Each thread has its own stream which means it potentially has its own
   //  severity and tag. This struct stores the details of the stream for each
-  //  thread. This, alomg with some thread detection and a mutex helps prevent
+  //  thread. This, along with some thread detection and a mutex helps prevent
   //  interleaving of messages from different threads.
   struct stream_details {
     std::stringstream strm{};

@@ -9,21 +9,31 @@
 
 namespace
 {
+using lookups = std::array<float, 256>;
 struct padding_dequant_properties {
   std::vector<std::vector<int>> paddings;
   std::vector<int> in_shape{};
   std::vector<int> out_shape{};
+  std::vector<bool> transpose{};
+  bool dequant_lut{ true };
   std::vector<float> dequant_scale{};
   std::vector<float> dequant_zeropoint{};
-  bool do_transpose = false;
+  std::vector<lookups> dequantize_tables{};
 };
+
+float
+dequantize(int8_t value, const float *the_table)
+{
+  int index = value + 128;
+  return the_table[index];
+}
 
 std::vector<int>
 to_4d_shape(const std::vector<int> &shape)
 {
   std::vector<int> result = shape;
   while (result.size() < 4) {
-    result.insert(result.begin(), 1); // prepend 1
+    result.insert(result.begin(), 1);
   }
   return result;
 }
@@ -33,8 +43,8 @@ to_4d_shape(const std::vector<int> &shape)
 extern "C" const std::unordered_set<std::string> &
 allowed_properties()
 {
-  static const std::unordered_set<std::string> allowed_properties{ "padding",
-    "input_shape", "output_shape", "dequant_scale", "dequant_zeropoint", "transpose" };
+  static const std::unordered_set<std::string> allowed_properties{ "padding", "input_shape",
+    "output_shape", "dequant_scale", "dequant_zeropoint", "transpose", "dequant_lut" };
   return allowed_properties;
 }
 
@@ -60,12 +70,17 @@ init_and_set_static_properties(
       input, "output_shape", "padding_dequant_properties", prop->out_shape);
 
   prop->dequant_scale = Ax::get_property(
-      input, "dequant_scale", "transform_dequantize", prop->dequant_scale);
-  prop->dequant_zeropoint = Ax::get_property(input, "dequant_zeropoint",
-      "transform_dequantize", prop->dequant_zeropoint);
+      input, "dequant_scale", "transform_dequantize", std::vector<float>{});
+  prop->dequant_zeropoint = Ax::get_property(
+      input, "dequant_zeropoint", "transform_dequantize", std::vector<float>{});
   if (prop->dequant_scale.empty() && prop->dequant_zeropoint.empty()) {
     throw std::runtime_error(
         "Either dequant_scale, dequant_zeropoint or both must be specified in transform_dequantize");
+  }
+  if (!prop->dequant_scale.empty() && !prop->dequant_zeropoint.empty()
+      && prop->dequant_scale.size() != prop->dequant_zeropoint.size()) {
+    throw std::logic_error(
+        "dequant_scale and dequant_zeropoint must be the same size in transform_dequantize");
   }
   if (prop->dequant_scale.empty()) {
     prop->dequant_scale = std::vector<float>(prop->dequant_zeropoint.size(), 1.0);
@@ -73,12 +88,21 @@ init_and_set_static_properties(
   if (prop->dequant_zeropoint.empty()) {
     prop->dequant_zeropoint = std::vector<float>(prop->dequant_scale.size(), 0.0);
   }
-  if (prop->dequant_scale.size() != prop->dequant_zeropoint.size()) {
-    throw std::logic_error(
-        "dequant_scale and dequant_zeropoint must be the same size in transform_dequantize");
-  }
-  prop->do_transpose = Ax::get_property(input, "transpose", "transform_dequantize", false);
+  prop->dequantize_tables = ax_utils::build_dequantization_tables(
+      prop->dequant_zeropoint, prop->dequant_scale);
 
+  std::string transpose_str
+      = Ax::get_property(input, "transpose", "transform_dequantize", std::string{});
+  if (!transpose_str.empty()) {
+    auto transpose_string_views = Ax::Internal::split(transpose_str, ',');
+    prop->transpose.reserve(transpose_string_views.size());
+    for (const auto &val_view : transpose_string_views) {
+      prop->transpose.push_back(std::stoi(std::string(val_view)) != 0);
+    }
+  }
+
+  prop->dequant_lut = Ax::get_property(
+      input, "dequant_lut", "transform_postamble", prop->dequant_lut);
   return prop;
 }
 
@@ -148,7 +172,8 @@ set_output_interface(const AxDataInterface &interface,
     auto &tensor = output[i];
     tensor.sizes = prop->out_shape.empty() ? info.out_sizes : prop->out_shape;
     tensor.bytes = 4;
-    if (prop->do_transpose) {
+    bool should_transpose = i < prop->transpose.size() ? prop->transpose[i] : false;
+    if (should_transpose) {
       if (tensor.sizes.size() != 4) {
         throw std::runtime_error("dequantize with transpose must tranform 4 dimensional tensor");
       }
@@ -175,8 +200,10 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     const int N = out_shape[0], C = out_shape[1], H = out_shape[2], W = out_shape[3];
     const int in0 = in_shape[0], in1 = in_shape[1], in2 = in_shape[2], in3 = in_shape[3];
 
-    if ((!prop->do_transpose && (N > in0 || C > in1 || H > in2 || W > in3))
-        || (prop->do_transpose && (N > in0 || C > in3 || H > in1 || W > in2))) {
+    bool should_transpose = i < prop->transpose.size() ? prop->transpose[i] : false;
+
+    if ((!should_transpose && (N > in0 || C > in1 || H > in2 || W > in3))
+        || (should_transpose && (N > in0 || C > in3 || H > in1 || W > in2))) {
       throw std::runtime_error(
           "dequantize input and output sizes do not correspond. Output shape must be smaller");
     }
@@ -187,8 +214,7 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
 
     cv::Mat input_mat(info.in_sizes, CV_8SC1, input_tensors[i].data);
     cv::Mat output_mat(info.out_sizes, CV_32FC1, output_tensors[i].data);
-    const auto scale = prop->dequant_scale[i];
-    const auto zero_point = static_cast<float>(prop->dequant_zeropoint[i]);
+    const auto &dequantize_lookups = prop->dequantize_tables[i].data();
     auto cropped = std::all_of(padding.begin(), padding.end(),
                        [](int val) { return val == 0; }) ?
                        input_mat :
@@ -197,11 +223,10 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     int8_t *inptr = cropped.ptr<int8_t>();
     float *outptr = output_mat.ptr<float>();
 
-
-    if (!prop->do_transpose) {
-      std::transform(inptr, inptr + cropped.total(), outptr, [scale, zero_point](int8_t val) {
-        return scale * (static_cast<float>(val) - zero_point);
-      });
+    if (!should_transpose) {
+      std::transform(inptr, inptr + cropped.total(), outptr,
+          [&dequantize_lookups](
+              int8_t val) { return dequantize(val, dequantize_lookups); });
     } else {
       const int sh = W * C;
       const int sn = H * sh;
@@ -210,7 +235,11 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
           for (int iH = 0; iH < H; ++iH) {
             for (int iW = 0; iW < W; ++iW) {
               int input_index = iN * sn + iH * sh + iW * C + iC;
-              *outptr++ = scale * (static_cast<float>(inptr[input_index]) - zero_point);
+              *outptr++ = prop->dequant_lut ?
+                              dequantize(inptr[input_index], dequantize_lookups) :
+                              prop->dequant_scale[i]
+                                  * (static_cast<float>(inptr[input_index])
+                                      - prop->dequant_zeropoint[i]);
             }
           }
         }

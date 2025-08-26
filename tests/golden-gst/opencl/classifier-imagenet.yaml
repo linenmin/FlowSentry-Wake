@@ -14,7 +14,7 @@
     mode: meta
     options: stream_id:0
   - instance: axtransform
-    lib: libtransform_colorconvert.so
+    lib: libtransform_colorconvert_cl.so
     options: format:rgb
   - instance: queue
     connections:
@@ -38,9 +38,9 @@
     preprocess2_options: padding:0,0,1,3,2,4,0,0;fill:0
     preprocess2_batch: 1
     postprocess0_lib: libtransform_dequantize.so
-    postprocess0_options: dequant_scale:{{dequant_scale}};dequant_zeropoint:{{dequant_zeropoint}};transpose:0
+    postprocess0_options: dequant_scale:{{dequant_scale}};dequant_zeropoint:{{dequant_zeropoint}};transpose:0;dequant_lut:1
     postprocess1_lib: libdecode_classification.so
-    postprocess1_options: meta_key:{{model_name}};classlabels_file:{{label_file}};top_k:5;softmax:0
+    postprocess1_options: meta_key:{{task_name}};classlabels_file:{{label_file}};top_k:5;softmax:0
   - instance: appsink
     max-buffers: 4
     drop: false

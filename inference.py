@@ -10,52 +10,33 @@ if not os.environ.get('AXELERA_FRAMEWORK'):
 
 from tqdm import tqdm
 
-from axelera.app import config, display, inf_tracers, logging_utils, pipe, statistics, yaml_parser
-from axelera.app.stream import InferenceStream
+from axelera.app import config, display, inf_tracers, logging_utils, statistics, yaml_parser
+from axelera.app.stream import create_inference_stream
 
 LOG = logging_utils.getLogger(__name__)
 PBAR = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
 
-
-def init(args, tracers):
-    hardware_caps = config.HardwareCaps.from_parsed_args(args)
-    pipemanager = pipe.PipeManager(
-        args.network,
-        args.sources,
-        args.pipe,
-        ax_precompiled_gst=args.ax_precompiled_gst,
-        num_cal_images=args.num_cal_images,
-        batch=args.calibration_batch,
-        data_root=args.data_root,
-        build_root=args.build_root,
-        save_output=args.save_output,
-        frames=args.frames,
-        hardware_caps=hardware_caps,
-        allow_hardware_codec=args.enable_hardware_codec,
-        tracers=tracers,
-        metis=args.metis,
-        rtsp_latency=args.rtsp_latency,
-        device_selector=args.devices,
-        specified_frame_rate=args.frame_rate,
-        tile=config.determine_tile_options(args),
-    )
-    return InferenceStream(pipemanager, frames=args.frames, timeout=args.timeout)
+LOGO0 = os.path.join(config.env.framework, "axelera/app/axelera-ai-logo-logo-only.png")
+LOGO1 = os.path.join(config.env.framework, "axelera/app/voyager-sdk-logo-white.png")
+LOGO2 = os.path.join(config.env.framework, "axelera/app/axelera-ai-logo-text-only.png")
 
 
 def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
-    if len(stream.manager.sources) > 1:
-        for sid, source in stream.manager.sources.items():
+    if len(stream.sources) > 1:
+        for sid, source in stream.sources.items():
             wnd.options(sid, title=f"#{sid} - {source}")
 
-    wnd.image(
-        ('48%', '98%'),
-        os.path.join(config.env.framework, "axelera/app/voyager-sdk-logo-white.png"),
-        anchor_x='left',
-        anchor_y='bottom',
-        scale=0.5,
-        fadeout_duration=5,
-        fadeout_start=time.time() + 5,
+    wnd.options(-1, speedometer_smoothing=args.speedometer_smoothing)
+    logo0 = wnd.image('52%, 88%', LOGO0, anchor_x='right', anchor_y='center', scale=0.4)
+    logo1 = wnd.image('52%, 88%', LOGO1, anchor_x='left', anchor_y='center', scale=0.45)
+    logo2 = wnd.image(
+        '52%, 88%', LOGO2, anchor_x='left', anchor_y='center', scale=0.4, fadeout_from=0.0
     )
+    supported = logo0 and logo1 and logo2
+    logo_start = save_start = time.time()
+    logo_period = 10.0
+
+    savef, save_period = None, 10.0  # don't save until we have enough data to be meaningful
 
     for frame_result in tqdm(
         stream,
@@ -65,6 +46,25 @@ def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
         bar_format=PBAR,
         disable=None,
     ):
+        now = time.time()
+        if supported and ((now - logo_start) > logo_period):
+            logo1.hide(now, 1.0)
+            logo2.show(now, 1.0)
+            logo1, logo2 = logo2, logo1
+            logo_start = now
+
+        if args.save_tracers and ((now - save_start) > save_period):
+            metrics = sorted(stream.get_all_metrics().items())
+            if not savef:
+                path = args.save_tracers.lstrip('+')
+                append = args.save_tracers.startswith('+')
+                savef = open(path, 'a' if append else 'w')
+                if not append:
+                    savef.write("timestamp," + ",".join(m[0] for m in metrics) + "\n")
+                LOG.info(f"Saving tracer data to {path}")
+            save_start = now
+            save_period = 1.0
+            savef.write(f"{now:.3f},{','.join('%.1f' % (m[1].value,) for m in metrics)}\n")
 
         image, meta = frame_result.image, frame_result.meta
         if image is None and meta is None:
@@ -84,10 +84,10 @@ def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
 
     if log_file_path:
         print(statistics.format_table(log_file_path, tracers))
-    else:
-        for tracer in tracers:
-            for m in tracer.get_metrics():
-                LOG.info(f"{m.title} : {m.value:.1f}{m.unit}")
+    inf_tracers.display_tracers(tracers)
+    if savef:
+        savef.close()
+        LOG.info(f"Tracer data saved to {savef.name}")
 
 
 if __name__ == "__main__":
@@ -95,24 +95,34 @@ if __name__ == "__main__":
     parser = config.create_inference_argparser(
         network_yaml_info, description='Perform inference on an Axelera platform'
     )
+    parser.add_argument(
+        '--save-tracers',
+        type=str,
+        default=None,
+        help="Save tracer data to a file as CSV, prefix with `+` to append to an existing file",
+    )
     args = parser.parse_args()
     # early exit if the network is a LLM
     if network_yaml_info.has_llm(args.network):
         raise ValueError("inference.py currently supports vision models only")
-
-    logging_utils.configure_logging(logging_utils.get_config_from_args(args))
-    logging_utils.configure_compiler_level(args)
 
     tracers = inf_tracers.create_tracers_from_args(args)
     try:
         log_file, log_file_path = None, None
         if args.show_stats:
             log_file, log_file_path = statistics.initialise_logging()
-        stream = init(args, tracers)
+        stream = create_inference_stream(
+            config.SystemConfig.from_parsed_args(args),
+            config.InferenceStreamConfig.from_parsed_args(args),
+            config.PipelineConfig.from_parsed_args(args),
+            config.LoggingConfig.from_parsed_args(args),
+            config.DeployConfig.from_parsed_args(args),
+            tracers=tracers,
+        )
 
         with display.App(
             visible=args.display,
-            opengl=stream.manager.hardware_caps.opengl,
+            opengl=stream.hardware_caps.opengl,
             buffering=not stream.is_single_image(),
         ) as app:
             wnd = app.create_window('Inference demo', size=args.window_size)

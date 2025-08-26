@@ -7,6 +7,9 @@ import PIL
 import timm
 import torch
 
+# local imports
+from utils import convert_first_node_to_1_channel
+
 from ax_models import base_torch
 from axelera import types
 from axelera.app import logging_utils, utils
@@ -23,30 +26,22 @@ def _disable_ceil_mode_in_avgpool(model):
     return model
 
 
-def _convert_first_node_to_1_channel(model):
-    """Convert the first conv layer to grayscale, by averaging the 3 channels."""
-    import torch.nn as nn
-
-    original_conv = model.conv1[0].weight.data
-    new_conv = nn.Conv2d(
-        1,
-        out_channels=original_conv.size(0),
-        kernel_size=model.conv1[0].kernel_size,
-        stride=model.conv1[0].stride,
-        padding=model.conv1[0].padding,
-        bias=False if model.conv1[0].bias is None else True,
-    )
-    new_conv.weight.data = original_conv.mean(dim=1, keepdim=True)
-    model.conv1[0] = new_conv
-    return model
-
-
 class AxTimmModel(base_torch.TorchModel):
     """Model methods for Timm models"""
 
     def init_model_deploy(self, model_info: types.ModelInfo, dataset_config: dict, **kwargs):
         timm_model_args = YAML.attribute(kwargs, 'timm_model_args')
         model_name = YAML.attribute(timm_model_args, 'name')
+        conversion_method = timm_model_args.get('grayscale_conversion_method', 'sum')
+
+        # Extract input shape information
+        input_tensor_shape = (
+            model_info.input_tensor_shape if model_info.input_tensor_shape else None
+        )
+        input_channels = (
+            input_tensor_shape[1] if input_tensor_shape and len(input_tensor_shape) >= 4 else 3
+        )
+
         if model_info.weight_path:
             if not Path(model_info.weight_path).exists():
                 if model_info.weight_url:
@@ -55,38 +50,69 @@ class AxTimmModel(base_torch.TorchModel):
                     )
                 else:
                     raise FileNotFoundError(f"weight_path: {model_info.weight_path} not found")
+
+            # Always load the model with its default configuration first
             self.torch_model = timm.create_model(model_name, pretrained=False)
+
+            # Modify final layer to match the number of classes before loading weights
+            num_classes = model_info.num_classes
+            if num_classes:
+                LOG.info(f"Adjusting output layer to {num_classes} classes")
+                if hasattr(self.torch_model, 'fc'):
+                    in_features = self.torch_model.fc.in_features
+                    self.torch_model.fc = torch.nn.Linear(in_features, num_classes)
+                elif hasattr(self.torch_model, 'classifier'):
+                    in_features = self.torch_model.classifier.in_features
+                    self.torch_model.classifier = torch.nn.Linear(in_features, num_classes)
+                else:
+                    LOG.warning("Could not find classification layer to modify")
+
+            # If grayscale input is required, modify the model
+            if input_channels == 1:
+                self.torch_model = convert_first_node_to_1_channel(
+                    self.torch_model, conversion_method
+                )
+
+            # Now load the weights after model structure has been modified
             weights = safe_torch_load(model_info.weight_path, map_location=torch.device('cpu'))
             self.torch_model.load_state_dict(weights)
         else:  # use pretrained weights from timm
-            self.torch_model = timm.create_model(model_name, pretrained=True)
+            if input_channels != 3:
+                try:
+                    # Try to use timm's built-in support for different channel counts
+                    # This may not work for all models, so we need to handle errors
+                    self.torch_model = timm.create_model(
+                        model_name, pretrained=True, in_chans=input_channels
+                    )
+                    LOG.info(
+                        f"Created model with {input_channels} input channels using timm's native support"
+                    )
+                except Exception as e:
+                    LOG.warning(f"Failed to create model with in_chans={input_channels}: {e}")
+                    # Fall back to loading standard model and modifying
+                    self.torch_model = timm.create_model(model_name, pretrained=True)
+                    if input_channels == 1:
+                        LOG.info(f"Converting model from 3-channel to 1-channel input...")
+                        self.torch_model = convert_first_node_to_1_channel(
+                            self.torch_model, conversion_method
+                        )
+            else:
+                self.torch_model = timm.create_model(model_name, pretrained=True)
+
+            # If custom num_classes is specified, adjust the output layer
+            if model_info.num_classes and model_info.num_classes != 1000:
+                if hasattr(self.torch_model, 'fc'):
+                    in_features = self.torch_model.fc.in_features
+                    self.torch_model.fc = torch.nn.Linear(in_features, model_info.num_classes)
+                elif hasattr(self.torch_model, 'classifier'):
+                    in_features = self.torch_model.classifier.in_features
+                    self.torch_model.classifier = torch.nn.Linear(
+                        in_features, model_info.num_classes
+                    )
 
         if model_info.extra_kwargs.get('disable_ceil_mode_in_avgpool', False):
             self.torch_model = _disable_ceil_mode_in_avgpool(self.torch_model)
-        if model_info.extra_kwargs.get('convert_first_node_to_1_channel', False):
-            self.torch_model = _convert_first_node_to_1_channel(self.torch_model)
         self.torch_model.eval()
-
-        # # verify the mode can work
-        # from torchvision import transforms
-        # rgb_weights = torch.tensor([0.2989, 0.5870, 0.1140])
-        # gray_mean = (0.485 * 0.2989 + 0.456 * 0.5870 + 0.406 * 0.1140)
-        # gray_std = (0.229 * 0.2989 + 0.224 * 0.5870 + 0.225 * 0.1140)
-        # transform = transforms.Compose([
-        #     transforms.Resize(256),
-        #     transforms.CenterCrop(224),
-        #     transforms.Grayscale(num_output_channels=1),
-        #     transforms.ToTensor(),
-        #     transforms.Normalize(mean=[gray_mean], std=[gray_std])
-        # ])
-        # import PIL
-        # img = PIL.Image.open('/home/ubuntu/software-platform/host/application/framework/data/ImageNet/val/n01818515/ILSVRC2012_val_00009091.JPEG')
-
-        # input_tensor = transform(img)
-        # input_batch = input_tensor.unsqueeze(0)
-        # output = self.torch_model(input_batch)
-        # from pdb import set_trace
-        # set_trace()
 
 
 class AxTimmModelWithPreprocess(AxTimmModel):

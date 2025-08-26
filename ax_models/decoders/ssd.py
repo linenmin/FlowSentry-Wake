@@ -41,6 +41,18 @@ class DecodeSsdMobilenet(AxOperator):
     nms_top_k: int = 300
     overwrite_labels: bool = False
 
+    @classmethod
+    def handles_dequantization_and_depadding(cls):
+        return True
+
+    @classmethod
+    def handles_transpose(cls):
+        return True
+
+    @classmethod
+    def handles_postamble(cls):
+        return True
+
     def _post_init(self):
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
             raise ValueError(f"Unknown box format {self.box_format}")
@@ -48,7 +60,6 @@ class DecodeSsdMobilenet(AxOperator):
             self.overwrite_labels = bool(self.overwrite_labels)
         self.label_filter = utils.parse_labels_filter(self.label_filter)
         self._tmp_labels: Optional[Path] = None
-        self.cpp_decoder_does_all = True
         super()._post_init()
 
     def __del__(self):
@@ -100,7 +111,7 @@ class DecodeSsdMobilenet(AxOperator):
             f'scales:{scales};'
             f'zero_points:{zeros};'
             f'transpose:1;'
-            f'class_agnostic:{int(self.nms_class_agnostic)}'
+            f'class_agnostic:{int(self.nms_class_agnostic)};'
             f'model_width:{self.model_width};'
             f'model_height:{self.model_height};'
             f'scale_up:{int(self.scaled==types.ResizeMode.LETTERBOX_FIT)};'

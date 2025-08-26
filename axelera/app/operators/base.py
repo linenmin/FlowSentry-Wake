@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Type, Union, final
 
 from axelera import types
 
-from .. import gst_builder, logging_utils
+from .. import config, gst_builder, logging_utils
+from ..config import TilingConfig  # needed for _compile_fn globals, do mot remove
 from ..torch_utils import torch
 
 if TYPE_CHECKING:
@@ -120,6 +121,18 @@ def _all_param_names(cls):
     return params
 
 
+def _as_image_preproc_fn(cls):
+    params = [f"'{x}': getattr(self, {x!r})" for x in _all_param_names(cls)]
+    return _compile_fn(
+        f'''\
+def as_image_preproc(self) -> config.ImagePreproc:
+    kwargs = {{{", ".join(params)}}}
+    return config.ImagePreproc('{cls.__name__.lower()}', (), kwargs)
+''',
+        'as_image_preproc',
+    )
+
+
 def _repr_fn(cls):
     params = [f"{x}={{self.{x}!r}}" for x in _all_param_names(cls)]
     return _compile_fn(
@@ -167,6 +180,18 @@ class AxOperator(abc.ABC):
     @classmethod
     def name(cls):
         return cls.__name__.replace('-', '').replace('_', '').lower()
+
+    @classmethod
+    def handles_dequantization_and_depadding(cls):
+        return False
+
+    @classmethod
+    def handles_transpose(cls):
+        return False
+
+    @classmethod
+    def handles_postamble(cls):
+        return False
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -343,74 +368,6 @@ class AxOperator(abc.ABC):
         '''Eval mode is default as NONE and triggered by the pipeline'''
         return self._eval_mode
 
-    @property
-    @final
-    def cpp_decoder_does_dequantization_and_depadding(self):
-        '''A special flag to tell inference operator that the decoder does dequantization
-        and depadding so inference operator can skip these steps.
-        '''
-        return getattr(self, '_cpp_decoder_does_dequantization_and_depadding', None)
-
-    @cpp_decoder_does_dequantization_and_depadding.setter
-    def cpp_decoder_does_dequantization_and_depadding(self, value: bool):
-        '''Set the flag in your decoder's _post_init() method if your decoder has optimized
-        with dequantization and depadding.
-        '''
-        self._cpp_decoder_does_dequantization_and_depadding = value
-
-    @property
-    @final
-    def cpp_decoder_does_postamble(self):
-        '''A special flag to tell inference operator that the decoder does postamble
-        so inference operator can skip these steps.
-        '''
-        return getattr(self, '_cpp_decoder_does_postamble', None)
-
-    @cpp_decoder_does_postamble.setter
-    def cpp_decoder_does_postamble(self, value: bool):
-        '''Set the flag in your decoder's _post_init() method if your decoder has optimized
-        with postamble.
-        '''
-        self._cpp_decoder_does_postamble = value
-
-    @property
-    @final
-    def cpp_decoder_does_transpose(self):
-        '''A special flag to tell inference operator that the decoder does transpose
-        so inference operator can skip this step.
-        '''
-        return getattr(self, '_cpp_decoder_does_transpose', None)
-
-    @cpp_decoder_does_transpose.setter
-    def cpp_decoder_does_transpose(self, value: bool):
-        '''Set the flag in your decoder's _post_init() method if your decoder has optimized
-        with transpose.
-        '''
-        self._cpp_decoder_does_transpose = value
-
-    @property
-    @final
-    def cpp_decoder_does_all(self):
-        '''A special flag to tell inference operator that the decoder handles all the steps,
-        including dequantization, depadding, transpose, and postamble.
-        Returns True if all three flags are True, or if _cpp_decoder_does_all is set.
-        '''
-        return getattr(self, '_cpp_decoder_does_all', None) or (
-            getattr(self, 'cpp_decoder_does_dequantization_and_depadding', None)
-            and getattr(self, 'cpp_decoder_does_transpose', None)
-            and getattr(self, 'cpp_decoder_does_postamble', None)
-        )
-
-    @cpp_decoder_does_all.setter
-    def cpp_decoder_does_all(self, value: bool):
-        '''Set the flag in your decoder's _post_init() method if your decoder has optimized
-        all the steps, including dequantization, depadding, transpose, and postamble.
-        '''
-        self._cpp_decoder_does_all = value
-        self._cpp_decoder_does_dequantization_and_depadding = value
-        self._cpp_decoder_does_postamble = value
-        self._cpp_decoder_does_transpose = value
-
 
 class PreprocessOperator(AxOperator):
     """
@@ -422,6 +379,10 @@ class PreprocessOperator(AxOperator):
     """
 
     _PREPROCESS_OPERATOR = True
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.as_image_preproc = _as_image_preproc_fn(cls)
 
     def stream_check_match(self, stream_id):
         match = self._stream_match

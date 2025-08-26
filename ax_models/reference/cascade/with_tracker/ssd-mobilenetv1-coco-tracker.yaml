@@ -42,7 +42,7 @@ models:
     model_type: CLASSICAL_CV
     task_category: ObjectTracking
 
-datasets: # Python dataloader
+datasets:
   CocoDataset-COCO2017:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
@@ -52,9 +52,6 @@ datasets: # Python dataloader
     # repr_imgs or cal_data for calibration and add val_data for validation.
     # You can use your existing training dataset as cal_data
     label_type: COCO2017
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
     # cal_data: relative/path/to/your/cal_custom.json or dir with darknet label txt files
     # val_data: relative/path/to/your/val_custom.json or dir with darknet label txt files
     format: coco91 # the decoded class follows 0-indexed COCO-91 labels

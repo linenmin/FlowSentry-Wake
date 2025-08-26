@@ -9,7 +9,7 @@
   - [Step 3: Install Python](#step-3-install-python)
   - [Step 4: Install Windows Axelera Components](#step-4-install-windows-axelera-components)
     - [Installing the Executable Installers](#installing-the-executable-installers)
-    - [Installing the Python Package](#installing-the-python-package)
+    - [Installing the Python Packages](#installing-the-python-packages)
   - [Step 5: Running Examples \[Optional\]](#step-5-running-examples-optional)
   - [Notes on Using Windows PowerShell](#notes-on-using-windows-powershell)
 
@@ -18,6 +18,8 @@ This guide provides step-by-step instructions for installing and configuring the
 > [!NOTE]  
 > Only Windows 11 with Windows Subsystem for Linux (WSL) support was tested.
 
+Before proceeding, please follow the [Voyager SDK Repository on Windows](/docs/tutorials/windows/windows_voyager_sdk_repository.md) guide to clone the Voyager SDK repository and set up the environment.
+
 ## Step 1: Install the Axelera Windows Driver
 > [!NOTE]  
 > This step will be automated through Windows Update after Microsoft certification in the near future.
@@ -25,6 +27,10 @@ This guide provides step-by-step instructions for installing and configuring the
 For evaluation purposes, follow the detailed instructions in the [Windows Driver Installation Guide](/docs/tutorials/windows/installing_driver.md) for manual installation of the Axelera AI driver on your Windows system.
 
 ## Step 2: Install the Axelera Voyager SDK using Windows Subsystem for Linux
+> [!NOTE]  
+> If you're only interested in downloading pre-deployed networks instead of deploying your own, 
+> then you can skip this step and proceed directly to [Step 3: Install Python](#step-3-install-python).
+
 Network deployment is supported exclusively in Linux, even when inference is performed on Windows. Windows Subsystem for Linux (WSL) is the recommended approach for deploying networks for Windows use.
 
 ### Setting up the voyager-sdk repository on Windows:
@@ -52,7 +58,7 @@ wsl
 ```
 
 b) **Clone and Configure voyager-sdk**:
-   - Clone the voyager-sdk repository from https://github.com/axelera-ai-hub/voyager-sdk and checkout branch release/v1.3 **in a Windows-accessible folder**. For example: `/mnt/c/Axelera/voyager-sdk` (accessible from Windows as `C:\Axelera\voyager-sdk`). Complete cloning instructions are available in the [Installation guide](/docs/tutorials/install.md).
+   - Clone the voyager-sdk repository from https://github.com/axelera-ai-hub/voyager-sdk and checkout branch release/v1.4 **in a Windows-accessible folder**. For example: `/mnt/c/Axelera/voyager-sdk` (accessible from Windows as `C:\Axelera\voyager-sdk`). Complete cloning instructions are available in the [Installation guide](/docs/tutorials/install.md).
    - Follow the [Installation guide](/docs/tutorials/install.md) setup instructions, selecting only the Python environment and runtime libraries during installation
    - **Important:** Do not select the driver installation option as it is not compatible with WSL
    ![WSL Installation Options](/docs/images/windows/wsl_voyager_install.png)
@@ -70,11 +76,11 @@ c) **Optional: Deploy or Download Models**:
    2. Download prebuilt models after activating the Python environment:
       ```bash
       source venv/bin/activate
-      ./download_prebuilt.py
+      axdownloadmodel
       ```
    Example:
    ```bash
-   ./download_prebuilt.py resnet50-imagenet-onnx
+   axdownloadmodel resnet50-imagenet-onnx
    ```
    This downloads the ResNet50 classification model for future use.
    > [!NOTE]  
@@ -90,11 +96,10 @@ c) **Optional: Deploy or Download Models**:
 2. During installation:
    - Enable the option to add Python to PATH
    - Select "Disable path length limit" when prompted
-3. Test Python installation by creating a virtual environment in a new Command Prompt:
+3. Create a virtual environment:
    ```cmd
    python -m venv venv
    ```
-   If everything went well, you may now delete this venv.
 4. Add the Python installation path and Python\Scripts path to the Windows environment Path variable:
    ![Python Environment Variables](/docs/images/windows/system_variable_python.png)
 
@@ -108,15 +113,15 @@ cd C:\Axelera\voyager-sdk
 ```
 Create a local windows-packages directory and download the installers:
 ```cmd
+rmdir /s /q windows-packages 2>nul
 mkdir windows-packages
 cd windows-packages
-curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera-win-device-installer.exe
-curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera-win-runtime-installer.exe
-curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera-win-syslibs-installer.exe
-curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera-win-toolchain-deps-installer.exe
-curl -O https://media.axelera.ai/releases/v1.3.3/build-Release-Windows-2204-amd64/package_repos/axelera_runtime-1.3.3-py3-none-any.whl
+curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-device-installer.exe
+curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-runtime-installer.exe
+curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-syslibs-installer.exe
+curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-toolchain-deps-installer.exe
+curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera_runtime-1.4.0-py3-none-any.whl
 cd ..
-
 ```
 
 ### Installing the Executable Installers
@@ -139,18 +144,26 @@ The exact version numbers may vary depending on what version you're installing, 
 > [!IMPORTANT]  
 > After installing all executable installers, restart your Command Prompt window (without administrator privileges) to continue with the remaining steps.
 
-### Installing the Python Package
+### Installing the Python Packages
 Create a new Python virtual environment for Windows use:
 ```cmd
 python -m venv venv-win
 venv-win\Scripts\activate.bat
 ```
-Install the Python package:
+Install the Python packages:
 ```cmd
-pip install "windows-packages\axelera_runtime-1.3.3-py3-none-any.whl"
+pip install -f "windows-packages\axelera_runtime-1.4.0-py3-none-any.whl"
 ```
 
 ## Step 5: Running Examples [Optional]
+> [!NOTE]  
+> If you haven't gone through the previous [WSL step](#step-2-install-the-axelera-voyager-sdk-using-windows-subsystem-for-linux) and need to download a pre-deployed network to do the next steps please run now:
+> ```cmd
+> cd `C:\Axelera\voyager-sdk`
+> axdownloadmodel resnet50-imagenet-onnx
+> ```
+> The pre-built model will be downloaded under `C:\Axelera\voyager-sdk\build`
+
 Execute inference using either of these methods:
 
 1. **Using Python API**:

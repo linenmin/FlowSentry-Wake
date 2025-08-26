@@ -12,6 +12,8 @@ pipeline:
             width: 640
             height: 640
         - torch-totensor:
+      inference:
+        handle_all: False
       postprocess:
         - decodeyolo:
             box_format: xywh
@@ -71,16 +73,13 @@ models:
     task_category: ObjectTracking
 
 
-datasets: # Python dataloader
+datasets:
   CocoDataset-COCO2017:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
     label_type: COCO2017
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
     # relative/path/to/your/cal_custom.json or dir with darknet label txt files
     # cal_data: train2017-400.txt
     # val_data: val2017.txt

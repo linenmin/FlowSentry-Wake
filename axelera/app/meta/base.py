@@ -9,13 +9,13 @@ import functools
 import itertools
 from typing import TYPE_CHECKING, Any, ClassVar, Iterator, Type, TypeVar, final
 
-from .. import display, exceptions, logging_utils, plot_utils, utils
+from .. import config, display, exceptions, logging_utils, plot_utils, utils
 
 if TYPE_CHECKING:
     from ..eval_interfaces import BaseEvalSample
 
 LOG = logging_utils.getLogger(__name__)
-_VALID_LABEL_FORMATS = {'label': 'label', 'score': 0.56, 'scorep': 56.7}
+_VALID_LABEL_FORMATS = {'label': 'label', 'score': 0.56, 'scorep': 56.7, 'scoreunit': '%'}
 _DEFAULT_LABEL_FORMAT = display.Options().bbox_label_format
 
 
@@ -39,6 +39,8 @@ def class_as_label(labels, class_id):
     '''Labels may be enumerated, and therefore callable. Otherwise access via index.'''
     if not labels:
         return f"cls:{class_id}"
+    if class_id == -1:
+        return "Unknown"
     try:
         return labels(class_id).name
     except TypeError:
@@ -49,7 +51,7 @@ def class_as_label(labels, class_id):
 
 
 @functools.lru_cache(maxsize=200)
-def _safe_label_format(fmt: str) -> str:
+def safe_label_format(fmt: str) -> str:
     try:
         fmt.format(**_VALID_LABEL_FORMATS)
         return fmt
@@ -91,21 +93,37 @@ def _draw_bounding_box(box, score, cls, labels, draw, bbox_label_format, color_m
     if cls < 0:
         txt = ''
     else:
-        txt = bbox_label_format.format(label=label, score=score, scorep=score * 100)
+        txt = bbox_label_format.format(label=label, score=score, scorep=score * 100, scoreunit='%')
     draw.labelled_box(p1, p2, txt, color)
 
 
 _SHOW_OPTIONS = {(False, False): '', (False, True): '{score:.2f}', (True, False): '{label}'}
 
 
-def draw_bounding_boxes(meta, draw, show_class=True, show_score=True):
+def draw_bounding_boxes(meta, draw, show_labels=True, show_annotations=True):
+    """
+    Draw bounding boxes on an image.
+
+    Args:
+        meta: The metadata containing bounding box information
+        draw: The drawing context to use
+        show_labels: Whether to draw class labels and scores (may be affected by environment variables)
+        show_annotations: Whether to draw the bounding boxes themselves
+    """
+    from .. import config
+
+    show_class = show_labels and config.env.render_bbox_class
+    show_score = show_labels and config.env.render_bbox_score
+
     fmt = _SHOW_OPTIONS.get((show_class, show_score), draw.options.bbox_label_format)
-    fmt = _safe_label_format(fmt)
+    fmt = safe_label_format(fmt)
     labels = getattr(meta, 'labels', None)
     class_ids = getattr(meta, 'class_ids', itertools.repeat(0))
     color_map = draw.options.bbox_class_colors
-    for box, score, cls in zip(meta.boxes, meta.scores, class_ids):
-        _draw_bounding_box(box, score, cls, labels, draw, fmt, color_map)
+
+    if show_annotations:
+        for box, score, cls in zip(meta.boxes, meta.scores, class_ids):
+            _draw_bounding_box(box, score, cls, labels, draw, fmt, color_map)
 
 
 class RestrictedDict(dict):
@@ -137,7 +155,7 @@ class MetaObject(abc.ABC):
 
     __slots__ = ('_meta', '_index')
 
-    def __init__(self, meta, index):
+    def __init__(self, meta, index: int):
         self._meta = meta
         self._index = index
 
@@ -328,6 +346,7 @@ class AxBaseTaskMeta:
     container_meta: AxMeta | None = dataclasses.field(default=None, init=False)
     master_meta_name: str = dataclasses.field(default='', init=False)
     subframe_index: int | None = dataclasses.field(default=None, init=False)
+    meta_name: str = dataclasses.field(default='', init=False)
 
     def __repr__(self):
         fields = []
@@ -462,6 +481,15 @@ class AxBaseTaskMeta:
                 except exceptions.NotSupportedForTask as e:
                     pass
 
+    @property
+    def task_render_config(self):
+        """Access render settings from the parent AxMeta"""
+        if self.container_meta is None:
+            raise ValueError("This meta is not part of a container AxMeta")
+        if self.container_meta.render_config is None:
+            raise ValueError("Render configuration is not set in the container AxMeta")
+        return self.container_meta.render_config.get(self.meta_name, config.DEFAULT_RENDER_CONFIG)
+
 
 @dataclasses.dataclass(frozen=True)
 class AxTaskMeta(AxBaseTaskMeta):
@@ -471,13 +499,16 @@ class AxTaskMeta(AxBaseTaskMeta):
 
     _objects: list[MetaObject] = dataclasses.field(default_factory=list, init=False)
 
-    def draw(self, draw: display.Draw, **kwargs):
+    def draw(self, draw: display.Draw):
         """
         Draw the task metadata on an image.
 
         Args:
             draw (display.Draw): The drawing context to use.
             **kwargs: Additional keyword arguments for drawing.
+
+        Note:
+            Rendering options (e.g., show_labels, show_annotations) are accessed via self.task_render_config.
 
         Raises:
             NotImplementedError: If the subclass does not implement this method.
@@ -572,6 +603,7 @@ class AxMeta(collections.abc.Mapping):
     # a pipeline has a single dataloader as input, so there will be a single ground truth
     # for the whole meta even if it is a multi-model network
     ground_truth: BaseEvalSample | None = dataclasses.field(default=None)
+    render_config: config.RenderConfig | None = dataclasses.field(default=None)
 
     def __getitem__(self, key):
         if (val := self._meta_map.get(key)) is None:
@@ -588,6 +620,10 @@ class AxMeta(collections.abc.Mapping):
         raise AttributeError(
             "Cannot set meta directly. Use add_instance or get_instance method to add or update"
         )
+
+    def set_render_config(self, render_config: config.RenderConfig):
+        """Set render configuration for the meta"""
+        self.render_config = render_config
 
     def _add_secondary_meta(
         self,
@@ -623,6 +659,7 @@ class AxMeta(collections.abc.Mapping):
         self._meta_map.check_type(key, type(instance))
         if isinstance(instance, AxTaskMeta):
             instance.set_container_meta(self)
+            object.__setattr__(instance, 'meta_name', key)
             if not master_meta_name:
                 if key in self._meta_map:
                     raise ValueError(f"Master meta {key} already exists")

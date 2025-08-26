@@ -103,11 +103,11 @@ def test_json_embeddings_file(temp_file, embedding_shape, num_embeddings):
     embeddings = [np.random.rand(*embedding_shape) for _ in range(num_embeddings)]
 
     for i, emb in enumerate(embeddings):
-        json_file.update(emb, i)
+        json_file.update(emb, str(i))  # Use string keys for consistency
 
     assert json_file.dirty is True
     for i, emb in enumerate(embeddings):
-        assert np.array_equal(np.array(json_file.embedding_dict[i]).flatten(), emb.flatten())
+        assert np.array_equal(np.array(json_file.embedding_dict[str(i)]).flatten(), emb.flatten())
 
     json_file.commit()
     assert json_file.dirty is False
@@ -271,3 +271,47 @@ def test_euclidean_distance_raises_value_error_for_unequal_columns():
 
     with pytest.raises(ValueError, match="Input arrays must have the same number of columns"):
         euclidean_distance(embedding_1, embedding_2)
+
+
+@pytest.mark.parametrize(
+    "file_class, file_suffix",
+    [
+        (JSONEmbeddingsFile, ".json"),
+        (NumpyEmbeddingsFile, ".npy"),
+    ],
+)
+def test_safety_check_empty_commit(temp_file, file_class, file_suffix):
+    """Test that commit safety check prevents accidental loss of data."""
+    embeddings_file = file_class(temp_file.with_suffix(file_suffix))
+
+    # Add some initial data
+    embedding1 = np.array([1.0, 2.0, 3.0])
+    embedding2 = np.array([4.0, 5.0, 6.0])
+    embeddings_file.update(embedding1, "person_A")
+    embeddings_file.update(embedding2, "person_B")
+
+    # Commit the initial data
+    assert embeddings_file.commit() is True
+    assert embeddings_file.dirty is False
+
+    # Now simulate a scenario where the internal data gets corrupted/emptied
+    if file_class == JSONEmbeddingsFile:
+        embeddings_file.embedding_dict = {}
+    else:  # NumpyEmbeddingsFile
+        embeddings_file.embedding_array = np.empty((0, 0))
+        embeddings_file.labels = []
+
+    embeddings_file._dirty = True
+
+    # The commit should fail and restore the original data
+    assert embeddings_file.commit() is False
+    assert embeddings_file.dirty is False
+
+    # Verify the data was restored
+    loaded_embeddings = embeddings_file.load_embeddings()
+    loaded_labels = embeddings_file.read_labels()
+
+    assert loaded_embeddings.shape[0] == 2
+    assert len(loaded_labels) == 2
+    assert "person_A" in loaded_labels
+    assert "person_B" in loaded_labels

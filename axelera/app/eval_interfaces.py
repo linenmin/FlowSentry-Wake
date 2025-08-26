@@ -36,6 +36,26 @@ class ImageSample(types.BaseEvalSample):
 
 
 @dataclasses.dataclass
+class ReIdGtSample(types.BaseEvalSample):
+    person_id: int
+    camera_id: int
+    split_name: str
+
+    @property
+    def data(self) -> Any:
+        return self.person_id, self.camera_id, self.split_name
+
+
+@dataclasses.dataclass
+class ReIdEvalSample(types.BaseEvalSample):
+    embedding: list[list[float]] = dataclasses.field(default_factory=list)
+
+    @property
+    def data(self) -> Any:
+        return self.embedding
+
+
+@dataclasses.dataclass
 class LabelGroundTruthSample(types.BaseEvalSample):
     label: str
 
@@ -185,6 +205,44 @@ class ObjDetEvalSample(types.BaseEvalSample):
         return {
             'boxes': self.boxes,
             'scores': self.scores,
+            'labels': self.labels,
+        }
+
+
+@dataclasses.dataclass
+class TrackerGroundTruthSample(types.BaseEvalSample):
+    boxes: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    labels: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    img_id: Union[int, str] = ''
+    video_id: int = 0
+    video_name: str = ''
+    gt_template: str = ''
+    gt_root: str = ''
+
+    @property
+    def data(self) -> Union[Any, Dict[str, Any]]:
+        return {
+            'boxes': self.boxes,
+            'labels': self.labels,
+            'img_id': self.img_id,
+            'video_id': self.video_id,
+            'video_name': self.video_name,
+            'gt_template': self.gt_template,
+            'gt_root': self.gt_root,
+        }
+
+
+@dataclasses.dataclass
+class TrackerEvalSample(types.BaseEvalSample):
+    boxes: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    track_ids: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+    labels: np.ndarray = dataclasses.field(default_factory=lambda: np.array([]))
+
+    @property
+    def data(self) -> Union[Any, Dict[str, Any]]:
+        return {
+            'boxes': self.boxes,
+            'track_ids': self.track_ids,
             'labels': self.labels,
         }
 

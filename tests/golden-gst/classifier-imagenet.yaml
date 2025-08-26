@@ -41,7 +41,7 @@
     preprocess3_options: padding:{{pads}};fill:0
     preprocess3_batch: 4
     postprocess0_lib: libtransform_dequantize.so
-    postprocess0_options: dequant_scale:{{dequant_scale}};dequant_zeropoint:{{dequant_zeropoint}};transpose:0
+    postprocess0_options: dequant_scale:{{dequant_scale}};dequant_zeropoint:{{dequant_zeropoint}};transpose:0;dequant_lut:1
     postprocess1_lib: libdecode_classification.so
     postprocess1_options: meta_key:{{task_name}};classlabels_file:{{label_file}};top_k:5;softmax:0
   - instance: appsink

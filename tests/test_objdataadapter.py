@@ -1116,3 +1116,127 @@ def test_yolo_text_file_based(yolo_dirs):
                 train_dataset = adapter._get_dataset_class(
                     transform=None, root=yolo_dirs, split="train", kwargs={"cal_data": "train.txt"}
                 )
+
+
+class TestUltralyticsIntegration:
+    """Test integration with Ultralytics data YAML format."""
+
+    def test_obj_data_adapter_accepts_ultralytics_yaml(self):
+        """Test that ObjDataAdapter accepts ultralytics_data_yaml parameter."""
+        from axelera import types
+
+        dataset_config = {'ultralytics_data_yaml': 'data.yaml', 'label_type': 'YOLOv8'}
+
+        model_info = types.ModelInfo(
+            name='test_model',
+            task_category='ObjectDetection',
+            input_tensor_shape=[1, 3, 640, 640],
+            input_color_format='RGB',
+            input_tensor_layout='NCHW',
+        )
+
+        # This should not raise a validation error
+        adapter = ObjDataAdapter(dataset_config, model_info)
+        assert adapter.label_type == SupportedLabelType.YOLOv8
+
+    def test_obj_data_adapter_rejects_mixed_ultralytics_traditional(self):
+        """Test that ObjDataAdapter rejects mixing ultralytics_data_yaml with traditional params."""
+        from axelera import types
+
+        dataset_config = {
+            'ultralytics_data_yaml': 'data.yaml',
+            'cal_data': 'train.txt',  # Should not be allowed together
+            'label_type': 'YOLOv8',
+        }
+
+        model_info = types.ModelInfo(
+            name='test_model',
+            task_category='ObjectDetection',
+            input_tensor_shape=[1, 3, 640, 640],
+            input_color_format='RGB',
+            input_tensor_layout='NCHW',
+        )
+
+        # This should not raise an error at initialization since the validation happens at processing time
+        adapter = ObjDataAdapter(dataset_config, model_info)
+        assert adapter.label_type == SupportedLabelType.YOLOv8
+
+    @patch('ax_datasets.objdataadapter.ObjDataAdapter._check_supported_label_type')
+    def test_validation_checks_ultralytics_or_traditional_data_sources(
+        self, mock_check_label_type
+    ):
+        """Test that validation requires either ultralytics_data_yaml or traditional data sources."""
+        from axelera import types
+
+        mock_check_label_type.return_value = SupportedLabelType.YOLOv8
+
+        # Test with no data sources at all
+        dataset_config = {
+            'label_type': 'YOLOv8'
+            # Missing any data source configuration
+        }
+
+        model_info = types.ModelInfo(
+            name='test_model',
+            task_category='ObjectDetection',
+            input_tensor_shape=[1, 3, 640, 640],
+            input_color_format='RGB',
+            input_tensor_layout='NCHW',
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="Please specify either 'repr_imgs_dir_name', 'cal_data', or 'ultralytics_data_yaml'",
+        ):
+            ObjDataAdapter(dataset_config, model_info)
+
+    @patch('ax_datasets.objdataadapter.ObjDataAdapter._check_supported_label_type')
+    def test_validation_allows_ultralytics_without_val_data(self, mock_check_label_type):
+        """Test that validation allows ultralytics_data_yaml without explicit val_data."""
+        from axelera import types
+
+        mock_check_label_type.return_value = SupportedLabelType.YOLOv8
+
+        dataset_config = {
+            'ultralytics_data_yaml': 'data.yaml',
+            'label_type': 'YOLOv8'
+            # No val_data - should be OK since ultralytics will provide it
+        }
+
+        model_info = types.ModelInfo(
+            name='test_model',
+            task_category='ObjectDetection',
+            input_tensor_shape=[1, 3, 640, 640],
+            input_color_format='RGB',
+            input_tensor_layout='NCHW',
+        )
+
+        # This should not raise an error
+        adapter = ObjDataAdapter(dataset_config, model_info)
+        assert adapter.label_type == SupportedLabelType.YOLOv8
+
+    @patch('ax_datasets.objdataadapter.ObjDataAdapter._check_supported_label_type')
+    def test_validation_requires_val_data_for_traditional_format(self, mock_check_label_type):
+        """Test that validation requires val_data for traditional format."""
+        from axelera import types
+
+        mock_check_label_type.return_value = SupportedLabelType.YOLOv8
+
+        dataset_config = {
+            'cal_data': 'train.txt',
+            'label_type': 'YOLOv8'
+            # Missing val_data for traditional format
+        }
+
+        model_info = types.ModelInfo(
+            name='test_model',
+            task_category='ObjectDetection',
+            input_tensor_shape=[1, 3, 640, 640],
+            input_color_format='RGB',
+            input_tensor_layout='NCHW',
+        )
+
+        with pytest.raises(
+            ValueError, match="Please specify 'val_data' or 'ultralytics_data_yaml'"
+        ):
+            ObjDataAdapter(dataset_config, model_info)

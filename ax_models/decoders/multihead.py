@@ -42,6 +42,18 @@ class DecodeYoloPoseSeg(AxOperator):
     nms_top_k: int = 300
     overwrite_labels: bool = False
 
+    @classmethod
+    def handles_dequantization_and_depadding(cls):
+        return True
+
+    @classmethod
+    def handles_transpose(cls):
+        return True
+
+    @classmethod
+    def handles_postamble(cls):
+        return True
+
     def _post_init(self):
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
             raise ValueError(f"Unknown box format {self.box_format}")
@@ -53,7 +65,6 @@ class DecodeYoloPoseSeg(AxOperator):
         else:
             self.label_filter = []
         self._tmp_labels: Optional[Path] = None
-        self.cpp_decoder_does_all = True
         super()._post_init()
 
     def configure_model_and_context_info(

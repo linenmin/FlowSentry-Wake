@@ -67,7 +67,7 @@ incorporating our AxPlugins and the YOLOv5s model. It follows the conventional c
 GStreamer syntax.
 
 ```bash
-./download_prebuilt.py yolov7-coco
+axdownloadmodel yolov7-coco
 GST_PLUGIN_PATH=`pwd`/operators/lib gst-launch-1.0 \
   filesrc location=media/traffic3_480p.mp4 ! \
   decodebin force-sw-decoders=true caps="video/x-raw(ANY)" expose-all-streams=false ! \

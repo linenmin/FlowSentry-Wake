@@ -671,8 +671,7 @@ gst_axtransform_sink_chain(GstPad *pad, GstObject *parent, GstBuffer *buffer)
     auto complete = axtransform->data->fns.transform_async(input, output,
         axtransform->data->subplugin_data.get(), meta->subframe_index,
         meta->subframe_number, *meta->meta_map_ptr, axtransform->data->logger);
-    auto use_double_buffer = Ax::get_env("AXELERA_USE_CL_DOUBLE_BUFFER", "1");
-    if (use_double_buffer == "1") {
+    if (Ax::enable_opencl_double_buffering()) {
       return finish_previous_transform(axtransform, buffer, outbuf, inmap, outmap, complete);
     }
     complete();

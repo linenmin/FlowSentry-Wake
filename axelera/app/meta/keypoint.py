@@ -69,6 +69,9 @@ class KeypointDetectionMeta(AxTaskMeta):
             f"Implement this method if you want to add results object-by-object"
         )
 
+    def draw(self, draw: display.Draw):
+        raise NotImplementedError(f"Implement draw() for {self.__class__.__name__}")
+
 
 @dataclass(frozen=True)
 class TopDownKeypointDetectionMeta(KeypointDetectionMeta):
@@ -309,7 +312,16 @@ class CocoBodyKeypointsMeta(BottomUpKeypointDetectionMeta):
     ]
 
     def draw(self, draw: display.Draw):
-        draw_bounding_boxes(self, draw, show_class=False)
+        draw_bounding_boxes(
+            self,
+            draw,
+            self.task_render_config.show_labels,
+            self.task_render_config.show_annotations,
+        )
+
+        if not self.task_render_config.show_annotations:
+            return
+
         if len(self.keypoints) == 0:
             return
         lines = []
@@ -359,7 +371,15 @@ class FaceLandmarkLocalizationMeta(BottomUpKeypointDetectionMeta):
             )
 
     def draw(self, draw: display.Draw):
-        draw_bounding_boxes(self, draw, show_class=False)
+        draw_bounding_boxes(
+            self,
+            draw,
+            self.task_render_config.show_labels,
+            self.task_render_config.show_annotations,
+        )
+
+        if not self.task_render_config.show_annotations:
+            return
 
         for det_pts in self.keypoints:
             for x, y in det_pts:
@@ -373,6 +393,9 @@ class FaceLandmarkTopDownMeta(TopDownKeypointDetectionMeta):
     keypoints_shape = [5, 3]  # x, y, score
 
     def draw(self, draw: display.Draw):
+        if not self.task_render_config.show_annotations:
+            return
+
         for det_pts in self._keypoints:
             for x, y, _ in det_pts:
                 draw.keypoint((x, y), _red, 6)

@@ -1,5 +1,6 @@
 # Copyright Axelera AI, 2025
 # Logging functions
+from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
@@ -8,10 +9,13 @@ import re
 import sys
 import time
 import traceback
-from typing import Union
+from typing import TYPE_CHECKING, Union
 import warnings
 
 import tqdm
+
+if TYPE_CHECKING:
+    from .config import LoggingConfig
 
 _logging_configured = False
 TRACE = 5
@@ -71,20 +75,6 @@ class UserError(RuntimeError):
         else:
             pre, post = '', ''
         return f'\n{pre}ERROR{post}: {self}'
-
-
-@dataclass
-class Config:
-    console_level: int = logging.INFO
-    """Logging level for the console output."""
-    file_level: int = logging.NOTSET
-    """Logging level for the file output, only relevant if `path` is set to a valid path."""
-    path: str = ""
-    """If set then log message of level `file_level` will be appended to `file_path`."""
-    timestamp: bool = False
-    """If True then the timestamp will be shown in the console and file output."""
-    brief: bool = False
-    """If True then suppress debug and warning logs, show others without decoration"""
 
 
 class _TqdmStream:
@@ -250,20 +240,29 @@ def _args_to_level(args: argparse.Namespace, quiet_offset: int) -> int:
         return levels.get(args.verbose, TRACE)
 
 
-def get_config_from_args(args: argparse.Namespace) -> Config:
+def get_config_from_args(args: argparse.Namespace) -> LoggingConfig:
     """Extract logging configuration from argparse arguments.
 
     See add_logging_args for a usage example.
     """
+    from .config import LoggingConfig
+
     console_level = _args_to_level(args, 0)
     file_level = logging.NOTSET
     if args.logfile:
         file_level = console_level if args.loglevel == "" else _level_to_int(args.loglevel)
-    return Config(console_level, file_level, args.logfile, args.logtimestamp, args.brief)
+    compiler_level = _args_to_level(args, 1)
+    return LoggingConfig(
+        console_level, file_level, args.logfile, args.logtimestamp, args.brief, compiler_level
+    )
 
 
 def configure_compiler_level(args: argparse.Namespace):
-    compiler_level = _args_to_level(args, 1)
+    '''This function is deprecated. Use configure_logging instead.'''
+    pass
+
+
+def _configure_compiler_level(compiler_level: int):
     compiler_modules = '''\
         git.cmd
         te_compiler
@@ -284,18 +283,23 @@ class _BriefFilter(logging.Filter):
         return record.levelno not in [logging.DEBUG, logging.WARNING, TRACE]
 
 
-def configure_logging(config: Config = Config()):
+def configure_logging(config: LoggingConfig | None = None):
     """Configure axelera logging and formatters.
 
     See add_logging_args for a usage example with argparse, or use the Config
     class to configure logging explicitly.
     """
+    from .config import LoggingConfig
+
+    config = config or LoggingConfig()
     logger = getLogger("")
 
     global _logging_configured
     if _logging_configured:
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
+
+    _configure_compiler_level(config.compiler_level)
 
     formatter = _Formatter(config.timestamp, True, ansi_colors=False, brief=config.brief)
     console_module = config.console_level <= logging.DEBUG

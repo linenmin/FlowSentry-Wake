@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 import warnings
 
 warnings.filterwarnings(
@@ -21,6 +21,9 @@ try:
     from gi.repository import Gst, GstApp, GstVideo  # noqa
 except ImportError:
     pass
+except ValueError as e:
+    if 'Gst' not in str(e):
+        raise
 
 try:
     import onnxruntime  # noqa - prevents a crash in the compiler

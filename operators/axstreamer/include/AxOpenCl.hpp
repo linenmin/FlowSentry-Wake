@@ -260,6 +260,7 @@ class CLProgram
   static std::mutex cl_mutex;
 };
 
+output_format get_output_format(AxVideoFormat format, bool ignore_alpha = true);
 std::string get_kernel_utils(int rotate_type = 0);
 
 } // namespace ax_utils

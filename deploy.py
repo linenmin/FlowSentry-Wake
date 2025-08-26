@@ -4,7 +4,7 @@
 
 import sys
 
-from axelera.app import config, logging_utils, pipeline, utils, yaml_parser
+from axelera.app import config, logging_utils, pipeline, torch_utils, utils, yaml_parser
 
 LOG = logging_utils.getLogger(__name__)
 
@@ -15,14 +15,10 @@ def main():
     args = parser.parse_args()
     logging_utils.configure_logging(logging_utils.get_config_from_args(args))
     logging_utils.configure_compiler_level(args)
-    hardware_caps = config.HardwareCaps.from_parsed_args(args)
     nn_info = network_yaml_info.get_info(args.network)
     nn_name = nn_info.yaml_name
-
-    if args.cal_seed != 0:
-        import torch
-
-        torch.manual_seed(args.cal_seed)
+    if args.cal_seed is not None:
+        torch_utils.set_random_seed(args.cal_seed)
 
     deploy_info = f'{nn_name}: {args.model}' if args.model else nn_name
     verb = (
@@ -30,23 +26,25 @@ def main():
         if args.mode in (config.DeployMode.QUANTIZE, config.DeployMode.QUANTIZE_DEBUG)
         else 'Compiling'
     )
+    system_config = config.SystemConfig.from_parsed_args(args)
+    pipeline_config = config.PipelineConfig(
+        network=args.network,
+        pipe_type=args.pipe,
+        aipu_cores=args.aipu_cores,
+    )
+    deploy_config = config.DeployConfig.from_parsed_args(args)
     with utils.catchtime(f"{verb} {deploy_info}", LOG.info):
         success = pipeline.deploy_from_yaml(
             nn_name,
-            args.network,
             args.pipeline_only,
             args.models_only,
             args.model,
-            args.pipe,
+            system_config,
+            pipeline_config,
+            deploy_config,
             args.mode,
-            args.num_cal_images,
-            args.calibration_batch,
-            args.data_root,
-            args.build_root,
             args.export,
-            hardware_caps,
             args.metis,
-            args.cal_seed,
         )
     if success:
         if args.mode not in (config.DeployMode.QUANTIZE, config.DeployMode.QUANTIZE_DEBUG):

@@ -178,7 +178,43 @@ get_device_id(cl_platform_id platform, cl_device_id *device_id,
         extensions.display, CL_PREFERRED_DEVICES_FOR_VA_API_INTEL, 1, device_id, num_devices);
 #endif
   }
-  return clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, device_id, num_devices);
+
+  // Check platform type for intelligent device selection
+  char platform_name[256];
+  clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name), platform_name, nullptr);
+  std::string platform_str(platform_name);
+
+  // For Intel and POCL platforms, prefer CPU devices
+  if (platform_str.find("Intel") != std::string::npos
+      || platform_str.find("Portable Computing Language") != std::string::npos) {
+    // Try CPU first for these platforms
+    int result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 1, device_id, num_devices);
+    if (result == CL_SUCCESS) {
+      return result;
+    }
+    // Fallback to GPU if CPU not available
+    result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, device_id, num_devices);
+    if (result == CL_SUCCESS) {
+      return result;
+    }
+    // Final fallback to any device
+    return clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 1, device_id, num_devices);
+  }
+
+  // For other platforms (e.g., NVIDIA), prefer GPU devices
+  int result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, device_id, num_devices);
+  if (result == CL_SUCCESS) {
+    return result;
+  }
+
+  // Fallback to CPU if GPU not available
+  result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 1, device_id, num_devices);
+  if (result == CL_SUCCESS) {
+    return result;
+  }
+
+  // Final fallback to any device type
+  return clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 1, device_id, num_devices);
 }
 
 cl_context

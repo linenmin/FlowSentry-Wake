@@ -6,6 +6,7 @@ Unified model instance interface for LLM inference (AxInstance, TorchInstance, e
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from llm.embedding_processor import EmbeddingProcessor
@@ -16,63 +17,111 @@ from axelera.app import logging_utils, utils
 LOG = logging_utils.getLogger(__name__)
 
 
+def _try_connect(ctx, device):
+    try:
+        # Try to temporarily connect to the device to see if it's available
+        # we always allocate 4 sub-devices for LLMs because we want all L1/L2 caches to be used
+        c = ctx.device_connect(device=device, num_sub_devices=4)
+        LOG.info(
+            f"Selected available device {device.name} with {device.max_memory/(1024**3):.1f} GB memory"
+        )
+        return c
+    except Exception as e:
+        LOG.debug(f"Device {device.name} appears to be in use or unavailable: {e}")
+        return None
+
+
+def _device_index(devices, sel):
+    """Parse device selector - can be an index or device name."""
+    try:
+        x = int(sel)
+        if x < 0 or x >= len(devices):
+            raise ValueError(f"Device selector {sel} out of range")
+        return x
+    except ValueError:
+        matching = [idx for idx, d in enumerate(devices) if d.name == sel]
+        if not matching:
+            raise ValueError(f"No device found matching {sel}")
+        return matching[0]
+
+
+def _select_devices(available, selector):
+    """Select devices based on selector string (comma-separated indices or names)."""
+    if selector:
+        indexes = [_device_index(available, s) for s in selector.split(',')]
+        devices = [available[i] for i in indexes]
+        if not devices:
+            raise RuntimeError(f"No devices found matching {selector}")
+        return devices
+    else:
+        return available
+
+
 class AxInstance:
     """
     Axelera AI accelerator model instance for LLM inference.
     """
 
-    def __init__(self, yaml, build_root, ddr_requirement_gb):
+    def __init__(self, yaml, build_root, ddr_requirement_gb, device_selector: str = ''):
         from axelera.runtime import Context
 
         # Extract number of cores from model name, default to 1 if not specified
         model_name = yaml.get('name', '')
-        context = Context()
-        available_devices = context.list_devices()
+
+        # Support device selection via environment variable (for -d0 style usage)
+        # or via parameter (for programmatic usage)
+        env_device_selector = os.environ.get('AXELERA_DEVICE_SELECTOR', '')
+        final_device_selector = device_selector or env_device_selector
+
+        self.ctx = Context()
+        available_devices = self.ctx.list_devices()
+
+        # Apply device selection if specified
+        if final_device_selector:
+            try:
+                selected_devices = _select_devices(available_devices, final_device_selector)
+                LOG.info(
+                    f"Using device selector '{final_device_selector}': {[d.name for d in selected_devices]}"
+                )
+            except (ValueError, RuntimeError) as e:
+                LOG.error(f"Device selection failed: {e}")
+                raise RuntimeError(f"Invalid device selector '{final_device_selector}': {e}")
+        else:
+            selected_devices = available_devices
 
         qualified_devices = [
-            d for d in available_devices if d.max_memory >= ddr_requirement_gb * (1024**3)
+            d for d in selected_devices if d.max_memory >= ddr_requirement_gb * (1024**3)
         ]
         if not qualified_devices:
+            available_info = [
+                f'{d.name} ({d.max_memory/(1024**3):.1f}GB)' for d in selected_devices
+            ]
             raise RuntimeError(
-                f"{model_name} requires a card with at least {ddr_requirement_gb} GB of DDR memory."
-                f"No device with the required memory is available. "
+                f"{model_name} requires a card with at least {ddr_requirement_gb} GB of DDR memory. "
+                f"Available devices: {available_info}"
             )
 
         # Check if any devices are already in use (try to detect busy devices)
-        best_device = None
+        self.connection = None
         for device in qualified_devices:
-            try:
-                # Try to temporarily connect to the device to see if it's available
-                temp_conn = context.device_connect(device=device)
-                temp_conn.release()
-                best_device = device
-                LOG.info(
-                    f"Selected available device {device.name} with {device.max_memory/(1024**3):.1f} GB memory"
-                )
+            self.connection = _try_connect(self.ctx, device)
+            if self.connection:
                 break
-            except Exception as e:
-                LOG.warning(f"Device {device.name} appears to be in use or unavailable: {e}")
 
-        # If we couldn't find an available device, use the first qualified one
-        if not best_device:
-            best_device = qualified_devices[0]
-            LOG.warning(
-                f"All qualified devices appear to be in use. Will try to use {best_device.name} anyway."
-            )
+        if not self.connection:
+            raise RuntimeError(f"All qualified devices appear to be in use")
 
         model_path = self._download_precompiled_network(yaml, build_root)
         embedding_file = self._download_embedding_file(yaml, build_root)
-        self.ctx = Context()
+
         model = self.ctx.load_model(model_path)
-        # we always allocate 4 sub-devices for LLMs because we want all L1/L2 caches to be used
-        self.connection = self.ctx.device_connect(device=best_device, num_sub_devices=4)
         self.instance = self.connection.load_model_instance(model)
 
         self._embedding_processor = EmbeddingProcessor(embedding_file)
         self._outputs_logits = np.zeros(
             self._embedding_processor.get_embedding_shape()[0], dtype=np.int8
         )
-        LOG.info(f"AxInstance initialized with model: {model_path} on device: {best_device.name}")
+        LOG.info(f"AxInstance initialized with model: {model_path}")
 
     def run(self, inputs):
         # inputs: (input_ids, embedding_features)
@@ -145,9 +194,13 @@ class AxInstance:
         model_name, model = next(iter(yaml['models'].items()))
         extra_kwargs = model['extra_kwargs']['llm']
         embeddings_url = extra_kwargs['embeddings_url']
+        embeddings_md5 = extra_kwargs.get('embeddings_md5')
         embeddings_name = embeddings_url.split('/')[-1]
         embedding_path = build_root / f"{model_name}/{embeddings_name}"
-        utils.download(embeddings_url, embedding_path)
+        if not embedding_path.exists() or (
+            embeddings_md5 and not utils.md5_validates(embedding_path, embeddings_md5)
+        ):
+            utils.download(embeddings_url, embedding_path, embeddings_md5)
         return embedding_path
 
 

@@ -119,7 +119,7 @@ parse_args(int argc, char **argv)
         << "\n"
         << "A prebuilt model can be downloaded using \n"
         << "\n"
-        << "  ./download_prebuilt.py resnet50-imagenet\n"
+        << "  axdownloadmodel resnet50-imagenet\n"
         << "\n"
         << "The model path would then be \n"
         << "  build/resnet50-imagenet/resnet50-imagenet/1/model.json\n"

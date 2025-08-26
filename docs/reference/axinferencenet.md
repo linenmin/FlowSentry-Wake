@@ -13,6 +13,7 @@
   - [properties\_from\_string](#properties_from_string)
     - [Creating Ax::InferenceNet](#creating-axinferencenet)
 
+
 **Note:** This interface is still under development and is subject to change. The core functionality will remain the same, but interfaces and type names may change.
 
 ## Overview and Key Benefits

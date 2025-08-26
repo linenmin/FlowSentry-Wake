@@ -191,6 +191,39 @@ input_operator = lambda operators, compilation_configs: {
     # We now support only 'image'.
 }
 
+'''Determine the inference settings for a model.'''
+inference_operator = lambda operators, compilation_configs: {
+    Optional["handle_all"]: Bool,
+    # Optional convenience parameter to set all 4 handle flags at once.
+    # - If None (default): individual flags are used as specified
+    # - If True: all 4 handle flags are set to True and the input/output will totally follow the source ONNX input/output nodes.
+    #   This simplifies integration but might not be optimal for performance in all cases.
+    # - If False: all 4 handle flags are set to False
+    #
+    # Performance considerations:
+    # - For small models: Setting handle_all=False and moving operations to postprocessing may improve performance
+    #   through fusion optimizations
+    # - For large models: Using handle_all=True typically doesn't impact performance significantly and simplifies integration
+    # Individual handle flags
+    Optional["handle_dequantization_and_depadding"]: Bool,
+    # Whether the C++ decoder should handle dequantization and depadding
+    Optional["handle_transpose"]: Bool,
+    # Whether the C++ decoder should handle transposition
+    Optional["handle_postamble"]: Bool,
+    # Whether the C++ decoder should handle postamble processing
+    Optional["handle_preamble"]: Bool,
+    # Whether the C++ decoder should handle preamble processing
+    # Other configuration options
+    Optional["dequantize_using_lut"]: Bool,
+    # Whether to use lookup tables for dequantization
+    Optional["postamble_onnxruntime_intra_op_num_threads"]: Int,
+    # Number of threads for ONNX Runtime intra-op parallelism (must be >= 1)
+    Optional["postamble_onnxruntime_inter_op_num_threads"]: Int,
+    # Number of threads for ONNX Runtime inter-op parallelism (must be >= 1)
+    Optional["postamble_onnx"]: Str,
+    # Optional path to a manual-cut postamble ONNX model
+}
+
 
 '''
 Make a custom operator available to the pipeline.
@@ -300,6 +333,11 @@ task = lambda operators, compilation_configs: {
     #         - normalize:
     #             mean: 127.5
     #             std: 127.5
+    Optional["inference"]: Union[EmptyDict, inference_operator(operators, compilation_configs)],
+    # Optional inference settings for the model. Example usage:
+    #     inference:
+    #       handle_all: True
+    #       dequantize_using_lut: True
     Optional["postprocess"]: Union[EmptyList, List[operators]],
     # List of operators to apply to the output of the model.
     # Used when task_type is "deep_learning".
@@ -318,6 +356,13 @@ task = lambda operators, compilation_configs: {
     #             min_hits: 1
     #             iou_threshold: 0.3
     #             max_id: 0
+    Optional["render"]: {
+        Optional["show_annotations"]: Bool,
+        Optional["show_labels"]: Bool,
+    },
+    # Settings for rendering metadata for a specific task.
+    # - show_annotations: Whether to draw visual elements like bounding boxes, keypoints, etc.
+    # - show_labels: Whether to draw class labels and score text.
     Optional["operators"]: MapPattern[custom_operator(operators, compilation_configs)],
     # List of custom operators to make available to the pipeline.
 }
@@ -342,6 +387,7 @@ dataset = lambda operators, compilation_configs: {
     Optional["dataset_md5"]: Str,
     Optional["dataset_drop_dirs"]: Int,
     Optional["data_dir_name"]: Str,
+    Optional["ultralytics_data_yaml"]: Str,
     # Directory in which to store and load the dataset, this is prefixed with `--data-root`
     # (which defaults to ./data).
     Optional["cal_data_url"]: Str,

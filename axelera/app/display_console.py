@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 import tqdm
 
+from axelera import types
+
 from . import display, display_cv, logging_utils
 
 if TYPE_CHECKING:
@@ -35,8 +37,17 @@ _LTGREY = "\x1b[37;2m"
 
 
 class ConsoleDraw(display_cv.CVDraw):
-    def __init__(self, img, pane_pos, metrics, labels, options: ConsoleOptions, **kwargs):
-        super().__init__(img, [])
+    def __init__(
+        self,
+        img,
+        pane_pos,
+        metrics,
+        labels,
+        options: ConsoleOptions,
+        speedometer_smoothing: display.SpeedometerSmoothing = None,
+        **kwargs,
+    ):
+        super().__init__(img, [], speedometer_smoothing=speedometer_smoothing)
         self.metrics = metrics
         self.labels = labels
         self.pane_pos = pane_pos
@@ -63,8 +74,15 @@ class ConsoleDraw(display_cv.CVDraw):
         return (len(s), 1)
 
     def draw_speedometer(self, metric: inf_tracers.TraceMetric):
-        text = display.calculate_speedometer_text(metric)
-        bar = _count_as_bar(metric.value, 10, metric.max)
+        if self._speedometer_smoothing:
+            self._speedometer_smoothing.update(metric)
+        text = display.calculate_speedometer_text(metric, self._speedometer_smoothing)
+        value = (
+            metric.value
+            if not self._speedometer_smoothing
+            else self._speedometer_smoothing.value(metric)
+        )
+        bar = _count_as_bar(value, 10, metric.max_scale_value)
         self.metrics.append(f"{metric.title} [{bar}{_LTGREY}{text}{_RESET}]")
 
     def draw_statistics(self, stats):
@@ -161,6 +179,7 @@ class ConsoleApp(display.App):
         self._cols, self._rows = 0, 0
         self._current = {}
         self._meta_cache = display.MetaCache()
+        self._speedometer_smoothing = collections.defaultdict(display.SpeedometerSmoothing)
         self._options: dict[int, ConsoleOptions] = collections.defaultdict(ConsoleOptions)
 
     def _create_new_window(self, q, title, size):
@@ -210,13 +229,23 @@ class ConsoleApp(display.App):
                 pos = _pane_position(
                     stream_id, len(self._current), (w, h), (self._cols, self._rows * 2)
                 )
-                draw = ConsoleDraw(img, pos, metrics=metrics, labels=labels, options=opts)
+                speedometer_smoothing = (
+                    self._speedometer_smoothing[stream_id] if opts.speedometer_smoothing else None
+                )
+                draw = ConsoleDraw(
+                    img,
+                    pos,
+                    metrics=metrics,
+                    labels=labels,
+                    options=opts,
+                    speedometer_smoothing=speedometer_smoothing,
+                )
                 _, meta_map = self._meta_cache.get(stream_id, meta)
                 for m in meta_map.values():
-                    m.draw(draw)
+                    m.visit(lambda m: m.draw(draw))
                 draw.draw()
 
-                img = img.asarray('RGB')
+                img = img.asarray('GRAY' if img.color_format == types.ColorFormat.GRAY else 'RGB')
                 img = cv2.resize(img, (pos[2], pos[3]), interpolation=cv2.INTER_AREA)
                 img = display_cv.rgb_to_grayscale_rgb(img, opts.grayscale)
 
@@ -248,4 +277,9 @@ class ConsoleApp(display.App):
         _reset()
 
     def __del__(self):
+        # try:
         _reset()
+        # except Exception:
+        #    # In case of an error during reset, we just ignore it.
+        #    # This can happen if the console is closed before the app is destroyed.
+        #    pass

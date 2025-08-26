@@ -54,7 +54,7 @@ class AxMetaBase
       int subframe_number, std::shared_ptr<AxMetaBase> meta)
   {
     if (!submeta_map) {
-      throw std::runtime_error("Submeta map is not initialized");
+      submeta_map = std::make_shared<SubmetaMap>();
     }
     submeta_map->insert(name, subframe_index, subframe_number, std::move(meta));
   }
@@ -85,9 +85,6 @@ class AxMetaBase
     return submeta_map->keys();
   }
 
-  AxMetaBase() : submeta_map(std::make_shared<SubmetaMap>())
-  {
-  }
   virtual ~AxMetaBase() = default;
 
   private:
@@ -107,12 +104,10 @@ class AxMetaBase
         throw std::runtime_error("Subframe index out of bounds in insert of SubmetaMap");
       }
       std::unique_lock lock(mutex);
-      auto [map_itr, created] = map.try_emplace(
-          name, std::vector<std::shared_ptr<AxMetaBase>>(number_of_subframes));
-      if (!created && map_itr->second.size() != number_of_subframes) {
-        throw std::runtime_error("Subframe number mismatch in insert of SubmetaMap");
-      }
-      map_itr->second[subframe_index] = std::move(meta);
+      auto &subframes = map[name];
+      subframes.resize(
+          std::max(static_cast<size_t>(number_of_subframes), subframes.size()));
+      subframes[subframe_index] = std::move(meta);
     }
 
     template <typename T = AxMetaBase>

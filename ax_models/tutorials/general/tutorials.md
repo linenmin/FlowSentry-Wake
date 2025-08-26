@@ -42,6 +42,7 @@
       - [Implementing a Custom DataAdapter](#implementing-a-custom-dataadapter)
       - [types.BaseEvalSample](#typesbaseevalsample)
     - [The other built-in DataAdapter](#the-other-built-in-dataadapter)
+    - [Deploying with Existing Calibration Data](#deploying-with-existing-calibration-data)
     - [Takeaways](#takeaways-3)
     - [Appendix](#appendix-1)
   - [Tutorial-5: Building End-to-End GStreamer Pipelines](#tutorial-5-building-end-to-end-gstreamer-pipelines)
@@ -70,6 +71,12 @@
       - [Python Implementation](#python-implementation)
     - [Running the Cascaded Pipeline](#running-the-cascaded-pipeline)
     - [Takeaways](#takeaways-8)
+  - [Tutorial-10: Face detection and recognition pipeline](#tutorial-10-face-detection-and-recognition-pipeline)
+    - [Creating an Embeddings File](#creating-an-embeddings-file)
+    - [The Cascaded Pipeline](#the-cascaded-pipeline)
+      - [Register yourself in the embeddings file](#register-yourself-in-the-embeddings-file)
+    - [Adding a Tracker](#adding-a-tracker)
+    - [Takeaways](#takeaways-9)
   - [Other References](#other-references)
 
 The following tutorials explain experimental advanced model and pipeline deployment features of the Voyager SDK.
@@ -453,7 +460,7 @@ Below is an example snippet of the `pipeline` section from the YAML file located
 
 ```yaml
 pipeline:
-  - classifier:            # Task name
+  - classifications:            # Task name
       model_name: model1   # References model defined in models section
       input:
           type: image
@@ -466,7 +473,7 @@ pipeline:
 
 **Key components:**
 
-1. Task Definition: each task in the pipeline is defined with a descriptive name (e.g., classifier)
+1. Task Definition: each task in the pipeline is defined with a descriptive name (e.g., classifications)
 2. Model Reference:
    - model_name links to a model defined in the models section
    - This tells the pipeline which model to use for inference
@@ -742,7 +749,7 @@ class TopKDecoderOutputMeta(AxOperator):
   - After parsing inference outputs (top IDs and scores), results are appended to `model_meta` via `add_result`.
 3. axmeta.add_instance
   - The method `axmeta.add_instance(self.task_name, model_meta)` registers the classification metadata in the pipeline’s top-level container for metadata `axmeta`.
-  - Because we’re naming the task “classifier” in the pipeline, you can later retrieve `axmeta["classifier"]` to see the classification results.
+  - Because we’re naming the task “classifications” in the pipeline, you can later retrieve `axmeta["classifications"]` to see the classification results.
 
 
 You can run the pipeline with `inference.py` and see the results in the console:
@@ -775,7 +782,7 @@ Note: You may find it interesting that you didn’t explicitly run deploy.py, ye
 - `AxTaskMeta` is an abstract base class for different computer vision tasks. We build domain-specific subclasses (e.g., `ClassificationMeta`, `ObjectDetectionMeta`, `SemanticSegmentationMeta`, etc.). Each subclass provides convenient properties and methods to handle relevant post-inference data, visualization and evaluation logic (like bounding boxes, keypoints, or class labels).
 
 In this tutorial, you work with `ClassificationMeta`, a built-in class for classification tasks. If your pipeline uses other tasks, each would have corresponding metadata. For example, a pipeline with multiple classifiers referencing the same or different models would store results under separate keys in `axmeta`:
-`axmeta["classifier1"], axmeta["classifier2"], …`
+`axmeta["classifications1"], axmeta["classifications2"], …`
 
 #### Deep dive into AxTaskMeta
 
@@ -785,7 +792,7 @@ In this tutorial, you work with `ClassificationMeta`, a built-in class for class
 - `to_evaluation`: Converts the task results into an evaluation-plugin-friendly format (e.g., for COCO or custom evaluation). This standardizes how you pass data to different evaluators or metric calculators—ensuring you don’t need ad hoc scripts or transformations per model.
 - `aggregate`: Combines multiple AxTaskMeta objects representing the same task type into a single instance. This is particularly useful when you’re running inference on ROIs and want to generate summarized results for evaluation.
 - `decode`: Decodes task results passed from a raw byte stream, typically when running on the GStreamer (C++) path. This method ensures your Python-based metadata stays in sync with results produced by the lower-level engine.
-- `objects`: Exposes an object-oriented view of the metadata, making it easier to access subsets of your inference results. For example, in a detection task, objects might return a list of bounding box entities—each containing class IDs, confidence scores, or keypoints. If you store AxTaskMeta in axmeta["classifier"], you can directly reference `frame_result.classifier` to retrieve an easy-to-consume array of classified objects.
+- `objects`: Exposes an object-oriented view of the metadata, making it easier to access subsets of your inference results. For example, in a detection task, objects might return a list of bounding box entities—each containing class IDs, confidence scores, or keypoints. If you store AxTaskMeta in axmeta["classifications"], you can directly reference `frame_result.classifications` to retrieve an easy-to-consume array of classified objects.
 
 Instead of creating a different `AxTaskMeta` subclass for each new model, the SDK encourages you to align model outputs with one of the built-in task-specific classes. This lets you leverage the built-in functions and components for visualization, evaluation and I/O. Common subclasses include:
 
@@ -869,7 +876,7 @@ By combining:
  - The `create_inference_stream` function creates an InferenceStream object, iterating over incoming frames and generating one `FrameResult` per frame.
 3. Retrieves Results from `FrameResult`
  - `FrameResult` has an `image`, a `meta` attribute (the `AxMeta`), the `stream_id` (to identify which input stream has been returned), and timestamps.
- - Because each named task’s results are stored in meta under matching keys, you can access them either by `frame_result.meta["classifier"]` or—thanks to a custom `__getattr__`—using `frame_result.classifier`.
+ - Because each named task’s results are stored in meta under matching keys, you can access them either by `frame_result.meta["classifications"]` or—thanks to a custom `__getattr__`—using `frame_result.classifications`.
  - Optionally call `window.show(frame_result.image, frame_result.meta, frame_result.stream_id)` to visualize results in a window.
 
 Example outline:
@@ -885,15 +892,15 @@ stream = create_inference_stream(
 
 for frame_result in stream:
     window.show(frame_result.image, frame_result.meta, frame_result.stream_id)
-    print(frame_result.classifier.class_id)
+    print(frame_result.classifications.class_id)
 stream.close()
 ```
 
 In this snippet:
-- `frame_result.classifier` references the classification task named “classifier” from your YAML configuration.
-- `frame_result.classifier.class_id` gives you the predicted class for each object.
+- `frame_result.classifications` references the classification task named “classifications” from your YAML configuration.
+- `frame_result.classifications.class_id` gives you the predicted class for each object.
 
-The for loop is where you can implement your business logic. For instance, you might log `frame_result.classifier.class_id` to a database or use it in other downstream processes.
+The for loop is where you can implement your business logic. For instance, you might log `frame_result.classifications.class_id` to a database or use it in other downstream processes.
 
 Additionally, remember that looping over the stream with your business logic is synchronous: if that logic is time-consuming, it could slow the entire pipeline. To address this, you should measure the end-to-end FPS achievable with your business logic. Based on this measurement, you can configure the `frame_rate=<measured_fps>` within InferenceConfig. This setting allows you to specify a target frame rate, which will then be applied to the incoming stream. The system will automatically adjust the stream's frame rate to match your target by either dropping or duplicating frames as needed. Keep in mind that this frame rate adjustment is applied globally to all streams. Therefore, if you are working with multiple streams, they will all be adjusted to the same target frame rate. Per-stream frame rate control is a feature we plan to support in a future update.
 
@@ -951,6 +958,7 @@ We will use two YAML configuration files to demonstrate the process:
 
 - [t4.1-measurement-with-meta.yaml](/ax_models/tutorials/general/t4.1-measurement-with-meta.yaml): Uses a built-in `TorchvisionDataAdapter` to load the Fruits360 dataset and measure accuracy.
 - [t4.2-dataadapter.yaml](/ax_models/tutorials/general/t4.2-dataadapter.yaml): Demonstrates how to build your own `DataAdapter` to load the same dataset and measure accuracy.
+- [t4.3-deploy-with-cal-data.yaml](/ax_models/tutorials/general/t4.3-deploy-with-cal-data.yaml): An example demonstrating how to deploy a model with calibration data.
 
 ### Building End-to-End GStreamer Pipelines
 
@@ -1153,7 +1161,6 @@ def evaluator(self, dataset_root, dataset_config, model_info, custom_config, pai
 Depending on the vision task, use a built-in evaluator such as ClassificationEvaluator for classification tasks. You can also implement your own evaluator by subclassing `BaseEvaluator` and then reusing it here. For more details, refer to [Tutorial-8: Evaluating Model Performance with Your Own Metrics](#tutorial-8-evaluating-model-performance-with-your-own-metrics).
 
 
-
 #### types.BaseEvalSample
 
 `BaseEvalSample` is an abstract base class that represents a sample of data to be evaluated. It is a very simple class that contains a `data` attribute. The `data` attribute is a property that returns the data of the sample which can be any type of data. For classification tasks, it is the class id of the image. For object detection tasks, it is a list of bounding boxes, scores and class ids.
@@ -1178,10 +1185,111 @@ For YOLO tasks like object detection, instance segmentation and keypoint detecti
 For object detection, it supports COCO, YOLO and VOC formats, for the keypoint detection and instance segmentation, it supports YOLO format.
 
 
+### Deploying with Existing Calibration Data
+
+Throughout the previous sections, we have been using representative images for model calibration. These images are consolidated into a single directory, and the Voyager SDK automatically processes them through the preprocessing pipeline to calibrate the model for quantization.
+
+As you may recall from sections 4.1 and 4.2, we specified the representative images directory path in the dataset configuration:
+
+```yaml
+    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/fruits-360-100x100/repr_imgs/
+```
+
+> [!IMPORTANT]
+> By default, `./deploy.py` uses 400 selected COCO images as representative images for model calibration. Since COCO images are captured from real-world scenarios, they generally provide good calibration accuracy. However, if your target application uses images that differ significantly from the COCO dataset (for example, specialized images from automated optical inspection systems with unique lighting and color conditions), you should use your own representative images for better model calibration. This can be done by specifying the `repr_imgs_dir_path` in the YAML dataset section, which will override the default representative image path.
+
+A common scenario is when you already have a calibration or training dataset that was used during model training. In such cases, rather than preparing a separate set of representative images, you can leverage the existing dataset using the `cal_data` parameter in the YAML configuration file.
+
+To implement this approach, refer to [t4.3-deploy-with-cal-data.yaml](/ax_models/tutorials/general/t4.3-deploy-with-cal-data.yaml), where we replace `repr_imgs_dir_path` with `cal_data`:
+
+```yaml
+  Custom-Fruits360:
+    class: CustomDataAdapterWithCalData
+    class_path: tutorial_data_adapter.py
+    data_dir_name: fruits-360-100x100
+    val_data: Test
+    labels_path: ~/.cache/axelera/weights/tutorials/fruits360.names
+    cal_data: Training
+```
+
+The configuration points to the `CustomDataAdapterWithCalData` class, which extends `CustomDataAdapter` and implements the necessary `create_calibration_data_loader` and `reformat_for_calibration` methods. In this implementation, `reformat_for_calibration` is identical to `reformat_for_validation`, while `create_calibration_data_loader` uses the `cal_data` parameter instead of `val_data` and enables data shuffling.
+
+Alternatively, you can use the built-in `TorchvisionDataAdapter` with the `cal_data: Training` parameter, eliminating the need for a custom data adapter:
+
+```yaml
+  Fruits360:
+    class: TorchvisionDataAdapter
+    class_path: $AXELERA_FRAMEWORK/ax_datasets/torchvision.py
+    data_dir_name: fruits-360-100x100
+    val_data: Test
+    labels_path: ~/.cache/axelera/weights/tutorials/fruits360.names
+    cal_data: Training
+```
+
+Examining the model section:
+
+```yaml
+  model1:
+    class: CustomONNXModelWithoutResize
+    class_path: ../onnx/simplest_onnx.py
+```
+
+We use `CustomONNXModelWithoutResize` here to demonstrate that when using training data already sized at 100x100 pixels, the preprocessing pipeline works effectively even without the Resize transform:
+
+```python
+class CustomONNXModelWithoutResize(base_onnx.AxONNXModel):
+    def override_preprocess(self, img: PIL.Image.Image | np.ndarray) -> torch.Tensor:
+        return transforms.Compose([
+            # transforms.Resize((100, 100)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])(img)
+```
+
+If your input dimensions exceed the expected size, you will see a warning:
+```
+WARNING : The test set shape of the calibration dataloader does not match model input shape: [1, 3, 480, 640] vs [1, 3, 100, 100]. This can lead to incorrect quantization!
+```
+
+In such cases, you should review your preprocessing pipeline immediately, as continuing with calibration could adversely affect model accuracy. Conversely, if the input dimensions are smaller than expected, you will encounter an error due to insufficient data for processing.
+
+To deploy using your calibration data, execute the following command:
+
+```bash
+./deploy.py t4.3-deploy-with-cal-data --no-default-representative-images
+```
+
+This command disables the default representative images and utilizes the `cal_data` specified in your YAML configuration file. Ensure that the `data/fruits-360-100x100/Training` directory contains the training images; otherwise, you will encounter an error. If needed, you can download a subset of training images using:
+
+```bash
+[ ! -d "$AXELERA_FRAMEWORK/data/fruits-360-100x100/Training" ] && wget --show-progress -P $AXELERA_FRAMEWORK/data/ https://media.axelera.ai/artifacts/tutorials/fruits-360-100x100-trainsubset.zip && unzip -q $AXELERA_FRAMEWORK/data/fruits-360-100x100-trainsubset.zip -d $AXELERA_FRAMEWORK/data/ && rm $AXELERA_FRAMEWORK/data/fruits-360-100x100-trainsubset.zip || echo "Training directory exists, skipping download"
+```
+
+This training subset contains 282 images. The default calibration process randomly selects 200 images. If you attempt to use more images than are available:
+
+```bash
+ ./deploy.py t4.3-deploy-with-cal-data --no-default-representative-images --num-cal-images=400
+ ```
+
+You will receive an error:
+
+```
+ERROR   : Cannot use 400 calibration images when dataset only contains 282 images. Please either:
+ERROR   :   1. Reduce --num-cal-images to 282 or less
+ERROR   :   2. Add more images to the calibration dataset
+```
+
+To resolve this, either reduce the `--num-cal-images` parameter to match or fall below your available dataset size, or add more images to your calibration dataset. The default value of 200 is recommended for typical calibration scenarios, but you can experiment with values between 100 and 400 images. Research indicates that using more than 400 images typically produces diminishing returns for calibration quality.
+
+
 ### Takeaways
 
 - Voyager SDK provides a built-in DataAdapter for most of the common dataset formats. By simply invoking the corresponding DataAdapter through the YAML datasets section, you can easily use `./inference.py <the_model> dataset --pipe=torch-aipu --no-display` to measure the model accuracy and compare with the FP32 model by setting the `--pipe=torch`.
 - You can create your own DataAdapter to handle custom dataset formats. This involves implementing the methods illustrated above and reusing your existing dataset class.
+- By default, `./deploy.py` uses COCO representative images for model calibration
+- You can override this default by either:
+  - Specifying `repr_imgs_dir_path` in the YAML dataset section to use your own representative images
+  - Specifying `cal_data` in the YAML dataset section to use your existing calibration data
 
 ### Appendix
 
@@ -2048,6 +2156,227 @@ From this tutorial, you have learned:
 - How to implement ROI filtering using `label_filter` and `top_k` selection with different prioritization criteria (`SCORES`, `CENTER`, `AREA`) to optimize real-time performance.
 - How to access submeta results in both C++ and Python applications, including proper null-checking for filtered objects that don't have secondary classifications.
 - How to calculate and balance throughput requirements between master and secondary models to maintain real-time performance in production systems.
+
+## Tutorial-10: Face detection and recognition pipeline
+
+A real-world implementation of a cascaded pipeline is demonstrated through the face detection and recognition system. This pipeline operates in two distinct phases: first, it determines the bounding box coordinates around detected faces, and second, it establishes the identity of each person. The recognition models typically generate embedding vectors, which serve as numerical representations of facial features that can be compared against a dictionary containing mappings between embeddings and individual names.
+
+### Creating an Embeddings File
+
+Face recognition models are typically trained on extensive datasets comprising publicly available images. To enable identification of specific individuals, their facial embeddings must be computed and stored alongside their corresponding names. This reference dictionary allows the recognition model to compare newly computed embeddings against stored embeddings using distance metrics such as cosine similarity. A positive identification is achieved when the computed distance falls below a predefined threshold and represents the minimum distance among all stored individuals in the embeddings database.
+For this implementation, we utilize the FaceNet model for face recognition and RetinaFace for face detection. To create the embeddings database, configure the file located at [ax_models/reference/cascade/face-recognition.yaml](/ax_models/reference/cascade/face-recognition.yaml). 
+
+Deploy the model using the following command:
+
+```bash
+./deploy.py face-recognition
+```
+
+While the model is being deployed, prepare the test images and video files:
+
+```bash
+wget https://media.axelera.ai/artifacts/reference/face_recog/famous_faces.zip -O ./famous_faces.zip
+unzip -q ./famous_faces.zip -d ./
+
+wget https://media.axelera.ai/artifacts/reference/face_recog/famous_people.mp4 -O ./media/famous_people.mp4
+```
+
+After successful model deployment, execute the following command to generate the embeddings file:
+
+```bash
+GST_DEBUG=ax*:4 ./inference.py face-recognition famous_faces --no-display 2>&1 | grep -E "(Recognized person|facenet_recog)"
+```
+
+The environment variable GST_DEBUG=ax*:4 enables debug logging from the C++ components. You should observe output similar to:
+
+```text
+0:00:00.525100100 3583698 0x609b8b0cd8f0 INFO          axinferencenet AxDecodeFacenet.cc:117:decode_to_meta: facenet_recog: Added new person: 'Ed_Sheeran'
+0:00:00.525449582 3583698 0x609b8b0cd8f0 INFO          axinferencenet AxDecodeFacenet.cc:117:decode_to_meta: facenet_recog: Added new person: 'Elon'
+0:00:00.528724121 3583698 0x609b8b0cd8f0 INFO          axinferencenet AxDecodeFacenet.cc:117:decode_to_meta: facenet_recog: Added new person: 'Emma_Watson'
+0:00:00.528965061 3583698 0x609b8b0cd8f0 INFO          axinferencenet AxDecodeFacenet.cc:117:decode_to_meta: facenet_recog: Added new person: 'Fabrizio'
+0:00:00.529262009 3583698 0x609b8b0cd8f0 INFO          axinferencenet AxDecodeFacenet.cc:117:decode_to_meta: facenet_recog: Added new person: 'Lionel_Messi'
+0:00:00.532228250 3583698 0x609b8b0cd8f0 INFO          axinferencenet AxDecodeFacenet.cc:117:decode_to_meta: facenet_recog: Added new person: 'Psy'
+0:00:00.532642970 3583698 0x609b8b0cd8f0 INFO          axinferencenet AxDecodeFacenet.cc:117:decode_to_meta: facenet_recog: Added new person: 'Shohei_Ohtani'
+0:00:00.533104312 3583698 0x609b8b0cd8f0 INFO          axinferencenet AxDecodeFacenet.cc:117:decode_to_meta: facenet_recog: Added new person: 'Taylor_Swift'
+```
+
+This debug output is invaluable for troubleshooting purposes. The logging level "ax*:4" corresponds to AX_INFO level, while "ax*:5" includes AX_DEBUG level logging. Within the GStreamer framework, we recommend utilizing our debug logging system to monitor pipeline operations rather than relying on print statements.
+
+Verify that the `famous_embeddings.json` file contains 8 entries with their corresponding names and embeddings. The names are derived from the image filenames in the `famous_faces` directory, while the embeddings are computed by the face-recognition pipeline.
+
+Next, disable embedding updates by setting `update_embeddings` to `False` in the configuration file [ax_models/reference/cascade/face-recognition.yaml](/ax_models/reference/cascade/face-recognition.yaml). This prevents the embeddings from being modified during subsequent runs with new faces.
+
+```yaml
+      postprocess:
+        - recognition:
+            ...
+            update_embeddings: False
+```
+
+Execute the model again using the same command:
+
+```bash
+GST_DEBUG=ax*:4 ./inference.py face-recognition famous_faces --no-display 2>&1 | grep -E "(Recognized person|facenet_recog)"
+```
+
+The output should display:
+```text
+(rundev-release) ubuntu@ein0-3060-01:~/software-platform/host/application/framework$ GST_DEBUG=ax*:4 ./inference.py face-recognition famous_faces --no-display 2>&1 | grep -E "(Recognized person|facenet_recog)"
+0:00:00.357525903 3584023 0x5cf2d87b2270 INFO          axinferencenet AxDecodeFacenet.cc:264:init_and_set_static_properties: facenet_recog: Loaded 8 existing embeddings from: /home/ubuntu/software-platform/host/application/framework/famous_embeddings.json
+0:00:00.500568545 3584023 0x5cf2d87b2550 INFO          axinferencenet AxDecodeFacenet.cc:207:decode_to_meta: facenet_recognition: Recognized person: 'Ed_Sheeran' with score: 1 (threshold: 0.352)
+0:00:00.503771113 3584023 0x5cf2d87b2550 INFO          axinferencenet AxDecodeFacenet.cc:207:decode_to_meta: facenet_recognition: Recognized person: 'Elon' with score: 1 (threshold: 0.352)
+0:00:00.503792531 3584023 0x5cf2d87b2550 INFO          axinferencenet AxDecodeFacenet.cc:207:decode_to_meta: facenet_recognition: Recognized person: 'Emma_Watson' with score: 0.999999 (threshold: 0.352)
+0:00:00.503846089 3584023 0x5cf2d87b2550 INFO          axinferencenet AxDecodeFacenet.cc:207:decode_to_meta: facenet_recognition: Recognized person: 'Fabrizio' with score: 1 (threshold: 0.352)
+0:00:00.507021044 3584023 0x5cf2d87b2550 INFO          axinferencenet AxDecodeFacenet.cc:207:decode_to_meta: facenet_recognition: Recognized person: 'Lionel_Messi' with score: 0.999999 (threshold: 0.352)
+0:00:00.507120091 3584023 0x5cf2d87b2550 INFO          axinferencenet AxDecodeFacenet.cc:207:decode_to_meta: facenet_recognition: Recognized person: 'Psy' with score: 1 (threshold: 0.352)
+0:00:00.507147470 3584023 0x5cf2d87b2550 INFO          axinferencenet AxDecodeFacenet.cc:207:decode_to_meta: facenet_recognition: Recognized person: 'Shohei_Ohtani' with score: 1 (threshold: 0.352)
+0:00:00.510035887 3584023 0x5cf2d87b2550 INFO          axinferencenet AxDecodeFacenet.cc:207:decode_to_meta: facenet_recognition: Recognized person: 'Taylor_Swift' with score: 0.999999 (threshold: 0.352)
+```
+
+This demonstrates perfect recognition accuracy, as the system is now processing the same images used to generate the original embeddings.
+
+### The Cascaded Pipeline
+
+The cascaded pipeline comprises two primary components: the RetinaFace model, which provides detection results and 5 facial landmarks, and the FaceNet model for recognition functionality.
+
+
+```yaml
+pipeline:
+  - detections:
+      model_name: retinaface-resnet50-widerface-onnx
+      ...
+  - recognitions:
+      model_name: facenet-lfw
+      input:
+          type: image
+          source: roi
+          where: detections
+          which: AREA # AREA, SCORE, CENTER
+          top_k: 1
+          min_width: 80
+          min_height: 80
+          # image_processing_on_roi:
+          # - facealign:
+          #     keypoints_submeta_key: detections
+          #     width: 192
+          #     height: 192
+          #     # save_aligned_images: True # for debugging
+      postprocess:
+        - recognition:
+```
+
+Key configuration parameters include:
+
+1. The `which` parameter is set to `AREA`, prioritizing the region of interest (ROI) with the largest area for selection.
+2. The `top_k` parameter is configured to 1, ensuring only the ROI with the largest area is processed.
+3. The `image_processing_on_roi` section handles ROI preprocessing. The `facealign` operator utilizes keypoints from RetinaFace to transform the detected face into a normalized frontal view.
+  - Enabling `save_aligned_images` will save aligned images to the `face_align_debug` directory for debugging purposes.
+  - Face alignment is optional; removing the `image_processing_on_roi` section will not compromise pipeline functionality.
+  - This demonstrates the capability to perform custom image processing on ROIs before feeding them to subsequent models.
+4. The `keypoints_submeta_key` parameter references `detections`, indicating that RetinaFace keypoints will be used for facial transformation.
+5. The `width` and `height` parameters are set to 192 pixels, transforming detected faces to 192×192 resolution. This optimization enhances performance since the FaceNet model requires 192×192 input images.
+6. The `min_width` and `min_height` parameters filter out ROIs smaller than 80×80 pixels.
+
+> [!NOTE]
+> The `image_processing_on_roi` section (face alignment) is commented out due to a known race condition in the current facealign plugin, which can cause instability in the pipeline. This will be addressed in the following up release. By using `image_processing_on_roi`, users can add custom image preprocessing before a model when needed, enabling more flexible and sophisticated pipeline configurations.
+
+
+Execute the pipeline with the test video using:
+
+```bash
+./inference.py face-recognition famous_people.mp4
+```
+
+The results should be displayed on your screen.
+
+#### Register yourself in the embeddings file
+
+To register yourself in the embeddings database, enable `update_embeddings` in `ax_models/reference/cascade/face-recognition.yaml` and place your photograph in the `famous_faces` directory, using your name as the filename (supporting PNG or JPG formats).
+
+```bash
+./inference.py face-recognition famous_faces
+```
+
+Subsequently, test the pipeline with your USB camera to verify personal recognition:
+
+```bash
+./inference.py face-recognition usb:0
+```
+
+This assumes your webcam is connected and accessible via `/dev/video0`. Modify the device name if using an alternative video device.
+
+
+### Adding a Tracker
+
+Continuously executing face recognition for every frame is computationally expensive and can degrade performance. However, repeated identification becomes unnecessary once a person's identity is established with confidence. By implementing a tracker, we can monitor facial movement across frames. The tracker assigns unique IDs to each face, ideally maintaining consistency throughout the video sequence. This approach allows recognition to be performed once per tracked individual. In practice, recognition accuracy is improved by running the sub-model a limited number of times and selecting the most frequently occurring identification result.
+
+The enhanced configuration file [ax_models/reference/cascade/with_tracker/face-recognition-with-vote.yaml](/ax_models/reference/cascade/with_tracker/face-recognition-with-vote.yaml) incorporates the OC-Sort tracker within the pipeline:
+
+```yaml
+pipeline:
+  - detections:
+      model_name: retinaface-resnet50-widerface-onnx
+  ...
+  - tracking:
+      model_name: tracker
+      input:
+        source: full
+        color_format: RGB
+      cv_process:
+        - tracker:
+            algorithm: oc-sort
+            bbox_task_name: detections
+            ...
+            filter_callbacks:
+              recognitions:
+                lib: libtrackerfilter_numsubtaskruns.so
+                num_subtask_runs: 10
+            determine_object_attribute_callbacks:
+              recognitions:
+                lib: libtrackerattribute_mostfrequent.so
+  - recognitions:
+      model_name: facenet-lfw
+      input:
+          type: image
+          source: roi
+          where: tracking
+          which: AREA # AREA, SCORE, CENTER
+          top_k: 10
+```
+
+The `bbox_task_name` property establishes the connection between the `detections` task (which generates bounding boxes) and the `tracking` task. The `filter_callbacks` section limits the maximum number of recognition runs to 10 per track ID. The `determine_object_attribute_callbacks` section implements a voting mechanism, selecting the most frequently occurring name from the 10 recognition attempts as the final result for each track ID.
+
+Download the test video:
+
+```bash
+wget https://media.axelera.ai/artifacts/test_videos/Fabrizio_talk.mp4 -O ./media/Fabrizio_talk.mp4
+```
+
+Execute the enhanced pipeline:
+
+```bash
+./inference.py face-recognition-with-vote Fabrizio_talk.mp4
+```
+
+You will notice higher frame rates after the initial few seconds, as individuals are recognized once and then tracked, rather than being re-identified in every frame. Note that when a person disappears and later reappears, they will be assigned a new track ID, which restarts the voting mechanism as the system treats them as a different individual. Additionally, this tracker version is not compatible with the `famous_people.mp4` video, as it rapidly switches between multiple people, making it unsuitable for tracking.
+
+### Takeaways
+
+In this tutorial, you've learned how to build efficient application pipelines using YAML configuration. Key learnings include:
+
+- **Building cascaded pipelines**: You've created a real-world two-stage pipeline where your detector (RetinaFace) locates faces and feeds ROIs to your recognition model (FaceNet) - a pattern you can apply to many other vision tasks.
+- **Configuring with YAML**: Using declarative YAML files to define sophisticated processing pipelines, making your applications easier to maintain, and modify the parameters without recompiling code.
+- **Optimizing with tracking**: You now know how to easily plug in a tracker to your pipeline, allowing for efficient tracking of objects across frames and reducing the need for repeated recognition with the callback mechanism.
+- **Debugging effectively**: You now have experience with `GST_DEBUG` with Axelera Logger to monitor pipeline operations and diagnose issues at various levels of detail.
+
+**Try this next**: Modify the recognition threshold in the YAML file to see how it affects the balance between false positives and false negatives in your face recognition system. You can also experiment with implementing a multi-stage cascade by adding additional attribute classifiers (such as age, gender, etc.) after face detection. Each task should have a unique name, but all secondary models can share the same input configuration:
+```yaml
+      input:
+          type: image
+          source: roi
+          where: detections
+```
+With this setup, the ROIs from the detection stage will be distributed in parallel to all second-level models.
 
 ## Other References
 

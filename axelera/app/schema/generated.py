@@ -18,6 +18,7 @@ from .types import (
     IntEnum,
     List,
     MapPattern,
+    OperatorMap,
     Optional,
     Regex,
     Required,
@@ -262,6 +263,7 @@ def generate_operators(path: str, base: str) -> None:
     schemas = dict(builtin_schemas, **custom_schemas)
     schemas = dict(schemas, **_generate_nested_builtins(schemas))
     schemas = {Optional[k]: v for k, v in schemas.items()}
+    schemas["_type"] = OperatorMap
     schemas["_allow_key_dashes"] = True
     return schemas
 

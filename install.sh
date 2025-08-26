@@ -1,23 +1,26 @@
 #!/bin/bash
-# Copyright Axelera AI, 2024
-
-# TODO: check Pipfile generation with ==version
-# TODO: grant read permission for the gpg public key file before updating the package index (misconfigured umask)
-# TODO: Needed->unaval for missing candidates
-# TODO: Docker libs can combine with installer libs
-# TODO: install apt packages together rather than one after another
-# TODO: system libs better named system packages
-# TODO: some installer requirements could be installed by the installer itself
-# TODO: some packages should be migrated (no attempt by installer) e.g.
-# TODO:   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/migrating-from-1.0.html#migration-1-0
-# TODO: dpkg-query can error in broken systems e.g. if ctrl+c on apt update (should catch)
-# TODO: When printing activation, advise on how to add needed libs
-# TODO: is xargs needed/used consistently
+# Copyright Axelera AI, 2025
 
 # Disable some shellcheck warnings
 # shellcheck disable=SC2034
 # shellcheck disable=SC2154
 # shellcheck disable=SC2155
+
+is_called_from_docker_launcher() {
+  # Docker variable set by script that sources install.sh
+  # shellcheck disable=SC2154
+  if is_set "$VAR_launch_docker" && $VAR_launch_docker; then
+    true
+  else
+    false
+  fi
+}
+
+# guard against accidental sourcing of this script
+if [[ "${BASH_SOURCE[0]}" != "${0}" && ! is_called_from_docker_launcher ]]; then
+    echo "Error: This script must be executed directly, not sourced"
+    return
+fi
 
 # Variables
 _self=${0##*/}
@@ -39,18 +42,20 @@ STR_unused="Unused"
 STR_not_detected="Not detected"
 STR_not_installed="Not installed"
 
-NUM_pipenv_tasks=4
+NUM_pipenv_tasks=3
 
 # Command line arguments
 ARG_all=false
 ARG_artifacts=false
 ARG_media=false
-ARG_development=false
 ARG_user=
 ARG_token=
+ARG_development=false
 ARG_no_development=false
 ARG_runtime=false
 ARG_no_runtime=false
+ARG_common=false
+ARG_no_common=false
 ARG_driver=false
 ARG_no_driver=false
 ARG_gen_requirements=false
@@ -70,6 +75,7 @@ ARG_allow_as_sudo=false
 ARG_verbose=false
 ARG_llm=false
 ARG_debug=false
+ARG_optional=false
 
 STATUS_container=$STR_unset
 STATUS_pyenv_root=$STR_unset
@@ -102,8 +108,17 @@ AX_runtime_repos=
 read -r -d '' AX_runtime_help <<EOF
 The Axelera runtime libraries are required to build and execute C++
 inference applications on the AIPU. These can be installed independently
-of the Python development environment if you only need to build and
+of the Python environment if you only need to build and
 execute precompiled models and applications.
+EOF
+
+AX_common_component=$STR_unset
+AX_common_where=
+AX_common_tasks="0"
+AX_common_packages=false
+AX_common_repos=
+read -r -d '' AX_common_help <<EOF
+The common libraries are required by both development and runtime environments.
 EOF
 
 AX_driver_component=$STR_unset
@@ -154,6 +169,7 @@ VAR_pyenv=
 VAR_pyenv_root_env=false
 VAR_pyenv_in_path=false
 VAR_pyenv_set_local=false
+VAR_installed_pyenv_and_pipenv=false
 VAR_tasks="0"
 VAR_tasks_unknown_requirements=false
 VAR_need_separator=true
@@ -166,6 +182,9 @@ VAR_target_container_tag="${ARG_tag}"
 
 VAR_apt_check_system=false
 VAR_apt_update_system=false
+
+VAR_dpkg_status=
+VAR_new_system_libs=false
 
 CMD_return="0"
 
@@ -233,6 +252,19 @@ list() {
     list=$(compgen -A variable | grep "^$1")
   fi
   [[ "$1" == "$list" ]] && list=
+  echo "$list"
+}
+
+list_multi() {
+  local list=
+  for var in "$@"; do
+    new_list=$(list "$var")
+    if is_set "$list" && is_set "$new_list"; then
+      list="$list"$'\n'"$new_list"
+    else
+      list="$list$new_list"
+    fi
+  done
   echo "$list"
 }
 
@@ -305,16 +337,6 @@ in_container() {
   fi
 }
 
-is_called_from_docker_launcher() {
-  # Docker variable set by script that sources install.sh
-  # shellcheck disable=SC2154
-  if is_set "$VAR_launch_docker" && $VAR_launch_docker; then
-    true
-  else
-    false
-  fi
-}
-
 arg_docker() {
   if $ARG_docker || is_called_from_docker_launcher; then
     true
@@ -323,7 +345,7 @@ arg_docker() {
   fi
 }
 
-arg_docker_or_file() {
+arg_docker_or_gen_dockerfile() {
   if arg_docker || $ARG_gen_dockerfile; then
     true
   else
@@ -340,12 +362,6 @@ needed() {
     true
   else
     false
-  fi
-}
-
-is_dry_arg() {
-  if $ARG_dry_run; then
-    echo "dry"
   fi
 }
 
@@ -451,8 +467,12 @@ hide_token() {
   echo "$*" | sed -e 's|\(https\?://.\+:\)\(.\+\)@|\1****@|g'
 }
 
+# Create temporary file for command output
+AX_cmd_output=$(mktemp)
+trap 'rm -f "$AX_cmd_output"' EXIT
+
 cmd() {
-  # Run command and put return code in $1
+  # Run command and put return code in CMD_return
   # Return true for 0, false otherwise
   local retcode=
   if $ARG_dry_run; then
@@ -466,17 +486,15 @@ cmd() {
     eval "$*" 2>&1 | grep --line-buffered -v '^\s*$' | sed -e "s|^|$(progress_num) |;";
     retcode=${PIPESTATUS[0]}
   else
-    eval "$*" &> /dev/null
+    eval "$*" &> $AX_cmd_output
     retcode=$?
   fi
   CMD_return=$retcode
   if [[ "$retcode" == 0 ]]; then
     true
   elif ! $ARG_verbose; then
-    # Run failed command again to get output
-    progress "$*"
-    eval "$*" 2>&1 | grep --line-buffered -v '^\s*$' | sed -e "s|^|$(progress_num) |;";
-    CMD_return=${PIPESTATUS[0]}
+    # Print error message if not verbose
+    sed -e "s|^|$(progress_num) |;" < "$AX_cmd_output"
     false
   else
     false
@@ -505,11 +523,11 @@ configure_pyenv() {
   # Ensure pyenv is correctly configured
   # Note that versions > 1.2.26 require additional step
   local pyenv_version=$("$VAR_pyenv" --version 2>/dev/null | sed -e 's/pyenv //')
-  if ! $VAR_pyenv_root_env && streq "$1" "dry"; then
+  if ! $VAR_pyenv_root_env && $ARG_dry_run; then
     echo "export PYENV_ROOT=\"$HOME/.pyenv\""
   fi
   if ! $VAR_pyenv_in_path; then
-    if streq "$1" "dry"; then
+    if $ARG_dry_run; then
       echo "export PATH=\"\$PYENV_ROOT/bin:\$PATH\""
       VAR_pyenv_in_path=true
     elif ! streq "$(which pyenv)" "$VAR_pyenv"; then
@@ -518,13 +536,13 @@ configure_pyenv() {
   fi
   if ! is_set "$pyenv_version" || dpkg --compare-versions "$pyenv_version" "gt" "1.2.26"; then
     # Only newer pyenvs require this (won't run if not installed)
-    if streq "$1" "dry"; then
+    if $ARG_dry_run; then
       echo "eval \"\$(pyenv init --path)\""
     elif [ -f "$VAR_pyenv" ]; then
       eval "$(pyenv init --path)"
     fi
   fi
-  if streq "$1" "dry"; then
+  if $ARG_dry_run; then
     echo "eval \"\$(pyenv init -)\""
     echo "eval \"\$(pyenv virtualenv-init -)\""
   elif [ -f "$VAR_pyenv" ]; then
@@ -536,7 +554,7 @@ configure_pyenv() {
 configure_pyenv_python() {
   # Ensure pyenv python is correctly configured
   if ! $VAR_pyenv_set_local; then
-    if streq "$1" "dry"; then
+    if $ARG_dry_run; then
       echo "pyenv local $AX_penv_python"
     else
       pyenv local "$AX_penv_python" &> /dev/null || error "Pyenv failed to activate Python $AX_penv_python"
@@ -562,7 +580,7 @@ apt_install_with_dep_check() {
     fi
   fi
   if ! cmd "$cmd $pkg"; then
-    pkgs=$(python3 -c "import sys; sys.path.insert(0, '.'); import installer_support; installer_support.check_depends(\"$orig_cmd $pkg\")")
+    pkgs=$(python3 installer_support.py --check-depends "$orig_cmd $pkg")
     if [ ! -z "$pkgs" ]; then
       if response_is_yes "Installing $pkg failed due to held/conflicting dependencies - attempt to resolve by also updating the dependencies: $pkgs"; then
         cmd "$orig_cmd --allow-change-held-packages $pkgs" || error "Failed to install $pkgs"
@@ -684,7 +702,11 @@ get_config_from_yaml() {
   # Read YAML file into environment variables
   local envvars=
   if [[ -f "$1" ]]; then
-    if envvars=$(python3 parseyaml.py "$1"); then
+    local optional=
+    if $ARG_optional; then
+      optional=" --optional"
+    fi
+    if envvars=$(python3 installer_support.py --config-file "$1"${optional}); then
       set -a; eval "$envvars"; set +a
     else
       # envvars contains python error message
@@ -699,11 +721,15 @@ get_config_from_yaml() {
 
 get_tag_from_yaml() {
   # Get hash of YAML configuration ($1) and requirements ($2)
-  # $3 is "docker_hash" or "env_hash"
+  # $3 is "docker" or "env"
   local hash=
   local result=
   if [[ -f "$1" ]]; then
-    if ! result=$(python3 parseyaml.py "$1" "$3" "$2"); then
+    local optional=
+    if $ARG_optional; then
+      optional=" --optional"
+    fi
+    if ! result=$(python3 installer_support.py --config-file "$1"${optional} --hash "$3" --requirements-file "$2"); then
       # Returned string contains python error message
       # shellcheck disable=2001
       echo "$result" | sed -e "s|^|$1: |;";
@@ -1035,6 +1061,7 @@ is_dpkg_installed() {
   # 1: package name
   # 2: comparision (optional)
   # 3: version number (optional)
+  # 4: installed pkg info (optional)
   local ver=
   local name="$1"
   local op="$2"
@@ -1049,18 +1076,21 @@ is_dpkg_installed() {
     cmp=$(echo "${cmp##Version:}" | xargs)
   fi
   is_set "$dpkg_info" || dpkg_info=`dpkg -l | grep -E "^.i" | awk ' {print $2} '`
+  VAR_dpkg_status=$STR_ok
   if grep -E "^$(escape "$name")(:|$)" <<< $dpkg_info > /dev/null; then
     if is_set "$op" && is_set "$cmp"; then
       ver=$(dpkg-query --show --showformat '${Version}' "$name")
       if dpkg --compare-versions "$ver" "$(signcomp "$op")" "$cmp"; then
         true
       else
+        VAR_dpkg_status="$STR_upgrade_needed"
         false
       fi
     else
       true
     fi
   else
+    VAR_dpkg_status="$STR_needed"
     false
   fi
 }
@@ -1125,6 +1155,14 @@ get_base_docker_str() {
   echo "$base"
 }
 
+need_common_stuff() {
+  if ! ($ARG_no_development && $ARG_no_runtime); then
+    true
+  else
+    false
+  fi
+}
+
 print_config() {
   local name="Axelera AI - Voyager SDK"
   local repo_status=
@@ -1134,7 +1172,7 @@ print_config() {
   print_config_header
   print_os
   if ! $ARG_status; then
-    if arg_docker_or_file; then
+    if arg_docker_or_gen_dockerfile; then
       print_new_component
       if arg_docker; then
         print_config_setting "Docker" "$VAR_docker_version" "$AX_docker_system_component"
@@ -1148,7 +1186,7 @@ print_config() {
       print_config_dep_list "Libs" "AX_docker_libs"
       print_config_needed_repos "AX_docker_repos" "$(where_to_status $AX_docker_where)"
     fi
-    if ! $ARG_no_development; then
+    if need_common_stuff; then
       print_new_component
       if is_sudo; then
         print_config_setting "Development" "Run without 'sudo' for more options" "$AX_development_component"
@@ -1157,9 +1195,9 @@ print_config() {
       fi
     fi
   fi
-  if $ARG_gen_requirements || ( ! $ARG_no_development && ! is_sudo ); then
-    arg_docker_or_file || $ARG_status || print_config_setting "Pyenv" "$PYENV_ROOT" "$STATUS_pyenv_root"
-    if $ARG_gen_requirements || [ ! -f "$AX_penv_requirements" ]; then
+  if $ARG_gen_requirements || ( need_common_stuff && ! is_sudo ); then
+    arg_docker_or_gen_dockerfile || $ARG_status || print_config_setting "Pyenv" "$PYENV_ROOT" "$STATUS_pyenv_root"
+    if need_requirements; then
       print_config_setting "pipenv" "${AX_penv_pipenv#==}" "$STATUS_penv_pipenv"
     fi
     print_config_setting "Python" "$AX_penv_python" "$STATUS_penv_python"
@@ -1180,14 +1218,20 @@ print_config() {
       print_config_setting "Python libs" "$AX_penv_requirements" "$STATUS_penv_requirements"
     fi
   fi
-  if ! $ARG_no_development; then
-    print_config_dep_list "Dependencies" "AX_dependencies"
+  if need_common_stuff; then
+    print_config_dep_list "Dependencies" "AX_installer_dependencies"
     print_config_needed_repos "AX_development_repos" "$(where_to_status "$AX_development_where")"
-    arg_docker_or_file || in_container || print_config_dep_list "Pyenv deps" "AX_penv_pyenv_dependencies"
+    arg_docker_or_gen_dockerfile || in_container ||\
+        (print_config_dep_list "Pyenv deps" "AX_penv_pyenv_dependencies" &&\
+         print_config_dep_list "Python deps" "AX_penv_python_dependencies")
   fi
   if ! $ARG_no_runtime; then
     print_new_component
     print_component "AX_runtime"
+  fi
+  if need_common_stuff; then
+    print_new_component
+    print_component "AX_common"
   fi
   if ! $ARG_no_driver; then
     print_new_component
@@ -1197,9 +1241,13 @@ print_config() {
 }
 
 print_next_steps() {
-  local list=$(list "AX_next")
+  local list_next=$(list "AX_next")
+  local list_unused=$(list_of_dict "AX_unused_optionals")
   local any=false
   local var=
+  local name=
+  local info=
+  local line=
   $VAR_post_table && print_newline
   if arg_docker; then
     var="$1. To launch the container, type:"
@@ -1214,7 +1262,7 @@ print_next_steps() {
     print_config_line "  source venv/bin/activate"
     print_config_line
   fi
-  for var in $list; do
+  for var in $list_next; do
     if streq "${!var}" "None"; then
       print_config_line
     else
@@ -1222,6 +1270,25 @@ print_next_steps() {
     fi
   done
   print_config_header
+
+  if is_set "$list_unused"; then
+    echo
+    warn "Some optional component(s) were not installed."
+    warn "Please check the list below to decide whether you want to install them."
+    warn "If so, you can rerun the installer with --optional to install all of them."
+    echo
+    for var in $list_unused; do
+      name="${var}_name"
+      name="${!name}"
+      info="${var}_info"
+      info="${!info}"
+      echo "  ${name}:"
+      while IFS="" read -r line; do
+        echo "    $line"
+      done <<< "$info"
+      echo
+    done
+  fi
 }
 
 print_envs_to_source() {
@@ -1229,14 +1296,17 @@ print_envs_to_source() {
   local var=
   local env=
   local val=
+
+  # two very similar loops are used to process all "non-dollar-env" variables
+  # first, so they have been resolved before those that are dollar envs
   for var in $list; do
     env="${var}_name"
     env="${!env}"
     val="${var}_value"
     val="${!val}"
-    if arg_docker_or_file; then
+    if arg_docker_or_gen_dockerfile; then
       if ! is_dollar_env "${val}"; then
-        write_to_dockerfile "ENV ${env} \"${val}\""
+        write_to_dockerfile "ENV ${env}=\"${val}\""
         eval local ${env}=\"${val}\"
       fi
     else
@@ -1249,18 +1319,41 @@ print_envs_to_source() {
     env="${!env}"
     val="${var}_value"
     val="${!val}"
-    if arg_docker_or_file; then
+    if arg_docker_or_gen_dockerfile; then
       if is_dollar_env "${val}"; then
         eval val=\"${val//\\\$/\$}\"
         eval local ${env}=\"${val}\"
-        write_to_dockerfile "ENV ${env} \"${val}\""
+        write_to_dockerfile "ENV ${env}=\"${val}\""
       fi
     fi
   done
 }
 
-load_python_requirements() {
-  VAR_requirements=$(awk NF 2>/dev/null < "$AX_penv_requirements")
+determine_python_requirements() {
+  # combine the prerequisites with the installable subset packages
+  VAR_requirements=$(awk NF 2>/dev/null < "$AX_penv_trimmed_requirements")
+  local subset=
+  local subset_packages=
+  for subset in $(python_subsets_to_install); do
+    local list=$(subset_packages "$subset")
+    if is_set "$list"; then
+      subset_packages="$subset_packages"$'\n'"$list"
+    fi
+  done
+  if is_set "$subset_packages"; then
+    # convert undecorated package name into version spec from the requirements file
+    local untrimmed_requirements=$(awk NF 2>/dev/null < "$AX_penv_requirements")
+    local untrimmed=
+    for pkg_name in $subset_packages; do
+      pkg_name=${pkg_name,,}
+      untrimmed=$(is_set "$pkg_name" && (grep "^${pkg_name//_/[_-]}==" <<< "$untrimmed_requirements"))
+      if is_set "$untrimmed"; then
+        VAR_requirements="$VAR_requirements"$'\n'"$untrimmed"
+      fi
+    done
+    # sort and remove duplicates
+    VAR_requirements=$(echo "$VAR_requirements" | sort -u)
+  fi
 }
 
 write_to_dockerfile() {
@@ -1288,7 +1381,7 @@ check_docker_migration() {
   local any_old=false
   for var in $list; do
     if is_dpkg_installed "${!var}"; then
-      warn_defer "${!var}: Package for previous verison of Docker found on system"
+      warn_defer "${!var}: Package for previous version of Docker found on system"
       any_old=true
     fi
   done
@@ -1308,8 +1401,8 @@ set_status_docker() {
     VAR_docker_version=$STR_not_installed
     AX_docker_component=$STR_needed
   fi
-  set_status_system_libs "AX_docker_libs" AX_docker_component
-  set_status_system_libs "AX_docker_system_dependencies" AX_docker_system_component
+  set_status_system_libs AX_docker_component AX_docker_libs
+  set_status_system_libs AX_docker_system_component AX_docker_system_dependencies
   if ! streq "$AX_docker_system_component" "$STR_ok"; then
     # If docker system component is not installed
     # check for conflicts from previous versions
@@ -1439,7 +1532,7 @@ set_status_python_libs() {
   local _installed=
   local _requested=
   local _revised=
-  _installed=$("$VENV/bin/pip" freeze 2>/dev/null)
+  _installed=$("$VENV/bin/pip" freeze --all 2>/dev/null)
   if ! is_set "$_installed"; then
     STATUS_penv_requirements=$STR_needed
     AX_development_component=$STR_needed
@@ -1457,6 +1550,15 @@ set_status_python_libs() {
       var="pillow==${BASH_REMATCH[2]}"
       _installed=${_installed//$match/$var}
     fi
+    # accept torch[vision] variants
+    _revised=
+    while IFS="" read -r var || [ -n "$var" ]; do
+      if [[ "${var}" =~ ^(torch.*==.*)\+.*$ ]]; then
+        var=${BASH_REMATCH[1]}
+      fi
+      _revised="$_revised"$'\n'"${var}"
+    done <<< "$_installed"
+    _installed=${_revised:1}
     # If a local wheel is followed by comments (with name=version),
     # replace path with comment for accurate diffing with the
     # installed version displayed by pip freeze
@@ -1497,7 +1599,7 @@ set_status_development() {
   STATUS_penv_setuptools=$STR_ok
   STATUS_penv_wheel=$STR_ok
   STATUS_penv_requirements=$STR_ok
-  if arg_docker_or_file; then
+  if arg_docker_or_gen_dockerfile; then
     if needed "$STATUS_container"; then
       STATUS_penv_python=$STR_docker_needed
       STATUS_penv_pip=$STR_docker_needed
@@ -1556,7 +1658,7 @@ set_status_development() {
         inc_tasks AX_development_tasks "$NUM_pipenv_tasks" 'pipenv'
         VAR_tasks_unknown_requirements=true
       else
-        if ! arg_docker_or_file; then
+        if ! arg_docker_or_gen_dockerfile; then
           inc_tasks AX_development_tasks "$AX_prerequisite_tasks" "prerequisites"
           for subset in $(python_subsets_to_install); do
             inc_tasks AX_development_tasks $(wc -w <<< $(subset_packages "$subset") | awk NF) "Install $subset libraries"
@@ -1567,9 +1669,12 @@ set_status_development() {
     # If there is no requirements file, check if pipenv
     # is available to generate
     [ -f "$AX_penv_requirements" ] || set_status_pipenv AX_development_component
-    set_status_system_libs "AX_penv_pyenv_dependencies" AX_development_component
+    set_status_system_libs AX_development_component AX_penv_pyenv_dependencies AX_penv_python_dependencies
+    if $VAR_new_system_libs && ! arg_docker_or_gen_dockerfile; then
+      STATUS_pyenv_python=$STR_needed
+    fi
   fi
-  set_status_system_libs "AX_dependencies" AX_development_component
+  set_status_system_libs AX_development_component AX_installer_dependencies
 }
 
 is_package_marked_for_removal() {
@@ -1659,7 +1764,7 @@ apt_check_system() {
 }
 
 apt_update_system() {
-  local cmd="apt update"
+  local cmd="apt-get update"
   if ! $VAR_apt_update_system; then
     progress_info "Make sure apt is up-to-date"
     $ARG_verbose || cmd="$cmd -qqq"
@@ -1755,11 +1860,10 @@ install_pyenv_to_system() {
       complete_task
     fi
   done
-  install_system_packages_with_apt "AX_penv_pyenv_dependencies"
 }
 
 install_python_to_pyenv() {
-  local args="pyenv install $AX_penv_python"
+  local args="pyenv install --force $AX_penv_python"
   local verbose=
   $ARG_verbose && verbose="--verbose"
   if needed "$STATUS_pyenv_python"; then
@@ -1817,8 +1921,16 @@ install_pip_extra(){
 }
 
 get_env_tag() {
-  local env_tag=$(get_tag_from_yaml "$SYS_config" "$AX_penv_requirements" "env_hash")
+  local env_tag=$(get_tag_from_yaml "$SYS_config" "$AX_penv_requirements" "env")
   echo "${env_tag}"
+}
+
+for_docker() {
+  if streq "$AX_development_where" "$STR_docker"; then
+    true
+  else
+    false
+  fi
 }
 
 ensure_and_validate_user_token() {
@@ -1840,7 +1952,7 @@ ensure_and_validate_user_token() {
   fi
   local index_url=$(construct_auth_url "${1}")
   local pkg=$(subset_packages "${2}" | head -1)
-  local check_cmd="pip install --dry-run --force --no-deps --no-cache-dir --index-url ${index_url} ${pkg}"
+  local check_cmd="python3 -m pip install --dry-run --force --no-deps --no-cache-dir --break-system-packages --index-url ${index_url} ${pkg}"
   if $ARG_debug; then
     echo "Checking credentials with:"  $(hide_token ${check_cmd})
   fi
@@ -1849,9 +1961,7 @@ ensure_and_validate_user_token() {
       echo "Authentication successful"
     fi
   else
-    if $ARG_verbose; then 
-      ${check_cmd}
-    fi
+    ${check_cmd}
     error_continue "Authentication failed for the supplied email address (${ARG_user}) and token."
     error_continue "Please check your credentials and try again."
     error "(Please refer to docs/tutorials/install.md for more information.)"
@@ -1905,12 +2015,12 @@ install_python_libs() {
     local index_url_env_var="AX_index_url_${1}"
     eval export ${index_url_env_var}=$(construct_auth_url $index_url)
     index_url="\$${index_url_env_var}"
-    secret_mount="--mount=type=secret,id=${index_url_env_var},env=${index_url_env_var}"
+    secret_mount="--mount=type=secret,id=${index_url_env_var},env=${index_url_env_var} "
   fi
 
-  if streq "$AX_development_where" "$STR_docker"; then
+  if for_docker; then
     if [[ -n "${list}" ]]; then
-      write_to_dockerfile "RUN ${secret_mount} python3 -m pip install --no-cache-dir --no-deps --index-url ${index_url} -c \"$(basename ${AX_penv_requirements})\"" ${list}
+      write_to_dockerfile "RUN ${secret_mount}python3 -m pip install --no-cache-dir --no-deps --index-url ${index_url} -c \"$(basename ${AX_penv_requirements})\"" ${list}
     fi
   else
     cmd_stem="python3 -m pip --disable-pip-version-check install --index-url ${index_url} --no-deps -c ${AX_penv_requirements}"
@@ -1937,7 +2047,7 @@ drop_package() {
   local match=
   local pkg="$1"
   for match in "${to_be_stripped[@]}"; do
-    if [[ "$pkg" =~ ^$match[=\ ] ]]; then
+    if [[ "${pkg,,}" =~ ^$match[=\ ] ]]; then
       dropped=true
     else
       new_list+=("$match")
@@ -1963,7 +2073,7 @@ generate_pkg_matchers() {
     if [[ "$pkg" =~ AX_penv_.+[0-9]+_.* ]]; then
       pkg="${pkg//AX_penv_*+([0-9])_/}"
       pkg="${pkg//_/[_-]}"
-      matchers+=("$pkg")
+      matchers+=("${pkg,,}")
     fi
   done
   shopt -u extglob
@@ -1980,7 +2090,7 @@ with_out() {
 
 revise_requirements() {
   # tidy up requirements file to be a constraints file
-  # and generate a trimmed version without AX packages
+  # and generate a trimmed version without AX and other optional packages
   rm -rf "$AX_penv_trimmed_requirements"
   local revised=
   local new_line=
@@ -1995,7 +2105,7 @@ revise_requirements() {
     error "Please ensure you run './$_self --gen-requirements' $(with_out ${ARG_llm}) '--llm' before installing."
   fi
 
-  list="$(list AX_penv_development)"$'\n'"$(list AX_penv_runtime)"$'\n'"$(list AX_penv_axeleracommon)"$'\n'"$(list AX_penv_torch)"
+  list="$(list "AX_penv_axelera_.\+_libs_")"$'\n'"$(list "AX_penv_torch_libs_")"$'\n'"$(list "AX_penv_development_libs_")"$'\n'"$(list "AX_penv_runtime_libs_")"
 
   to_be_stripped=($(generate_pkg_matchers "$list"))
 
@@ -2018,14 +2128,13 @@ revise_requirements() {
 }
 
 python_subsets_to_install() {
-  local subsets="axeleracommon torch"
+  local subsets="axelera_common torch"
 
   if $ARG_gen_requirements; then
-    subsets+=" development runtime"
+    subsets+=" axelera_development axelera_runtime development runtime"
   else
-    # until envs are properly separated, runtime also needs development
-    ($ARG_no_development && $ARG_no_runtime) || subsets+=" development"
-    $ARG_no_runtime || subsets+=" runtime"
+    $ARG_no_development || subsets+=" axelera_development development"
+    $ARG_no_runtime || subsets+=" axelera_runtime runtime"
   fi
   ${ARG_llm} && subsets+=" llm"
 
@@ -2033,17 +2142,14 @@ python_subsets_to_install() {
 }
 
 install_requested_python_libs() {
-  # can be for system or docker
-  local for_system_env=${1:-false}
-
-  if $for_system_env; then
+  if ! for_docker; then
     install_python_prerequisites
   else
     write_to_dockerfile "RUN python3 -m pip install --no-cache-dir --no-deps -r \"$(basename "$AX_penv_trimmed_requirements")\""
   fi
 
   for subset in $(python_subsets_to_install); do
-      install_python_libs "$subset"
+    install_python_libs "$subset"
   done
 }
 
@@ -2070,7 +2176,7 @@ install_penv_system() {
     local versioned_env="${AX_HOME}/venvs/${env_tag}"
     cmd rm -rf "$versioned_env" || error "Failed to remove old virtual environment (try first deleting $versioned_env)"
     cmd python3 -m venv "$versioned_env" || error "Failed to create virtual environment (try first deleting $PYENV_ROOT)"
-    cmd rm -rf "$VENV" || error "Failed to remove old virtual environment"
+    cmd rm -rf "$VENV" || error "Failed to remove symlink to old virtual environment"
     cmd ln -s ${versioned_env} "$VENV" || error "Failed to create symbolic link to virtual environment"
     progress_info "Activate ${ACTIVATE}"
     if $ARG_dry_run; then
@@ -2086,7 +2192,7 @@ install_penv_system() {
     install_pip_extra "setuptools"
     install_pip_extra "wheel"
     complete_task
-    install_requested_python_libs true
+    install_requested_python_libs
     patch_activation_script ${env_tag}
   fi
 }
@@ -2097,31 +2203,31 @@ install_penv_docker() {
   write_to_dockerfile "RUN python3 -m pip install --disable-pip-version-check --upgrade \"pip$(sanitize_version "$AX_penv_pip")\""
   write_to_dockerfile "RUN python3 -m pip install --disable-pip-version-check --upgrade \"setuptools$(sanitize_version "$AX_penv_setuptools")\""
   write_to_dockerfile "RUN python3 -m pip install --disable-pip-version-check --upgrade \"wheel$(sanitize_version "$AX_penv_wheel")\""
-  install_requested_python_libs false
+  install_requested_python_libs
 }
 
-install_needed_python_components() {
-  # Install components needed to generate
-  # a set of requirements
-  install_pyenv_to_system
-  configure_pyenv "$(is_dry_arg)"
-  install_python_to_pyenv
-  configure_pyenv_python "$(is_dry_arg)"
-  install_pipenv_to_system
+install_pyenv_and_pipenv() {
+  if ! $VAR_installed_pyenv_and_pipenv; then
+    VAR_installed_pyenv_and_pipenv=true
+    install_pyenv_to_system
+    install_system_packages_with_apt "AX_penv_pyenv_dependencies"
+    install_system_packages_with_apt "AX_penv_python_dependencies"
+    configure_pyenv
+    install_python_to_pyenv
+    configure_pyenv_python
+    install_pipenv_to_system
+  fi
 }
 
-install_development() {
-  # Install all development environment components
-  local list=$(list "AX_penv_python_src_dependencies")
-  local var=
-  if [ ! -f "$AX_penv_requirements" ] || ! streq "$AX_development_where" "$STR_docker"; then
-    install_needed_python_components
-  fi
-  if [ ! -f "$AX_penv_requirements" ]; then
-    gen_pipfile
-    pipfile_to_requirements
-  fi
-  if streq "$AX_development_where" "$STR_docker"; then
+install_python_environment() {
+  # Install the python environment and supporting packages
+  if ! for_docker; then
+    install_pyenv_and_pipenv
+    install_system_packages_with_apt "AX_installer_dependencies"
+    install_penv_system
+  else
+    local list=$(list "AX_penv_python_dependencies")
+    local var=
     write_to_dockerfile "RUN apt update && apt-get install -y --no-install-recommends wget curl ca-certificates\\"
     for var in $list; do
       write_to_dockerfile " ${!var}\\"
@@ -2134,19 +2240,15 @@ install_development() {
     write_to_dockerfile " make install &&\\"
     write_to_dockerfile " (cd \$(dirname \$(which python3)) && ln -s python3 python) &&\\"
     write_to_dockerfile " rm -rf /var/lib/apt/lists/\*"
-    install_docker_packages "AX_dependencies"
+    install_docker_packages "AX_installer_dependencies"
     install_penv_docker
-  else
-    install_system_packages_with_apt "AX_dependencies"
-    install_penv_system
   fi
 }
 
 set_status_component() {
-  local cmp="$1_component"
-  eval "$cmp"=\"$STR_ok\"
-  set_status_system_libs "$1_dependencies" "$cmp"
-  set_status_system_libs "$1_libs" "$cmp"
+  local component="$1_component"
+  eval "$component"=\"$STR_ok\"
+  set_status_system_libs "$component" "$1_dependencies" "$1_libs"
 }
 
 install_component() {
@@ -2279,25 +2381,26 @@ set_status_system_libs() {
   # install, otherwise we just install the version in the
   # supplied repo, which will usually be what we want.
   # TODO: A corner case exists if a repo was previously
-  # added but 'apt update' not performed
-  # 1: Variable name with list of libs
-  # 2: COMPONENT variable with combined status
-  local list=$(list "$1")
-  local packages=${2//component/packages}
-  local repos=${2//component/repos}
-  local tasks=${2//component/tasks}
-  local where=${2//component/where}
+  # added but 'apt-get update' not performed
+  # 1: COMPONENT variable with combined status
+  # remaining args: Variable name(s) each giving a list of variables
+  local component="${1}"
+  shift
+  local list=$(list_multi "$@")
+  local packages=${component//component/packages}
+  local repos=${component//component/repos}
+  local tasks=${component//component/tasks}
+  local where=${component//component/where}
   local var=
   local status=
-  local installed_repos=
   local recommended_repos=
   local pkg=
   local add_repo=
+  VAR_new_system_libs=false
   dpkg_info=`dpkg -l | grep -E "^.i" | awk ' {print $2} '` # get installed packages
   for var in $list; do
     status=${var//AX/STATUS}
     IFS=" " read -r -a pkg <<< "${!var}"
-    installed_repos=$(apt-cache policy "${pkg[0]}" | grep http | awk '{ print $2 }' | sort | uniq)
     recommended_repos=$(find_repo_for_lib "${pkg[0]}")
     add_repo=false
     # Check status of lib
@@ -2306,8 +2409,9 @@ set_status_system_libs() {
         # Install into container
         is_set "$recommended_repos" && add_repo=true
         eval "$status"=\""$STR_docker_needed"\"
-        eval "$2"=\""$STR_docker_needed"\"
+        eval "$component"=\""$STR_docker_needed"\"
         eval "$packages"=\(true\)
+        VAR_new_system_libs=true
       else
         eval "$status"=\""$STR_ok"\"
       fi
@@ -2315,29 +2419,19 @@ set_status_system_libs() {
       # Don't add repos if package already installed
       add_repo=false
       eval "$status"=\"$STR_ok\"
-    elif is_dpkg_installed "${pkg[0]}"; then
-      # Installed but out of date
-      is_set "$recommended_repos" && add_repo=true
-      eval "$status"=\""$STR_upgrade_needed"\"
-      eval "$2"=\""$STR_needed"\"
-      eval "$packages"=\(true\)
-      inc_tasks "$tasks" 1 "${pkg[0]} out of date"
     else
-      # Not installed
+      # Not installed or out-of-date
       is_set "$recommended_repos" && add_repo=true
-      eval "$status"=\""$STR_needed"\"
-      eval "$2"=\""$STR_needed"\"
+      eval "$status"=\""$VAR_dpkg_status"\"
+      eval "$component"=\""$STR_needed"\"
       eval "$packages"=\(true\)
-      inc_tasks "$tasks" 1 "${pkg[0]} not installed"
+      VAR_new_system_libs=true
+      inc_tasks "$tasks" 1 "${pkg[0]} $VAR_dpkg_status"
     fi
-    # Warn about possibly missing packages
     if [[ "${pkg[0]}" == *.deb ]]; then
       if [ ! -f "${pkg[0]}" ]; then
         eval "$status"=\""$STR_unavailable"\"
       fi
-    elif ! arg_docker && ! is_set "$installed_repos" && ! is_set "$recommended_repos"; then
-      eval "$status"=\""$STR_unavailable"\"
-      warn_defer "Cannot find package ${pkg[0]} in any repository"
     fi
     # Add repo to component variable
     if $add_repo; then
@@ -2355,10 +2449,11 @@ set_status_all() {
     declare -g "${var//AX/STATUS}"="$STR_unset"
   done
   set_status_os
-  arg_docker_or_file && set_status_docker
-  $ARG_gen_requirements && set_status_gen_requirements && set_status_system_libs "AX_penv_pyenv_dependencies" AX_development_component
+  arg_docker_or_gen_dockerfile && set_status_docker
+  $ARG_gen_requirements && set_status_gen_requirements && set_status_system_libs AX_development_component AX_penv_pyenv_dependencies AX_penv_python_dependencies
 
   ($ARG_no_development && $ARG_no_runtime) || set_status_development
+  ($ARG_no_development && $ARG_no_runtime) || set_status_component "AX_common"
   $ARG_no_runtime || set_status_component "AX_runtime"
   $ARG_no_driver || set_status_component "AX_driver"
   if ! needed "$STATUS_container" && ! $ARG_dry_run && ! $ARG_gen_requirements; then
@@ -2375,9 +2470,9 @@ response_is_yes() {
   while true; do
     $ARG_YES && break;
     if is_set "$2"; then
-      read -rp "$1 (y/n/h): " yn
+      HISTSIZE=0 read -erp "$1 (y/n/h): " yn
     else
-      read -rp "$1 (y/n): " yn
+      HISTSIZE=0 read -erp "$1 (y/n): " yn
     fi
     case $yn in
       [Yy]*)
@@ -2429,25 +2524,24 @@ filter_libs_for_pipfile() {
     done
     echo "${filtered[@]}"
   else
-    echo "${libs}"
+    echo "$1"
   fi
 }
 
 gen_pipfile() {
   # Regenerate Python requirements
+  if $ARG_dry_run; then
+    echo "./$_self --gen-pipfile"
+    return
+  fi
   local libs="$(list "AX_penv_.\+_libs")"
+  libs=$(filter_libs_for_pipfile "$libs")
   local repo=$(list_of_dict "AX_penv_repositories")
   local var=
   local name=
   local ssl=
   local url=
-  local default=
   local requirement=
-  if $ARG_dry_run; then
-    echo "./$_self --gen-pipfile"
-    return
-  fi
-  libs=$(filter_libs_for_pipfile "$libs")
   progress_info "Generate Pipfile from YAML requirements"
   echo "# Auto-generated Pipfile" > Pipfile
   echo >> Pipfile
@@ -2505,7 +2599,8 @@ pipfile_to_requirements() {
   local resolved=
   local out=
   local dirname=
-  local libs=$(list "AX_penv_libs")
+  local libs="$(list "AX_penv_.\+_libs")"
+  libs=$(filter_libs_for_pipfile "$libs")
   local var=
   local var_x=
   local var_y=
@@ -2522,7 +2617,7 @@ pipfile_to_requirements() {
     python3 -m pipenv --bare --rm || error "Failed to remove existing environment"
   fi
   cmd_rm Pipfile.lock || error "Failed to remove Pipfile.lock"
-  if ! python3 -m pipenv --bare lock 2>&1; then
+  if ! python3 -m pipenv --bare lock --clear 2>&1; then
     #https://github.com/pypa/virtualenv/issues/1875
     out=$(python3 -m pipenv --bare lock 2>&1)
     if [[ "$out" == *"pipenv.exceptions.VirtualenvCreationException"* ]]; then
@@ -2537,27 +2632,29 @@ pipfile_to_requirements() {
     error "Failed to lock Pipenv.lock"
   fi
   complete_task
-  progress_info "Install packages from Pipenv.lock"
-  PIP_IGNORE_INSTALLED=1 python3 -m pipenv --bare sync || error "Failed to install packages from Pipenv.lock"
-  complete_task
   # Pipenv cannot deal with dependencies in local wheels
   # Install with pip as post processing operation
   for var in $libs; do
     if [[ "${!var}" =~ ^.*.whl[[:space:]]*\|.*$ ]]; then
+      error "local wheels are not supported: ${!var}"
       var=$(urldecode "${!var}")
       progress_info "Use pip to install local wheel ${var%\|*}"
       python3 -m pipenv --bare run pip -q install "${var%\|*}" 1>/dev/null || error "Failed to install ${var%\|*} with pip"
     fi
   done
-  progress_info "Freeze requirements to $AX_penv_requirements"
+  progress_info "Save requirements to $AX_penv_requirements"
   dirname=$(dirname "$AX_penv_requirements")
   if ! streq "$dirname" "."; then
     cmd mkdir -p "$dirname" || error "Failed to mkdir $dirname"
   fi
-  if ! python3 -m pipenv run pip freeze > "$AX_penv_requirements"; then
+  # remove unhelpful torch filename specified by qtools
+  sed -i '/"file".*torch/d' Pipfile.lock
+  # get requirements from Pipfile.lock, removing any index specifiers and argparse, which is already included in Python 3
+  if ! python3 -m pipenv requirements --exclude-markers | grep -v -e '^-' -e '^argparse==' > "$AX_penv_requirements"; then
     rm -f "$AX_penv_requirements"
     error "Failed to generate $AX_penv_requirements"
   fi
+  complete_task
 
   # Ensure only one OpenCV package installed
   requirements=$(<"$AX_penv_requirements")
@@ -2603,7 +2700,7 @@ pipfile_to_requirements() {
   echo "# Axelera config: llm_used=${ARG_llm}" >> "$AX_penv_requirements"
   revise_requirements
   complete_task
-  load_python_requirements
+  determine_python_requirements
   inc_tasks VAR_tasks "$(wc -l <<< "$VAR_requirements"  | awk NF)"
   VAR_tasks_unknown_requirements=false
 }
@@ -2619,14 +2716,13 @@ patch_activation_script() {
     error "${ACTIVATE} script has already been patched"
   else
     AX_envs=$(print_envs_to_source AX_runtime_envs)
-    prefix="${prefix//(.\/install.sh/(cd $PWD && .\/install.sh}"
-    prefix="${prefix//-f install.sh/-f $PWD\/install.sh}"
-    prefix="${prefix//install.sh:/$PWD\/install.sh:}"
     prefix="${prefix/_AX_envs=/declare -a _AX_envs=(${AX_envs})}"
     if is_set "$1"; then
       script="${script//($1)/(venv)}"
     fi
+    shopt -u patsub_replacement 2> /dev/null || true
     script="${script//unset -f deactivate/$destruct}"
+    shopt -s patsub_replacement 2> /dev/null || true
     script="$prefix"$'\n\n'"$script"$'\n'"# Patched"
     echo "$script" > "${ACTIVATE}"
   fi
@@ -2729,18 +2825,59 @@ docker_create_groups() {
   done
 }
 
+check_if_run_as_sudo() {
+  # check if running installer as sudo - or might have been previously
+  if [[ $(id -u) -eq 0 ]] && [[ -n $SUDO_USER ]]; then
+    if $ARG_allow_as_sudo; then
+      warn "*** Running as root - this may not work properly - run as a regular user if possible ***"
+    else
+      error "$_self is not intended to be run as root - it uses sudo where required. Please install as a regular user or use --allow-as-sudo to override this."
+    fi
+  elif [[ $USER != "root" ]]; then
+    # check if some key files are root-owned and warn
+    if [[ $(find ~/.pyenv -maxdepth 2 -user root 2>/dev/null) ]] || [[ $(stat -c %U .python-version 2>/dev/null) == "root" ]]; then
+      warn "Some files in ~/.pyenv and/or .python-version are owned by root, which may have been run as root previously. This may cause issues with the installer."
+    fi
+  fi
+}
+
+need_requirements() {
+  if  $ARG_gen_requirements || [ ! -f "$AX_penv_requirements" ]; then
+    true
+  else
+    false
+  fi
+}
+
+resolve_pyenv() {
+  # Make sure we have a reference to where we expect pyenv
+  # to be installed (for printing, may be installed later)
+  if ! is_set "$PYENV_ROOT"; then
+    export PYENV_ROOT="$HOME/.pyenv"
+  else
+    VAR_pyenv_root_env=true
+  fi
+
+  VAR_pyenv="$PYENV_ROOT/bin/pyenv"
+  if streq "$(which pyenv)" "$VAR_pyenv"; then
+    VAR_pyenv_in_path=true
+  fi
+
+  if ! arg_docker_or_gen_dockerfile; then
+    configure_pyenv
+  fi
+}
+
 # ******************************** MAIN ********************************
 
-# Ensure all installer dependencies are satisfied
+if ! which sudo &> /dev/null || ! sudo -vn &> /dev/null; then
+  sudo true || error "First install and/or set up sudo permission"
+fi
 
 if ! which dpkg-query &> /dev/null; then
   # Needed to check all other installation requirements
   echo "First run 'sudo apt-get install dpkg'"
   exit 1
-fi
-
-if ! which sudo &> /dev/null || ! sudo -vn &> /dev/null; then
-  sudo true || error "First install and/or set up sudo permission"
 fi
 
 # Transform long options to short ones
@@ -2772,6 +2909,7 @@ for arg in "$@"; do
     "--verbose")           set -- "$@" "-v" ;;
     "--allow-as-sudo")     set -- "$@" "-S" ;;
     "--llm")               set -- "$@" "-l" ;;
+    "--optional")          set -- "$@" "-o" ;;
     "--debug")             set -- "$@" "-V" ;;
     "--help")              set -- "$@" "-h" ;;
     --*)                   echo Invalid option: $arg
@@ -2784,7 +2922,7 @@ for arg in "$@"; do
 done
 
 # Parse command-line options
-while getopts ":adDrRpPginkKcyYsefmqvVlShu:t:" opt; do
+while getopts ":adDrRpPginkKcyYsefmqvVlShu:t:o" opt; do
   case $opt in
     a )
       ARG_all=true
@@ -2804,6 +2942,9 @@ while getopts ":adDrRpPginkKcyYsefmqvVlShu:t:" opt; do
       ;;
     t )
       ARG_token="$OPTARG"
+      ;;
+    o )
+      ARG_optional=true
       ;;
     r )
       ARG_runtime=true
@@ -2901,27 +3042,28 @@ while getopts ":adDrRpPginkKcyYsefmqvVlShu:t:" opt; do
       echo
       echo "Install the Voyager SDK"
       echo
-      echo "  -a  --all                install all components"
-      echo "  -d  --development        install Python development environment and runtime (--no-development supported)"
-      echo "  -u  --user <user>        email address used for the registered Axelera AI account (see also docs/tutorials/install.md)"
-      echo "  -t  --token <token>      token generated using the registered Axelera AI account (see also docs/tutorials/install.md)"
-      echo "  -r  --runtime            install runtime libraries (--no-runtime supported)"
-      echo "  -p  --driver             install PCIe/dkms driver (--no-driver supported)"
-      #echo "      --artifacts          download local artifacts needed by the installer"
-      echo "      --media              download local media needed for tests/demos"
-      echo "      --dry-run            print installation commands instead of executing"
-      echo "      --docker             install into a Docker container"
-      echo "      --gen-dockerfile     generate Dockerfile"
-      echo "      --gen-pipfile        generate Pipfile from YAML"
-      echo "      --gen-requirements   generate Python requirements from YAML"
-      echo "      --print-container    print container name/tag and exit"
-      echo "      --status             check install status of components"
-      echo "      --yes                answer yes to most installation questions (--YES for all)"
-      echo "      --quiet              display less output"
-      echo "      --verbose            display more output"
-      echo "      --allow-as-sudo      allow installer to be run as sudo - not recommended"
-      echo "      --llm                install LLM components"
-      echo "  -h, --help               display this help and exit"
+      echo "  -a --all              install all components"
+      echo "  -d --development      install Python environment and development packages (-D --no-development supported)"
+      echo "  -u --user <user>      [DEPRECATED OPTION. WILL BE REMOVED IN A FUTURE RELEASE] email address used for the registered Axelera AI account (see also docs/tutorials/install.md). This option is not used anymore"
+      echo "  -t --token <token>    [DEPRECATED OPTION. WILL BE REMOVED IN A FUTURE RELEASE] token generated using the registered Axelera AI account (see also docs/tutorials/install.md). This option is not used anymore"
+      echo "  -r --runtime          install Python environment and runtime packages (-R --no-runtime supported)"
+      echo "  -p --driver           install PCIe/dkms driver (-P --no-driver supported)"
+      #echo "     --artifacts        download local artifacts needed by the installer"
+      echo "     --media            download local media needed for tests/demos"
+      echo "     --dry-run          print installation commands instead of executing"
+      echo "     --docker           install into a Docker container"
+      echo "     --gen-dockerfile   generate Dockerfile"
+      echo "     --gen-pipfile      generate Pipfile from YAML"
+      echo "     --gen-requirements generate Python requirements from YAML"
+      echo "     --print-container  print container name/tag and exit"
+      echo "     --status           check install status of components"
+      echo "     --yes              answer yes to most installation questions (--YES for all)"
+      echo "     --quiet            display less output"
+      echo "     --verbose          display more output"
+      echo "     --allow-as-sudo    allow installer to be run as sudo - not recommended"
+      echo "     --llm              install LLM components"
+      echo "     --optional         install optional components"
+      echo "  -h --help             display this help and exit"
       echo
       exit 0
       ;;
@@ -2941,6 +3083,26 @@ shift $((OPTIND-1))
 
 exit_if_error
 
+if $ARG_all; then
+  set_arg_if_not_unset "development"
+  set_arg_if_not_unset "driver"
+  set_arg_if_not_unset "runtime"
+fi
+
+# If --gen-requirements specified then no other components should be installed
+if $ARG_gen_requirements; then
+  ARG_no_development=true
+  ARG_no_runtime=true
+  ARG_no_driver=true
+fi
+
+# If --gen-dockerfile specified then ignore --driver (even if it is specified)
+if $ARG_gen_dockerfile; then
+  $ARG_driver && warn "Ignoring --driver/--all request to install the driver, as it is not needed for Dockerfile generation"
+  ARG_driver=false
+  ARG_no_driver=true
+fi
+
 if $ARG_dry_run; then
   if [[ -z $ARG_user ]]; then
     ARG_user="dry-run-user"
@@ -2950,27 +3112,14 @@ if $ARG_dry_run; then
   fi
 fi
 
-# USER not always set (in containers?)
 if [ -z $USER ]; then
   USER=$(whoami)
 fi
 
-# check if running sudo - or might have been previously
-if [[ $(id -u) -eq 0 ]] && [[ -n $SUDO_USER ]]; then
-  if $ARG_allow_as_sudo; then
-    warn "*** Running as root - this may not work properly - run as a regular user if possible ***"
-  else
-    error "$_self is not intended to be run as root - it uses sudo where required. Please install as a regular user or use --allow-as-sudo to override this."
-  fi
-elif [[ $USER != "root" ]]; then
-  # check if some key files are root-owned and warn
-  if [[ $(find ~/.pyenv -maxdepth 2 -user root 2>/dev/null) ]] || [[ $(stat -c %U .python-version 2>/dev/null) == "root" ]]; then
-    warn "Some files in ~/.pyenv and/or .python-version are owned by root, which may have been run as root previously. This may cause issues with the installer."
-  fi
-fi
+check_if_run_as_sudo
 
 if $ARG_no_development && ! $ARG_no_runtime; then
-  warn "The development environment will also be installed, as the runtime environment currently requires it."
+  warn "The Python environment will also be installed, as the runtime environment currently requires it."
   warn "(This will be improved in future releases)"
 fi
 
@@ -2994,33 +3143,15 @@ installer_apt_requirement "pciutils"
 # ensure required apt packages are installed before attempting any pip packages
 check_installer_requirements_met "apt"
 
-installer_pip_requirement "pip" ">=" 22.2
+resolve_pyenv
+
+# pip >= 23.0.1 is required for --dry-run and --break-system-packages
+installer_pip_requirement "pip" ">=" 23.0.1
 installer_pip_requirement "pyYAML"
 
 check_installer_requirements_met "pip"
 
 determine_system_and_cfg_file
-
-if $ARG_all; then
-  set_arg_if_not_unset "development"
-  set_arg_if_not_unset "driver"
-  set_arg_if_not_unset "runtime"
-fi
-
-# If --gen-requirements specified then no
-# other components should be installed
-if $ARG_gen_requirements; then
-  ARG_no_development=true
-  ARG_no_runtime=true
-  ARG_no_driver=true
-fi
-
-# If --gen-dockerfile specified then ignore
-# --driver (even if it is specified)
-if $ARG_gen_dockerfile; then
-  ARG_driver=false
-  ARG_no_driver=true
-fi
 
 # Get configuration settings
 get_config_from_yaml "$SYS_config"
@@ -3038,16 +3169,11 @@ if ${ARG_llm}; then
   warn "Then rerun the installer without the --llm flag to guarantee a clean environment."
 fi
 
-# DEBUG
-#for var in "${!AX_@}"; do
-# echo $var=${!var}
-#done
-
 # When installing with --docker option we need to know the
 # container name, so disable interactive installation
 # If --docker specified then require either development environment
 # with runtime or runtime alone (set up here without prompting)
-if arg_docker_or_file; then
+if arg_docker_or_gen_dockerfile; then
   if $ARG_development && $ARG_no_runtime; then
     error "Docker development environment must contain runtime"
   elif ! $ARG_development && $ARG_runtime; then
@@ -3064,8 +3190,14 @@ if arg_docker_or_file; then
   fi
 fi
 
+if ! $ARG_no_development || ! $ARG_no_runtime; then
+  ARG_common=true
+  ARG_no_common=false
+fi
+
+
 VAR_used_container=$AX_docker_base
-if arg_docker_or_file && $ARG_no_development; then
+if arg_docker_or_gen_dockerfile && $ARG_no_development; then
   VAR_target_container=$AX_docker_target_runtime
 else
   VAR_target_container=$AX_docker_target_base
@@ -3078,28 +3210,26 @@ else
   STATUS_base_docker=$STR_ok
 fi
 
-load_python_requirements
+determine_python_requirements
 
 # We can only calculate development container tags/hash once the Pyhon
 # requirements exists
-if arg_docker && ! $ARG_no_development && ! is_set "$VAR_requirements"; then
+if arg_docker && ! $ARG_no_development && ! [ -f "$AX_penv_requirements" ]; then
   echo "First run './${_self} --gen-requirements' (needed to calculate Docker container tag)"
   exit 1
 fi
 
 # Get Docker container tag after loading Python requirements
 if [ -f "$AX_penv_requirements" -a -z "$VAR_target_container_tag" ]; then
-  VAR_target_container_tag=$(get_tag_from_yaml "$SYS_config" "$AX_penv_requirements" "docker_hash")
+  VAR_target_container_tag=$(get_tag_from_yaml "$SYS_config" "$AX_penv_requirements" "docker")
 fi
 
 # Determine location of each component and the status of any existing container
-if arg_docker_or_file; then
+if arg_docker_or_gen_dockerfile; then
   AX_development_where=$STR_docker
   AX_runtime_where=$STR_docker
+  AX_common_where=$STR_docker
   STATUS_container=$STR_needed
-  if [ -z $USER ]; then
-    USER=$(whoami)
-  fi
   if arg_docker && [[ -n "$(which docker)" ]]; then
     docker_check
     if exec sg "docker" "docker image ls" | grep -q "^$VAR_target_container.*$VAR_target_container_tag.*$"; then
@@ -3109,23 +3239,7 @@ if arg_docker_or_file; then
 else
   AX_development_where=$STR_system
   AX_runtime_where=$STR_system
-fi
-
-# Make sure we have a reference to where we expect pyenv
-# to be installed (for printing, may be installed later)
-if ! is_set "$PYENV_ROOT"; then
-  export PYENV_ROOT="$HOME/.pyenv"
-else
-  VAR_pyenv_root_env=true
-fi
-
-VAR_pyenv="$PYENV_ROOT/bin/pyenv"
-if streq "$(which pyenv)" "$VAR_pyenv"; then
-  VAR_pyenv_in_path=true
-fi
-
-if ! streq "$AX_development_where" "$STR_docker"; then
-  configure_pyenv
+  AX_common_where=$STR_system
 fi
 
 # create and symlink a data folder if not already present
@@ -3190,9 +3304,9 @@ fi
 
 arg_docker && resolve_option "docker_system" "Install Docker system dependencies"
 if ! arg_docker; then
-  resolve_option "development" "Install Python development environment"
+  resolve_option "development" "Install Python environment"
 elif needed "$STATUS_container"; then
-  resolve_option "development" "Install Python development environment and runtime"
+  resolve_option "development" "Install Python environment and runtime"
 fi
 
 if ! requested_install "development"; then
@@ -3202,13 +3316,14 @@ if ! requested_install "development"; then
 fi
 
 resolve_option "runtime" "Install runtime libraries"
+resolve_option "common" "Install common libraries"
 resolve_option "driver" "Install PCIe driver"
 
 if $ARG_gen_requirements; then
   resolve_option "gen_requirements" "Generate requirements"
 fi
 
-AX_GROUPS="video render messagebus"
+AX_GROUPS="video render messagebus kvm"
 
 if arg_docker; then
   update_repo_list "$AX_docker_repos" "$STR_docker"
@@ -3248,8 +3363,6 @@ elif streq "$AX_development_component" "$STR_ok"; then
 else
   exit 0
 fi
-
-check_authentication
 
 if is_set $VAR_groups; then
   added=false
@@ -3297,16 +3410,16 @@ if needed "$STATUS_container"; then
     write_to_dockerfile "FROM $VAR_used_container"
     write_to_dockerfile "ARG DEBIAN_FRONTEND=noninteractive"
     write_to_dockerfile "ENV DISPLAY=:0"
-    is_set "$AX_docker_term" && write_to_dockerfile "ENV TERM $AX_docker_term"
+    is_set "$AX_docker_term" && write_to_dockerfile "ENV TERM=$AX_docker_term"
     write_to_dockerfile "WORKDIR /tmp"
     print_envs_to_source "AX_runtime_envs"
     install_docker_libs
     VAR_uid="$(id -u)"
     write_to_dockerfile "RUN useradd --badname -m -u $VAR_uid $USER"
 
-    docker_create_groups render axelera
+    docker_create_groups render axelera kvm
 
-    write_to_dockerfile "RUN usermod -a -G sudo,video,render,axelera $USER"
+    write_to_dockerfile "RUN usermod -a -G sudo,video,render,kvm,axelera $USER"
     write_to_dockerfile "RUN echo '$USER:$USER' | chpasswd"
 
     # create a volume to replace the host's .local
@@ -3325,18 +3438,18 @@ if is_set "$VAR_docker_repositories"; then
   add_apt_repositories "VAR_docker_repositories" "$STR_docker"
 fi
 
-# Install requested components
-if $ARG_gen_requirements; then
-  install_needed_python_components
+if need_requirements; then
+  install_pyenv_and_pipenv
   gen_pipfile
   pipfile_to_requirements
 fi
 
 requested_install "docker_system" && install_docker_system
 if requested_install "runtime" || requested_install "development"; then
-  install_development
+  install_python_environment
 fi
 requested_install "runtime" && install_component "AX_runtime"
+requested_install "common" && install_component "AX_common"
 requested_install "driver" && install_component "AX_driver"
 
 # do post inst tasks
@@ -3354,7 +3467,7 @@ superpower="echo $USERNAME_WITHOUT_DOTS ALL=\\(ALL\\) NOPASSWD: ALL > /etc/sudoe
 superpower="bash -c \"$superpower\""
 
 if ! needed "$STATUS_container"; then
-  if ! $ARG_dry_run && ! $ARG_gen_requirements; then
+  if ! $ARG_dry_run && ! $ARG_gen_requirements && [[ -f "${ACTIVATE}" ]]; then
     # remaining tasks need active env
     # shellcheck disable=SC1090
     if [ -n "${_OLD_VIRTUAL_PATH:-}" ] ; then
@@ -3362,8 +3475,10 @@ if ! needed "$STATUS_container"; then
       deactivate || true
     fi
     source "${ACTIVATE}"
-    echo building operators
-    cmd "make clobber-libs && make operators" || warn "Failed to make operators"
+    if ! $ARG_no_runtime; then
+      echo building operators
+      cmd "make clobber-libs && make operators" || warn "Failed to make operators"
+    fi
 
     if is_dpkg_installed "metis-dkms"; then
       # rescan pcie and reload firmware if the driver is installed
@@ -3381,7 +3496,7 @@ else
   DOK="DOCKER_BUILDKIT=1 docker build --compress -f Dockerfile -t \"$VAR_target_container:$VAR_target_container_tag\" ."
   DOK="${DOK} --network=\"host\""
 
-  for var in axeleracommon torch development runtime; do
+  for var in axelera_common torch axelera_development axelera_runtime; do
     var=AX_index_url_$var
     if [[ -n "${!var}" ]]; then
       DOK="${DOK} --secret id=$var"
@@ -3403,17 +3518,9 @@ else
     $ARG_dry_run || echo "Wrote output to Dockerfile"
   elif $ARG_dry_run; then
     docker_postinstall
-    # Add LLM packages to Dockerfile if requested
-    #if $ARG_llm; then
-    #  install_llm_packages
-    #fi
     echo "$DOK"
   else
     docker_postinstall
-    # Add LLM packages to Dockerfile if requested
-    #if $ARG_llm; then
-    #  install_llm_packages
-    #fi
     progress_info "Build container $VAR_target_container:$VAR_target_container_tag "
     IFS=", " read -r -a GROUPS <<< "$(groups)"
     if [[ ! " ${GROUPS[*]} " =~ " docker " ]]; then
@@ -3427,105 +3534,10 @@ else
 fi
 
 if $VAR_any_errors; then
-  echo "Installation complete, but with unresolved issues (see above)"
+  error_continue "Installation complete, but with unresolved issues (see above)"
   exit 1
 fi
 
 if ! $ARG_dry_run && ! $ARG_gen_dockerfile && ! $ARG_gen_requirements; then
   print_next_steps "Installation complete"
 fi
-
-# Install LLM packages from the config
-install_llm_packages() {
-  if [ -z "$CONFIG_llm" ]; then
-    warn "No LLM configuration found in config file"
-    return 0
-  fi
-
-  # Display a clear warning about potential issues with LLM packages
-  warn "*** IMPORTANT: Installing LLM packages may affect core SDK functionality ***"
-  warn "If you experience issues with core VISION model tasks after using LLM features,"
-  warn "it is strongly recommended to remove the entire '$VENV' directory"
-  warn "and re-run the installer without the --llm flag to guarantee a clean environment."
-  
-  # Extract data from config
-  local llm_index_url=$(get_yaml_value "$CONFIG_llm" "index_url")
-  local llm_requires_auth=$(get_yaml_value "$CONFIG_llm" "requires_auth")
-  
-  # Get the libraries section
-  local llm_libs=$(get_yaml_value "$CONFIG_llm" "libs")
-  if [ -z "$llm_libs" ]; then
-    warn "No libraries defined in LLM configuration"
-    return 1
-  fi
-
-  # Process libraries
-  progress_info "Installing LLM packages from ${llm_index_url}"
-  
-  # For direct installation into venv
-  if ! $ARG_docker; then
-    # Construct the package list with version constraints
-    local llm_packages=()
-    
-    # Read each library from the config
-    while IFS=": " read -r package version; do
-      if [ -n "$package" ] && [ -n "$version" ]; then
-        # Remove quotes around version if present
-        version="${version//\"/}"
-        version="${version//\'/}"
-        
-        if [ "$version" = "*" ]; then
-          llm_packages+=("$package")
-        else
-          llm_packages+=("$package$version")
-        fi
-      fi
-    done < <(get_yaml_values "$llm_libs")
-    
-    # Join the packages into a space-separated string
-    local llm_packages_str="${llm_packages[*]}"
-    
-    if [ -n "$llm_packages_str" ]; then
-      # Install packages into the virtual environment
-      progress_info "Installing LLM packages: $llm_packages_str"
-      
-      # Activate venv if needed
-      if [[ ! "$VIRTUAL_ENV" == *"$VENV"* ]]; then
-        source "$VENV/bin/activate" || error "Failed to activate virtual environment"
-      fi
-      
-      cmd python3 -m pip install --disable-pip-version-check --no-cache-dir --index-url "$llm_index_url" $llm_packages_str || error_continue "Failed to install LLM packages"
-    else
-      warn "No valid LLM packages found in configuration"
-    fi
-  else
-    # For Docker, add to Dockerfile
-    local llm_packages_to_install=()
-    while IFS=": " read -r package version; do
-      if [ -n "$package" ] && [ -n "$version" ]; then
-        # Remove quotes around version if present
-        version="${version//\"/}"
-        version="${version//\'/}"
-        
-        if [ "$version" = "*" ]; then
-          llm_packages_to_install+=("$package")
-        else
-          llm_packages_to_install+=("$package$version")
-        fi
-      fi
-    done < <(get_yaml_values "$llm_libs")
-    
-    # Join the packages into a space-separated string
-    local llm_packages_to_install_str="${llm_packages_to_install[*]}"
-    
-    if [ -n "$llm_packages_to_install_str" ]; then
-      progress_info "Adding LLM packages to Dockerfile: $llm_packages_to_install_str"
-      write_to_dockerfile "RUN python3 -m pip install --no-cache-dir --index-url ${llm_index_url} ${llm_packages_to_install_str}\n"
-    fi
-  fi
-}
-
-# Handle LLM installation
-#if $ARG_llm && ! $ARG_gen_dockerfile && ! $ARG_dry_run; then
-#  install_llm_packages
-#fi

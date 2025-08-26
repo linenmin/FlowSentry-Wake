@@ -1,9 +1,8 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 
 # AxRunModel
-
 - [AxRunModel](#axrunmodel)
-  - [Configuration \& Advanced Usage](#configuration--advanced-usage)
+  - [Configuration & Advanced Usage](#configuration--advanced-usage)
     - [-d `<devices>`, --devices `<devices>`](#-d-devices---devices-devices)
     - [--seconds `<seconds>`](#--seconds-seconds)
     - [--aipu-cores `<aipu_cores>`](#--aipu-cores-aipu_cores)
@@ -24,7 +23,7 @@ axrunmodel <path-to-model>
 ```
 
 The path to the model should point to the deployed `model.json` file which you wish to run. You can
-obtain a model using `./download_prebuilt.py yolov8l-coco-onnx`, and the resulting model can be
+obtain a model using `axdownloadmodel yolov8l-coco-onnx`, and the resulting model can be
 found at `build/yolov8l-coco-onnx/yolov8l-coco-onnx/1/model.json`.
 
 The `1` indicates the batch size of the model, which simply means the number of cores that a single

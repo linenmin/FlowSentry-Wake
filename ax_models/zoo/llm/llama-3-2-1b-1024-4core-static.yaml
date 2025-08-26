@@ -7,9 +7,9 @@ description: HuggingFace Transformers Llama-3.2-1B-Instruct model, limiting the 
 models:
   llama-3-2-1b-1024-4core-static:
     # precompiled_url: s3://axelera-llm-models/icdf/llama1b_1024_mc_model.tar.gz
-    precompiled_url: https://llm.axelera.ai/icdf/llama1b_1024_mc_model_v2.tar.gz
-    precompiled_path: build/llama-3-2-1b-1024-4core-static/llama1b_1024_mc_model_v2.tar.gz
-    precompiled_md5: 3a638672ae766a3d203106088db61855
+    precompiled_url: https://llm.axelera.ai/icdf/3.x/llama1b_1024_mc_model.tar.gz
+    precompiled_path: build/llama-3-2-1b-1024-4core-static/llama1b_1024_mc_model.tar.gz
+    precompiled_md5: 1c5e2ed70d29169b3b810910a58ca77e
     task_category: LanguageModel
     extra_kwargs:
       llm:

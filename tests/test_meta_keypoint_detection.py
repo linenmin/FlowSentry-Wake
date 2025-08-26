@@ -16,6 +16,12 @@ from axelera.app.meta.keypoint import (
 )
 
 
+class MockTaskRenderConfig:
+    def __init__(self, show_labels=True, show_annotations=True):
+        self.show_labels = show_labels
+        self.show_annotations = show_annotations
+
+
 @pytest.fixture
 def coco_body_keypoints_meta():
     keypoints = [
@@ -41,12 +47,24 @@ def coco_body_keypoints_meta():
     ]
     boxes = [[412.0, 157.0, 465.0, 295.0]]
     scores = [0.9]
-    return CocoBodyKeypointsMeta.from_list(keypoints=keypoints, boxes=boxes, scores=scores)
+    meta = CocoBodyKeypointsMeta.from_list(keypoints=keypoints, boxes=boxes, scores=scores)
+
+    container_meta = create_container_with_render_config("keypoints_meta")
+    meta.set_container_meta(container_meta)
+    object.__setattr__(meta, 'meta_name', "keypoints_meta")
+
+    return meta
 
 
 @pytest.fixture
 def top_down_keypoints_meta():
-    return TopDownKeypointDetectionMeta()
+    meta = TopDownKeypointDetectionMeta()
+
+    container_meta = create_container_with_render_config("top_down_meta")
+    meta.set_container_meta(container_meta)
+    object.__setattr__(meta, 'meta_name', "top_down_meta")
+
+    return meta
 
 
 @pytest.fixture
@@ -76,7 +94,13 @@ def bottom_up_keypoints_meta():
     )
     boxes = np.array([[412.0, 157.0, 465.0, 295.0]])
     scores = np.array([0.9])
-    return BottomUpKeypointDetectionMeta(keypoints=keypoints, boxes=boxes, scores=scores)
+    meta = BottomUpKeypointDetectionMeta(keypoints=keypoints, boxes=boxes, scores=scores)
+
+    container_meta = create_container_with_render_config("bottom_up_meta")
+    meta.set_container_meta(container_meta)
+    object.__setattr__(meta, 'meta_name', "bottom_up_meta")
+
+    return meta
 
 
 def test_meta_immutable(coco_body_keypoints_meta):
@@ -391,9 +415,37 @@ def test_coco_body_keypoints_meta_objects():
     coco_body_keypoints_meta = CocoBodyKeypointsMeta.from_list(
         keypoints=keypoints, boxes=boxes, scores=scores
     )
+
+    container_meta = create_container_with_render_config("keypoints_meta")
+    coco_body_keypoints_meta.set_container_meta(container_meta)
+    object.__setattr__(coco_body_keypoints_meta, 'meta_name', "keypoints_meta")
+
     keypoint_detections = coco_body_keypoints_meta.objects
     assert len(keypoint_detections) == 1
     assert isinstance(keypoint_detections[0], KeypointObjectWithBbox)
     assert np.array_equal(keypoint_detections[0].keypoints, keypoints[0])
     assert np.array_equal(keypoint_detections[0].box, boxes[0])
     assert keypoint_detections[0].score == scores[0]
+
+
+def create_container_with_render_config(meta_name, show_labels=True, show_annotations=True):
+    """Create a container meta with proper render config for testing.
+
+    Args:
+        meta_name: The name to register for the meta in the render config
+        show_labels: Whether to show labels in rendering
+        show_annotations: Whether to show annotations in rendering
+
+    Returns:
+        container_meta: The configured AxMeta container
+    """
+    from axelera.app.config import RenderConfig
+    from axelera.app.meta import AxMeta
+
+    container_meta = AxMeta("test_image")
+    render_config = RenderConfig()
+    render_config.set_task(
+        meta_name, show_labels=show_labels, show_annotations=show_annotations, force_register=True
+    )
+    container_meta.set_render_config(render_config)
+    return container_meta

@@ -13,7 +13,7 @@
 class CLPerspective;
 struct perspective_properties {
   std::vector<cl_float> matrix;
-  bool bgra_out{ false };
+  int out_format{ ax_utils::RGB_OUTPUT };
   std::unique_ptr<CLPerspective> perspective;
 };
 
@@ -29,31 +29,8 @@ perspective_transform(int2 coord, __constant float *perspective_matrix)
   return (float2) (new_x + 0.5F, new_y + 0.5F);
 }
 
-__kernel void rgba_perspective_bl(__global const uchar4 *in, __global uchar4 *out, int in_width, int in_height, int out_width, int out_height,
-                        int strideIn, int strideOut, __constant float *perspective_matrix, uchar is_bgr) {
-
-    const int col = get_global_id(0);
-    const int row = get_global_id(1);
-
-    if (row >= out_height || col >= out_width) {
-      return;
-    }
-
-    int strideO = strideOut / sizeof(uchar4);
-    float2 corrected = perspective_transform((int2)(col, row), perspective_matrix);
-    if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
-      out[row * strideO + col] = (uchar4)(0, 0, 0, 255);
-      return;
-    }
-
-    int strideI = strideIn / sizeof(uchar4);
-    rgb_image img = {in_width, in_height, strideI, 0, 0};
-    uchar4 pixel = rgba_sampler_bl(in, corrected.x, corrected.y, &img);
-    out[row * strideO + col] = is_bgr ? pixel.zyxw : pixel;
-}
-
 __kernel void rgb_perspective_bl(__global const uchar *in, __global uchar *out, int in_width, int in_height, int out_width, int out_height,
-                        int strideIn, int strideOut, __constant float *perspective_matrix, uchar is_bgr) {
+                        int strideIn, int strideOut, __constant float *perspective_matrix, output_format out_format, uchar is_input_bgr) {
 
     const int col = get_global_id(0);
     const int row = get_global_id(1);
@@ -65,19 +42,23 @@ __kernel void rgb_perspective_bl(__global const uchar *in, __global uchar *out, 
     float2 corrected = perspective_transform((int2)(col, row), perspective_matrix);
     __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
     if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
-      vstore3((uchar3)(0, 0, 0), col, prgb);
+      out_format == GRAY_OUTPUT ?  out[row * strideOut + col] = 0 : vstore3((uchar3)(0, 0, 0), col, prgb);
       return;
     }
 
     __global uchar *p_in = advance_uchar_ptr(in, row * strideIn);
     rgb_image img = {in_width, in_height, strideIn, 0, 0};
     uchar4 pixel = rgb_sampler_bl(in, corrected.x, corrected.y, &img);
-    vstore3(is_bgr ? pixel.zyx : pixel.xyz, col, prgb);
+    if (out_format == GRAY_OUTPUT) {
+      out[row * strideOut + col] = RGB_to_GRAY(is_input_bgr ? pixel.zyx : pixel.xyz);
+      return;
+    }
+    is_input_bgr ? vstore3((out_format == BGR_OUTPUT) ? pixel.xyz : pixel.zyx, col, prgb) : vstore3((out_format == BGR_OUTPUT) ? pixel.zyx : pixel.xyz, col, prgb);
 }
 
-__kernel void nv12_perspective_bl(__global const uchar *in_y, __global uchar4 *out, int uv_offset, int in_width, int in_height,
+__kernel void nv12_perspective_bl(__global const uchar *in_y, __global uchar *out, int uv_offset, int in_width, int in_height,
                             int out_width, int out_height, int strideInY, int strideInUV, int strideOut,
-                            __constant float *perspective_matrix, uchar is_bgr) {
+                            __constant float *perspective_matrix, output_format out_format) {
 
     const int col = get_global_id(0);
     const int row = get_global_id(1);
@@ -89,19 +70,23 @@ __kernel void nv12_perspective_bl(__global const uchar *in_y, __global uchar4 *o
     float2 corrected = perspective_transform((int2)(col, row), perspective_matrix);
     __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
     if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
-      vstore3((uchar3)(0, 0, 0), col, prgb);
+      out_format == GRAY_OUTPUT ?  out[row * strideOut + col] = 0 : vstore3((uchar3)(0, 0, 0), col, prgb);
       return;
     }
     __global uchar2 *in_uv = (__global uchar2 *)(in_y + uv_offset);
     int uvStrideI = strideInUV / sizeof(uchar2);
     nv12_image img = {in_width, in_height, strideInY, uvStrideI, 0, 0};
     uchar4 pixel = nv12_sampler(in_y, in_uv,  corrected.x, corrected.y, &img);
-    vstore3(is_bgr ? pixel.zyx : pixel.xyz, col, prgb);
+    if (out_format == GRAY_OUTPUT) {
+      out[row * strideOut + col] = RGB_to_GRAY( pixel.xyz);
+      return;
+    }
+    vstore3(out_format == BGR_OUTPUT ? pixel.zyx : pixel.xyz, col, prgb);
 }
 
-__kernel void i420_perspective_bl(__global const uchar *in_y, __global uchar4 *out, int u_offset, int v_offset, int in_width, int in_height,
+__kernel void i420_perspective_bl(__global const uchar *in_y, __global uchar *out, int u_offset, int v_offset, int in_width, int in_height,
                             int out_width, int out_height, int strideInY, int strideInU, int strideInV, int strideOut,
-                            __constant float *perspective_matrix, uchar is_bgr) {
+                            __constant float *perspective_matrix, output_format out_format) {
 
     const int col = get_global_id(0);
     const int row = get_global_id(1);
@@ -113,7 +98,7 @@ __kernel void i420_perspective_bl(__global const uchar *in_y, __global uchar4 *o
     float2 corrected = perspective_transform((int2)(col, row), perspective_matrix);
     __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
     if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
-      vstore3((uchar3)(0, 0, 0), col, prgb);
+      out_format == GRAY_OUTPUT ?  out[row * strideOut + col] = 0 : vstore3((uchar3)(0, 0, 0), col, prgb);
       return;
     }
 
@@ -122,12 +107,16 @@ __kernel void i420_perspective_bl(__global const uchar *in_y, __global uchar4 *o
 
     i420_image img = {in_width, in_height, strideInY, strideInU, strideInV, 0, 0};
     uchar4 pixel = i420_sampler(in_y, in_u, in_v, corrected.x, corrected.y, &img);
-    vstore3(is_bgr ? pixel.zyx : pixel.xyz, col, prgb);
+    if (out_format == GRAY_OUTPUT) {
+      out[row * strideOut + col] = RGB_to_GRAY(pixel.xyz);
+      return;
+    }
+    vstore3(out_format == BGR_OUTPUT ? pixel.zyx : pixel.xyz, col, prgb);
   }
 
-__kernel void yuyv_perspective_bl(__global const uchar4 *in_y, __global uchar4 *out, int in_width, int in_height,
+__kernel void yuyv_perspective_bl(__global const uchar *in_y, __global uchar *out, int in_width, int in_height,
                             int out_width, int out_height, int strideInY, int strideOut,
-                            __constant float *perspective_matrix, uchar is_bgr) {
+                            __constant float *perspective_matrix, output_format out_format) {
 
     const int col = get_global_id(0);
     const int row = get_global_id(1);
@@ -140,13 +129,41 @@ __kernel void yuyv_perspective_bl(__global const uchar4 *in_y, __global uchar4 *
     float2 corrected = perspective_transform((int2)(col, row), perspective_matrix);
     __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
     if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
-      vstore3((uchar3)(0, 0, 0), col, prgb);
+      out_format == GRAY_OUTPUT ?  out[row * strideOut + col] = 0 : vstore3((uchar3)(0, 0, 0), col, prgb);
       return;
     }
 
     yuyv_image img = {in_width, in_height, strideI, 0, 0};
     uchar4 pixel = yuyv_sampler(in_y, corrected.x, corrected.y, &img);
-    vstore3(is_bgr ? pixel.zyx : pixel.xyz, col, prgb);
+    if (out_format == GRAY_OUTPUT) {
+      out[row * strideOut + col] = RGB_to_GRAY(pixel.xyz);
+      return;
+    }
+    vstore3(out_format == BGR_OUTPUT ? pixel.zyx : pixel.xyz, col, prgb);
+}
+
+__kernel void gray_perspective_bl(__global const uchar *in, __global uchar *out, int in_width, int in_height, int out_width, int out_height,
+                        int strideIn, int strideOut, __constant float *perspective_matrix) {
+
+    const int col = get_global_id(0);
+    const int row = get_global_id(1);
+
+    if (row >= out_height || col >= out_width) {
+      return;
+    }
+
+    float2 corrected = perspective_transform((int2)(col, row), perspective_matrix);
+    __global uchar* prgb = advance_uchar_ptr(out, row * strideOut);
+    if (corrected.x < 0 || corrected.x >= in_width || corrected.y < 0 || corrected.y >= in_height) {
+      out[row * strideOut + col] = 0;
+      return;
+    }
+
+    __global uchar *p_in = advance_uchar_ptr(in, row * strideIn);
+    rgb_image img = {in_width, in_height, strideIn, 0, 0};
+    uchar pixel = gray8_sampler_bl(in, corrected.x, corrected.y, &img);
+    out[row * strideOut + col] = pixel;
+
 }
 
 )##";
@@ -161,12 +178,13 @@ class CLPerspective
   public:
   CLPerspective(std::string source, Ax::Logger &logger)
       : program(ax_utils::get_kernel_utils() + source, logger),
-        rgba_perspective{ program.get_kernel("rgba_perspective_bl") },
         rgb_perspective(program.get_kernel("rgb_perspective_bl")),
         nv12_perspective{ program.get_kernel("nv12_perspective_bl") },
-        i420_perspective{ program.get_kernel("i420_perspective_bl") }, yuyv_perspective{
-          program.get_kernel("yuyv_perspective_bl")
+        i420_perspective{ program.get_kernel("i420_perspective_bl") },
+        yuyv_perspective{ program.get_kernel("yuyv_perspective_bl") }, gray_perspective{
+          program.get_kernel("gray_perspective_bl")
         }
+
   {
   }
 
@@ -210,9 +228,11 @@ class CLPerspective
     if (in.format == AxVideoFormat::RGB || in.format == AxVideoFormat::BGR) {
       auto inbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
 
-      cl_uchar is_bgr = in.format != out.format;
-      program.set_kernel_args(rgb_perspective, 0, *inbuf, *outbuf, in.width, in.height,
-          out.width, out.height, in.stride, out.stride, *perspective_matrix, is_bgr);
+      cl_int out_format = ax_utils::get_output_format(out.format);
+      cl_uchar is_input_bgr = in.format == AxVideoFormat::BGR ? 1 : 0;
+      program.set_kernel_args(rgb_perspective, 0, *inbuf, *outbuf, in.width,
+          in.height, out.width, out.height, in.stride, out.stride,
+          *perspective_matrix, out_format, is_input_bgr);
 
       return run_kernel(rgb_perspective, out, inbuf, outbuf, perspective_matrix);
 
@@ -221,10 +241,11 @@ class CLPerspective
 
       cl_int uv_offset = in.offsets[1];
       cl_int uv_stride = in.strides[1];
-      cl_uchar is_bgr = out.format == AxVideoFormat::BGRA;
+
+      cl_int out_format = ax_utils::get_output_format(out.format);
       program.set_kernel_args(nv12_perspective, 0, *inbuf_y, *outbuf, uv_offset,
           in.width, in.height, out.width, out.height, in.stride, uv_stride,
-          out.stride, *perspective_matrix, is_bgr);
+          out.stride, *perspective_matrix, out_format);
       return run_kernel(nv12_perspective, out, inbuf_y, outbuf, perspective_matrix);
 
     } else if (in.format == AxVideoFormat::I420) {
@@ -234,21 +255,29 @@ class CLPerspective
       cl_int u_stride = in.strides[1];
       cl_int v_offset = in.offsets[2];
       cl_int v_stride = in.strides[2];
-      cl_uchar is_bgr = out.format == AxVideoFormat::BGRA;
+      cl_int out_format = ax_utils::get_output_format(out.format);
       program.set_kernel_args(i420_perspective, 0, *inbuf_y, *outbuf, u_offset,
           v_offset, in.width, in.height, out.width, out.height, in.stride,
-          u_stride, v_stride, out.stride, *perspective_matrix, is_bgr);
+          u_stride, v_stride, out.stride, *perspective_matrix, out_format);
 
       return run_kernel(i420_perspective, out, inbuf_y, outbuf, perspective_matrix);
 
     } else if (in.format == AxVideoFormat::YUY2) {
       auto inbuf_y = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
 
-      cl_uchar is_bgr = out.format == AxVideoFormat::BGRA;
-      program.set_kernel_args(yuyv_perspective, 0, *inbuf_y, *outbuf, in.width, in.height,
-          out.width, out.height, in.stride, out.stride, *perspective_matrix, is_bgr);
+      cl_int out_format = ax_utils::get_output_format(out.format);
+      program.set_kernel_args(yuyv_perspective, 0, *inbuf_y, *outbuf, in.width,
+          in.height, out.width, out.height, in.stride, out.stride,
+          *perspective_matrix, out_format);
 
       return run_kernel(yuyv_perspective, out, inbuf_y, outbuf, perspective_matrix);
+    } else if (in.format == AxVideoFormat::GRAY8) {
+      auto inbuf_y = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
+
+      program.set_kernel_args(gray_perspective, 0, *inbuf_y, *outbuf, in.width,
+          in.height, out.width, out.height, in.stride, out.stride, *perspective_matrix);
+
+      return run_kernel(gray_perspective, out, inbuf_y, outbuf, perspective_matrix);
 
     } else {
       throw std::runtime_error("Unsupported format: " + AxVideoFormatToString(in.format));
@@ -259,11 +288,11 @@ class CLPerspective
   private:
   CLProgram program;
   int error{};
-  kernel rgba_perspective;
   kernel rgb_perspective;
   kernel nv12_perspective;
   kernel i420_perspective;
   kernel yuyv_perspective;
+  kernel gray_perspective;
 };
 
 
@@ -272,7 +301,7 @@ allowed_properties()
 {
   static const std::unordered_set<std::string> allowed_properties{
     "matrix",
-    "bgra_out",
+    "out_format",
   };
   return allowed_properties;
 }
@@ -285,8 +314,8 @@ init_and_set_static_properties(
 
   prop->matrix = Ax::get_property(
       input, "matrix", "perspective_static_properties", prop->matrix);
-  prop->bgra_out = Ax::get_property(
-      input, "bgra_out", "barrelcorrect_static_properties", prop->bgra_out);
+  prop->out_format = Ax::get_property(
+      input, "out_format", "barrelcorrect_static_properties", prop->out_format);
 
   constexpr auto matrix_size = 9;
   if (prop->matrix.size() != matrix_size) {
@@ -310,7 +339,19 @@ set_output_interface(const AxDataInterface &interface,
   if (std::holds_alternative<AxVideoInterface>(interface)) {
     auto in_info = std::get<AxVideoInterface>(interface);
     auto out_info = in_info;
-    out_info.info.format = prop->bgra_out ? AxVideoFormat::BGR : AxVideoFormat::RGB;
+    switch (prop->out_format) {
+      case ax_utils::RGB_OUTPUT:
+        out_info.info.format = AxVideoFormat::RGB;
+        break;
+      case ax_utils::BGR_OUTPUT:
+        out_info.info.format = AxVideoFormat::BGR;
+        break;
+      case ax_utils::GRAY_OUTPUT:
+        out_info.info.format = AxVideoFormat::GRAY8;
+        break;
+      default:
+        throw std::runtime_error("Unsupported output format: " + prop->out_format);
+    }
     output = out_info;
   }
   return output;
@@ -344,6 +385,7 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
     AxVideoFormat::NV12,
     AxVideoFormat::I420,
     AxVideoFormat::YUY2,
+    AxVideoFormat::GRAY8,
   };
   if (std::none_of(valid_formats.begin(), valid_formats.end(), [input_details](auto format) {
         return format == input_details[0].format;
@@ -352,7 +394,8 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
                              + AxVideoFormatToString(input_details[0].format));
   }
   if (output_details[0].format != AxVideoFormat::RGB
-      && output_details[0].format != AxVideoFormat::BGR) {
+      && output_details[0].format != AxVideoFormat::BGR
+      && output_details[0].format != AxVideoFormat::GRAY8) {
     throw std::runtime_error("Perspective does not work with the output format: "
                              + AxVideoFormatToString(output_details[0].format));
   }

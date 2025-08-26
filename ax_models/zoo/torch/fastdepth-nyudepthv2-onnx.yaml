@@ -11,13 +11,13 @@ pipeline:
         type: image
       preprocess:
         - resize:
-            width: 224
             height: 224
+            width: 224
         - torch-totensor:
       postprocess:
         - image_decoder:
             output_datatype: float32
-            scale: False
+            scale: false
 
 operators:
   image_decoder:
@@ -44,6 +44,3 @@ datasets:
     data_dir_name: depthestimation
     val_data: val/official
     cal_data: train_subset
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa

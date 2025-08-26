@@ -3,7 +3,6 @@ axelera-model-format: 1.0.0
 name: yolov8n-coco-onnx
 
 description: yolov8n ultralytics v8.1.0, 640x640 (COCO), anchor free model
-# converted from https://github.com/ultralytics/ultralytics
 
 pipeline:
   - detections:
@@ -12,26 +11,28 @@ pipeline:
         type: image
       preprocess:
         - letterbox:
-            width: ${{input_width}}
             height: ${{input_height}}
-            scaleup: True
+            scaleup: true
+            width: ${{input_width}}
         - torch-totensor:
+      inference:
+        handle_all: false
       postprocess:
         - decodeyolo:
-            max_nms_boxes: 30000
+            box_format: xywh
             conf_threshold: 0.25
+            label_filter: ${{label_filter}}
+            max_nms_boxes: 30000
+            nms_class_agnostic: true
             nms_iou_threshold: 0.45
-            nms_class_agnostic: True
             nms_top_k: 300
+            normalized_coord: false
+            use_multi_label: false
             eval:
               conf_threshold: 0.001
+              nms_class_agnostic: false
               nms_iou_threshold: 0.7
-              use_multi_label: True
-              nms_class_agnostic: False
-            box_format: xywh
-            normalized_coord: False
-            label_filter: ${{label_filter}}
-            use_multi_label: False
+              use_multi_label: true
 
 models:
   yolov8n-coco-onnx:
@@ -49,19 +50,16 @@ models:
     extra_kwargs:
       max_compiler_cores: 4
       compilation_config:
-        split_buffer_promotion: True
+        split_buffer_promotion: true
         tiling_depth: 6
 
-datasets: # Python dataloader
+datasets:
   CocoDataset-COCO2017:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
     label_type: COCO2017
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
 
 operators:
   decodeyolo:

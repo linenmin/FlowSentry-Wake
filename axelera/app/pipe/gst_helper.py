@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # helper functions for building gst pipelines
 from __future__ import annotations
 
@@ -7,9 +7,12 @@ from pathlib import Path
 import re
 import subprocess
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from gi.repository import GObject, Gst
+try:
+    from gi.repository import GObject, Gst
+except ModuleNotFoundError as e:
+    pass
 
 from .. import logging_utils
 
@@ -161,7 +164,9 @@ def _connect(key, connectionKey, element, elements, props):
 
 
 _PREVIOUS = "__prev__"
-_PENDING_CONNECTIONS = dict[str, Gst.Element | dict[str, str]]
+
+if TYPE_CHECKING:
+    _PENDING_CONNECTIONS = dict[str, Gst.Element | dict[str, str]]
 
 
 def _update_counters(fullname):
@@ -258,7 +263,9 @@ def _create_element(element: dict[str, Any]) -> Gst.Element:
         raise RuntimeError(f"Failed to create element of type {instance} ({name})")
 
     props = [(k, v) for k, v in element.items() if k not in PSEUDO and "." not in k]
-    sprops = ', '.join(f"{k}={v}" for k, v in props)
+    pwd_keys = ['location', 'user-pw', 'user-id']
+    safe_props = [(k, '***' if k in pwd_keys else v) for k, v in props]
+    sprops = ', '.join(f"{k}={v}" for k, v in safe_props)
     LOG.trace(f"Creating {name} {instance}({sprops})")
     for k, v in props:
         _set_element_or_pad_properties(gst_element, k, v)

@@ -54,9 +54,10 @@ def test_get_tokenizer_from_url(tmp_path, monkeypatch):
 
     monkeypatch.setattr("axelera.app.utils.download_and_extract_asset", fake_download_and_extract)
     tokenizer_url = "http://example.com/tokenizer.zip"
+    tokenizer_md5 = "dummy_md5"
     model_name = "test/model"
     build_root = tmp_path
-    result_dir = get_tokenizer_from_url(tokenizer_url, model_name, build_root)
+    result_dir = get_tokenizer_from_url(tokenizer_url, tokenizer_md5, model_name, build_root)
     from pathlib import Path
 
     assert Path(result_dir).exists()

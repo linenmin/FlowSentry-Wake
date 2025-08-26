@@ -17,7 +17,7 @@ def _gen_gst(op, stream_idx=''):
     # note we use the old builder so we can test the gst output, the new builder
     # consumes the gst output in readiness for an axinferencenet. A forthcoming
     # PR will tidy this up  by having explicit begin/end axinferencenet
-    gst = gst_builder._OldBuilder()
+    gst = gst_builder._OldBuilder(None, None, 16)
     op.build_gst(gst, stream_idx)
     return list(gst)
 
@@ -155,9 +155,12 @@ def test_ax_to_tensor_and_in_place_3_channels_with_pads_and_quant():
     )
     mi.manifest = types.Manifest(
         'modellib',
+        input_shapes=[(1, 3, 224, 224)],
+        input_dtypes=['uint8'],
+        output_shapes=[(1, 1000)],
+        output_dtypes=['float32'],
         quantize_params=[(0.1, 0.2)],
         dequantize_params=[(0.3, 0.4)],
-        input_shapes=[(1, 3, 224, 224)],
         model_lib_file='model.json',
     )
     op = operators.mega.ToTensorAndNormalise(
@@ -187,9 +190,12 @@ def test_ax_opencl_to_tensor_normalize():
     )
     mi.manifest = types.Manifest(
         'modellib',
+        input_shapes=[(1, 3, 224, 224)],
+        input_dtypes=['uint8'],
+        output_shapes=[(1, 1000)],
+        output_dtypes=['float32'],
         quantize_params=[(0.1, -14)],
         dequantize_params=[(0.3, 0.4)],
-        input_shapes=[(1, 3, 224, 224)],
         model_lib_file='model.json',
     )
     op = operators.mega.OpenCLToTensorAndNormalize(

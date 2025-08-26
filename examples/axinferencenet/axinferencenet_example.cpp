@@ -79,7 +79,7 @@ parse_args(int argc, char **argv)
         << "The first step is to compile or download a prebuilt model, here we will show\n"
         << "downloading a prebuilt model:\n"
         << "\n"
-        << "  ./download_prebuilt.py yolov8s-coco-onnx\n"
+        << "  axdownloadmodel yolov8s-coco-onnx\n"
         << "\n"
         << "We then need to run inference.py. This can be done using any media file\n"
         << "for example the fakevideo source, and we need only inference 1 frame:\n"

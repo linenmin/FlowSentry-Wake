@@ -225,7 +225,6 @@ class Resize(PreprocessOperator):
     half_pixel_centers: bool = False
 
     interpolation: InterpolationMode = InterpolationMode.bilinear
-    input_color_format: str = 'rgb'
 
     def _post_init(self):
         for member in ['width', 'height', 'size']:
@@ -235,7 +234,6 @@ class Resize(PreprocessOperator):
                 raise ValueError(f"Invalid unsigned int value for {member}: {value}")
         self._enforce_member_type('half_pixel_centers')
         self._enforce_member_type('interpolation')
-        self._enforce_member_type('input_color_format')
         _sz = bool(self.size)
         _w = bool(self.width)
         _h = bool(self.height)

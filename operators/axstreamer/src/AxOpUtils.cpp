@@ -91,13 +91,11 @@ indices_for_topk(const std::vector<float> &scores, int topk)
   std::vector<int> indices(scores.size());
   std::iota(std::begin(indices), std::end(indices), 0);
   if (topk >= static_cast<int>(indices.size())) {
+    std::sort(std::begin(indices), std::end(indices),
+        [&scores](int i, int j) { return scores[i] > scores[j]; });
     return indices;
   }
-  //  Note: We use nth_element here rather than partial_sort because we do not
-  //  care about order of the elements that are in the topk and K will typically
-  //  be quite large and generally, nth_element is the more efficient in this
-  //  case. When K is small, partial_sort is usually more efficient.
-  std::nth_element(std::begin(indices), std::next(std::begin(indices), topk),
+  std::partial_sort(std::begin(indices), std::next(std::begin(indices), topk),
       std::end(indices),
       [&scores](int i, int j) { return scores[i] > scores[j]; });
   indices.resize(topk);
@@ -109,15 +107,17 @@ indices_for_topk_area(const std::vector<box_xyxy> &boxes, int topk)
 {
   std::vector<int> indices(boxes.size());
   std::iota(std::begin(indices), std::end(indices), 0);
-  if (topk >= static_cast<int>(indices.size())) {
-    return indices;
-  }
-
   std::vector<int> area;
+  area.reserve(boxes.size());
   for (const auto &box : boxes) {
     area.push_back((box.x2 - box.x1) * (box.y2 - box.y1));
   }
-  std::nth_element(std::begin(indices), std::next(std::begin(indices), topk),
+  if (topk >= static_cast<int>(indices.size())) {
+    std::sort(std::begin(indices), std::end(indices),
+        [&area](int i, int j) { return area[i] > area[j]; });
+    return indices;
+  }
+  std::partial_sort(std::begin(indices), std::next(std::begin(indices), topk),
       std::end(indices), [&area](int i, int j) { return area[i] > area[j]; });
   indices.resize(topk);
   return indices;
@@ -128,18 +128,20 @@ indices_for_topk_center(const std::vector<box_xyxy> &boxes, int topk, int width,
 {
   std::vector<int> indices(boxes.size());
   std::iota(std::begin(indices), std::end(indices), 0);
-  if (topk >= static_cast<int>(indices.size())) {
-    return indices;
-  }
-
   std::vector<int> sq_dist_from_center;
   for (const auto &box : boxes) {
     int dist_x = (box.x1 + box.x2 - width) / 2;
     int dist_y = (box.y1 + box.y2 - height) / 2;
     sq_dist_from_center.push_back(dist_x * dist_x + dist_y * dist_y);
   }
+  if (topk >= static_cast<int>(indices.size())) {
+    std::sort(std::begin(indices), std::end(indices), [&sq_dist_from_center](int i, int j) {
+      return sq_dist_from_center[i] < sq_dist_from_center[j];
+    });
+    return indices;
+  }
 
-  std::nth_element(std::begin(indices), std::next(std::begin(indices), topk),
+  std::partial_sort(std::begin(indices), std::next(std::begin(indices), topk),
       std::end(indices), [&sq_dist_from_center](int i, int j) {
         return sq_dist_from_center[i] < sq_dist_from_center[j];
       });
@@ -566,6 +568,7 @@ determine_height(const buffer_details &info, int which_channel)
     case AxVideoFormat::RGBA:
     case AxVideoFormat::RGB:
     case AxVideoFormat::BGR:
+    case AxVideoFormat::GRAY8:
       return info.actual_height;
     case AxVideoFormat::YUY2:
       return info.actual_height;
@@ -600,5 +603,158 @@ determine_buffer_size(const buffer_details &info)
   return info.offsets[last_channel] + determine_size(info, last_channel);
 }
 
+std::vector<float>
+embeddings_cosine_similarity(const std::vector<float> &desc, const Eigen::MatrixXf &embeddings)
+{
+  Eigen::VectorXf desc_vec = Eigen::Map<const Eigen::VectorXf>(desc.data(), desc.size());
+  Eigen::VectorXf similarity_vec = embeddings * desc_vec;
 
+  return std::vector<float>(
+      similarity_vec.data(), similarity_vec.data() + similarity_vec.size());
+}
+
+std::vector<float>
+embeddings_euclidean_distance(const std::vector<float> &desc, const Eigen::MatrixXf &embeddings)
+{
+  Eigen::VectorXf desc_vec = Eigen::Map<const Eigen::VectorXf>(desc.data(), desc.size());
+  Eigen::VectorXf distances
+      = (embeddings.rowwise() - desc_vec.transpose()).rowwise().norm();
+
+  return std::vector<float>(distances.data(), distances.data() + distances.size());
+}
+
+std::vector<float>
+embeddings_squared_euclidean_distance(
+    const std::vector<float> &desc, const Eigen::MatrixXf &embeddings)
+{
+  std::vector<float> distances = embeddings_euclidean_distance(desc, embeddings);
+  std::transform(distances.begin(), distances.end(), distances.begin(),
+      [](float val) { return std::pow(val, 2); });
+
+  return distances;
+}
+
+std::vector<float>
+embeddings_cosine_distance(const std::vector<float> &desc, const Eigen::MatrixXf &embeddings)
+{
+  std::vector<float> distances;
+  auto similarities = embeddings_cosine_similarity(desc, embeddings);
+  for (const auto &sim : similarities) {
+    distances.push_back(std::acos(sim) / M_PI);
+  }
+  return distances;
+}
+
+void
+add_vec_to_matrix(const std::vector<float> &vec, Eigen::MatrixXf &matrix)
+{
+  // Check if this is the first row and set the matrix columns accordingly
+  if (matrix.rows() == 0) {
+    matrix.resize(0, vec.size());
+  }
+
+  // Check if the vector size matches the matrix column size
+  if (vec.size() != matrix.cols()) {
+    throw std::runtime_error("Invalid format of embeddings file");
+  }
+
+  // Add a new row
+  int new_rows = matrix.rows() + 1;
+  matrix.conservativeResize(new_rows, Eigen::NoChange);
+
+  // Copy the vector data to the new row
+  for (int i = 0; i < vec.size(); ++i) {
+    matrix(new_rows - 1, i) = vec[i];
+  }
+}
+
+std::pair<Eigen::MatrixXf, std::vector<std::string>>
+read_embedding_json(const std::string &filename, bool normalise, Ax::Logger &logger)
+{
+  std::ifstream file(filename);
+
+  if (!file.is_open()) {
+    logger(AX_ERROR) << "Failed to open '" << filename << "'";
+    return {};
+  }
+  nlohmann::ordered_json json_data;
+  file >> json_data;
+
+  std::vector<std::vector<float>> embeddings;
+  Eigen::MatrixXf matrix;
+
+  std::vector<std::string> labels;
+  for (auto &[key, value] : json_data.items()) {
+    labels.push_back(key); // The key itself is the label
+
+    if (false == normalise) {
+      embeddings.push_back(value.get<std::vector<float>>());
+    } else {
+      std::vector<float> desc = value.get<std::vector<float>>();
+      auto len2 = std::accumulate(desc.begin(), desc.end(), 0.0,
+          [](float sum, float val) { return sum + std::pow(val, 2); });
+      std::transform(desc.begin(), desc.end(), desc.begin(),
+          [length = std::sqrt(len2)](float val) { return val / length; });
+      embeddings.push_back(std::move(desc));
+    }
+  }
+
+  for (const auto &vec : embeddings) {
+    add_vec_to_matrix(vec, matrix);
+  }
+
+  // TODO: Sanity check of vector sizes eg invalid file
+  return { matrix, labels };
+}
+
+void
+write_embedding_json(const Eigen::MatrixXf &embeddings,
+    const std::vector<std::string> &labels, const std::string &filename, Ax::Logger &logger)
+{
+  if (embeddings.rows() != labels.size()) {
+    logger(AX_ERROR) << "Number of embeddings (" << embeddings.rows()
+                     << ") does not match number of labels (" << labels.size() << ")";
+    return;
+  }
+
+  nlohmann::ordered_json json_data;
+  for (int i = 0; i < embeddings.rows(); ++i) {
+    std::vector<float> vec(embeddings.cols());
+    for (int j = 0; j < vec.size(); ++j) {
+      vec[j] = embeddings(i, j);
+    }
+    json_data[labels[i]] = vec;
+  }
+
+  std::ofstream file(filename);
+  if (!file.is_open()) {
+    logger(AX_ERROR) << "Failed to open '" << filename << "'";
+    return;
+  }
+  file << json_data.dump(2); // Pretty print with indentation of 2 spaces
+}
+
+
+size_t
+get_bytes_per_pixel(AxVideoFormat format)
+{
+  switch (format) {
+    case AxVideoFormat::BGRA:
+    case AxVideoFormat::RGBA:
+      return 4;
+    case AxVideoFormat::RGB:
+    case AxVideoFormat::BGR:
+      return 3;
+    case AxVideoFormat::YUY2:
+      return 2;
+    case AxVideoFormat::I420:
+    case AxVideoFormat::NV12:
+    case AxVideoFormat::GRAY8:
+      return 1; // Y channel
+    case AxVideoFormat::UNDEFINED:
+      return 0; // Undefined format
+    default:
+      throw std::runtime_error("Unsupported video format: " + AxVideoFormatToString(format));
+  }
+}
 } // namespace ax_utils

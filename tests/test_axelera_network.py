@@ -4,6 +4,7 @@ import logging
 import os
 import pathlib
 import sys
+import tempfile
 from unittest.mock import ANY, Mock, call, patch
 
 import PIL
@@ -17,13 +18,12 @@ from axelera.app import (
     logging_utils,
     network,
     operators,
-    pipeline,
+    pipe,
     utils,
     yaml_parser,
 )
-from axelera.app.network import AxNetwork, initialize_model
-from axelera.app.operators import InferenceConfig, Input, PipelineContext, Resize
-from axelera.app.operators.custom_preprocessing import ConvertColorInput
+from axelera.app.network import AxNetwork
+from axelera.app.operators import InferenceOpConfig, Input, PipelineContext, Resize
 from axelera.app.pipeline import AxTask
 
 IMAGENET_TEMPLATE = '''
@@ -153,7 +153,7 @@ models:
                 SQUEEZENET_NAME,
                 input=Input(),
                 preprocess=[Resize(width=1024, height=768)],
-                inference_config=InferenceConfig.from_model_info(MODEL_INFO.extra_kwargs),
+                inference_op_config=InferenceOpConfig(),
                 model_info=MODEL_INFO,
                 context=PipelineContext(),
             )
@@ -163,7 +163,7 @@ models:
     )
     net.tasks[0].model_info.labels = []
     net.tasks[0].model_info.label_filter = []
-    pipeline.update_pending_expansions(net.tasks[0])
+    pipe.manager._update_pending_expansions(net.tasks[0])
     assert exp == net
 
 
@@ -176,6 +176,7 @@ from axelera.app import operators
 
 class Op(operators.AxOperator):
     def _post_init(self):
+        # This property is deprecated, but we keep it for backward compatibility testing
         self.cpp_decoder_does_all = True
     def exec_torch(self, img, result, meta):
         return img, result, meta
@@ -214,12 +215,18 @@ operators:
 '''
 
     net = parse_net(input, {})
-    net.tasks[0].inference_config.update_from_decoder_op(net.tasks[0].postprocess[0])
-    inf_config = net.tasks[0].inference_config
-    assert inf_config.cpp_focus_layer_on_host is True
-    assert inf_config.cpp_decoder_does_dequantization_and_depadding is True
-    assert inf_config.cpp_decoder_does_transpose is True
-    assert inf_config.cpp_decoder_does_postamble is True
+    # Test that the network was parsed successfully
+    assert net.path == 'test.yaml'
+    assert net.name == 'yolov5s-v5'
+    assert len(net.tasks) == 1
+    assert len(net.tasks[0].postprocess) == 1
+
+    # Test that the inference op config has default values
+    inf_config = net.tasks[0].inference_op_config
+    assert inf_config.handle_dequantization_and_depadding is True
+    assert inf_config.handle_transpose is True
+    assert inf_config.handle_postamble is True
+    assert inf_config.handle_preamble is True
 
 
 def test_parse_network_with_extra_kwargs_in_inference_config():
@@ -276,7 +283,7 @@ models:
                 'detections',
                 input=Input(),
                 preprocess=[],
-                inference_config=InferenceConfig.from_model_info(MODEL_INFO.extra_kwargs),
+                inference_op_config=InferenceOpConfig(),
                 model_info=MODEL_INFO,
                 context=PipelineContext(),
             )
@@ -287,13 +294,14 @@ models:
 
     net.tasks[0].model_info.labels = []
     net.tasks[0].model_info.label_filter = []
-    pipeline.update_pending_expansions(net.tasks[0])
+    pipe.manager._update_pending_expansions(net.tasks[0])
     assert exp == net
-    assert exp.tasks[0].inference_config.cpp_focus_layer_on_host == False
-    # becasue no decoder setting, it goes to default value
-    assert exp.tasks[0].inference_config.cpp_decoder_does_dequantization_and_depadding == False
-    assert exp.tasks[0].inference_config.cpp_decoder_does_transpose == True
-    assert exp.tasks[0].inference_config.cpp_decoder_does_postamble == False
+
+    # Test that the inference op config has default values
+    assert exp.tasks[0].inference_op_config.handle_dequantization_and_depadding is True
+    assert exp.tasks[0].inference_op_config.handle_transpose is True
+    assert exp.tasks[0].inference_op_config.handle_postamble is True
+    assert exp.tasks[0].inference_op_config.handle_preamble is True
 
 
 def test_parse_network_pipeline_assets():
@@ -706,28 +714,46 @@ def test_network_model_dataset_with_target_split_given():
         ValueError,
         match=r"squeezenet1.0-imagenet-onnx: target_split is a reserved keyword for dataset ImageNet-1K, please use a different name for this attribute",
     ):
-        net = parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
+        parse_net(input, {'imagenet.yaml': IMAGENET_TEMPLATE})
 
 
-def test_parse_all_vision_builtin_networks():
+def vision_builtin_networks():
+    info = yaml_parser.get_network_yaml_info(llm_in_model_cards=False)
+
+    def tutorial(nn):
+        return 'ax_models/tutorials/' in nn.yaml_path
+
+    def llm(nn):
+        return info.has_llm(nn.yaml_path)
+
+    return [n.yaml_path for n in info.get_all_info() if not tutorial(n) and not llm(n)]
+
+
+@pytest.fixture
+def af_dir_setter():
     old = os.getcwd()
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    try:
-        network_yaml_info = yaml_parser.get_network_yaml_info()
-        for nn in network_yaml_info.get_all_info():
-            if 'ax_models/tutorials/' in nn.yaml_path:
-                continue
-            # Skip LLM YAMLs
-            if network_yaml_info.has_llm(nn.yaml_path):
-                continue
-            try:
-                network.parse_network_from_path(nn.yaml_path)
-            except Exception as e:
-                raise ValueError(
-                    f"Error parsing network '{nn.name}' from {nn.yaml_path}: {str(e)}"
-                ) from e
-    finally:
-        os.chdir(old)
+    yield
+    os.chdir(old)
+
+
+@pytest.mark.parametrize('path', vision_builtin_networks())
+def test_parse_all_vision_builtin_networks(path, af_dir_setter):
+    """Test parsing all vision builtin networks.
+
+    Gracefully skips networks that have postamble as there is no postamble ONNX file in CI environments.
+    """
+    from axelera.app import data_utils
+
+    # Mock dataset downloading to avoid S3 access issues in CI
+    with patch.object(data_utils, 'download_custom_dataset', return_value=None) as mock_download:
+        try:
+            network.parse_network_from_path(path)
+        except (ValueError, Exception) as e:
+            if "Postamble ONNX model file" in str(e) and "does not exist" in str(e):
+                pytest.skip(f"Skipping {path} due to missing postamble ONNX file: {e}")
+            else:
+                raise  # Re-raise other exceptions
 
 
 class ClassWithInit(types.Model):
@@ -929,6 +955,10 @@ def _mini_network(dataset=None, custom_postprocess=None):
     )
     mi.manifest = types.Manifest(
         quantized_model_file=constants.K_MODEL_QUANTIZED_FILE_NAME,
+        input_shapes=[(3, 20, 10)],
+        input_dtypes=['int8'],
+        output_shapes=[(1, 5)],
+        output_dtypes=['float32'],
         quantize_params=[(0.1, 0.2)],
         dequantize_params=[(0.3, 0.4)],
         model_lib_file=constants.K_MODEL_FILE_NAME,
@@ -1501,3 +1531,164 @@ def test_model_dependencies_dry_run(mock_pip):
         check=ANY,
         capture_output=ANY,
     )
+
+
+@pytest.mark.parametrize(
+    "input, expected, user, expect_debug",
+    [
+        ("/path/to/file.txt", "/path/to/file.txt", "whoever", True),
+        ("/home/ubuntu/file.txt", "/home/ubuntu/file.txt", "ubuntu", True),
+        ("/home/ubuntu/file.txt", "/home/ubuntu/file.txt", "fluffy", True),
+        (
+            "/home/ubuntu/.cache/axelera/file.txt",
+            "/home/ubuntu/.cache/axelera/file.txt",
+            "ubuntu",
+            False,
+        ),
+        (
+            "/home/ubuntu/.cache/axelera/file.txt",
+            "/home/fluffy/.cache/axelera/file.txt",
+            "fluffy",
+            False,
+        ),
+        (
+            "/home/parp/.cache/axelera/file.txt",
+            "/home/toot/.cache/axelera/file.txt",
+            "toot",
+            False,
+        ),
+        (
+            "/home/parp/.cache/axelerant/file.txt",
+            "/home/parp/.cache/axelerant/file.txt",
+            "toot",
+            True,
+        ),
+        (
+            "/nested/home/ubuntu/.cache/axelera/file.txt",
+            "/nested/home/ubuntu/.cache/axelera/file.txt",
+            "fluffy",
+            True,
+        ),
+    ],
+)
+def test_localise_path(input, expected, user, expect_debug):
+    with patch('os.path.expanduser', return_value=f'/home/{user}'):
+        with patch('axelera.app.network.LOG') as mock_log:
+            assert network.localise_path(input) == expected
+            if expect_debug:
+                mock_log.debug.assert_called_once()
+                debug_call = mock_log.debug.call_args[0][0]
+                assert ".cache/axelera/ not found" in debug_call
+            else:
+                mock_log.debug.assert_not_called()
+
+
+# Tests for postamble ONNX validation feature
+def test_postamble_onnx_validation_success(tmpdir):
+    """Test that postamble ONNX validation passes when file exists."""
+    with tempfile.NamedTemporaryFile(suffix=".onnx", delete=True) as temp_file:
+        temp_file.write(b"dummy onnx content")
+        temp_file.flush()
+
+        config = InferenceOpConfig(postamble_onnx=temp_file.name)
+        assert config.postamble_onnx == temp_file.name
+
+
+def test_postamble_onnx_validation_failure():
+    """Test that postamble ONNX validation fails when file doesn't exist."""
+    nonexistent_file = "/path/to/nonexistent/postamble.onnx"
+
+    with pytest.raises(ValueError, match=r"Postamble ONNX model file .* does not exist"):
+        InferenceOpConfig(postamble_onnx=nonexistent_file)
+
+
+def test_postamble_onnx_validation_with_existing_file(tmpdir):
+    """Test that postamble ONNX validation works when file exists."""
+    with tempfile.NamedTemporaryFile(suffix=".onnx", delete=True) as temp_file:
+        temp_file.write(b"dummy onnx content")
+        temp_file.flush()
+
+        config = InferenceOpConfig(postamble_onnx=temp_file.name)
+        assert temp_file.name in config.postamble_onnx  # Path gets resolved
+
+
+def test_postamble_onnx_validation_empty_path():
+    """Test that postamble ONNX validation is skipped for empty path."""
+    config = InferenceOpConfig(postamble_onnx="")
+    assert config.postamble_onnx == ""
+
+    config = InferenceOpConfig(postamble_onnx=None)
+    assert config.postamble_onnx is None
+
+
+def test_postamble_onnx_validation_relative_path(tmpdir):
+    """Test that postamble ONNX validation works with relative paths."""
+    onnx_file_path = tmpdir.join("postamble.onnx")
+    onnx_file_path.write_binary(b"dummy onnx content")
+
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(str(tmpdir))
+        config = InferenceOpConfig(postamble_onnx="postamble.onnx")
+        assert "postamble.onnx" in config.postamble_onnx
+    finally:
+        os.chdir(old_cwd)
+        os.remove(onnx_file_path)
+
+
+def test_postamble_onnx_in_network_parsing():
+    """Test that network parsing properly validates postamble ONNX files."""
+    # We don't need to test the full parsing with real files here
+    # The key test is that validation works correctly
+
+    input_yaml = f'''
+name: test-network
+pipeline:
+  - test-model:
+      input:
+        type: image
+      preprocess:
+      postprocess:
+      inference:
+        postamble_onnx: /nonexistent/postamble.onnx
+
+models:
+  test-model:
+    class: AxTorchvisionSqueezeNet
+    class_path: doesnotexist/squeezenet.py
+    task_category: Classification
+    input_tensor_layout: NCHW
+    input_tensor_shape: [1, 3, 224, 224]
+    input_color_format: RGB
+'''
+
+    # Should fail with postamble ONNX validation error
+    with pytest.raises(ValueError, match=r"Postamble ONNX model file .* does not exist"):
+        parse_net(input_yaml, {})
+
+
+def test_postamble_onnx_in_network_parsing_missing_file():
+    """Test that network parsing fails when postamble ONNX file is missing."""
+    input_yaml = f'''
+name: test-network
+pipeline:
+  - test-model:
+      input:
+        type: image
+      preprocess:
+      postprocess:
+      inference:
+        postamble_onnx: /nonexistent/postamble.onnx
+
+models:
+  test-model:
+    class: AxTorchvisionSqueezeNet
+    class_path: doesnotexist/squeezenet.py
+    task_category: Classification
+    input_tensor_layout: NCHW
+    input_tensor_shape: [1, 3, 224, 224]
+    input_color_format: RGB
+'''
+
+    with pytest.raises(ValueError, match=r"Postamble ONNX model file .* does not exist"):
+        parse_net(input_yaml, {})

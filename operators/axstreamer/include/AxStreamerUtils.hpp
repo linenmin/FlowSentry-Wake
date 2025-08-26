@@ -31,6 +31,8 @@
 
 namespace Ax
 {
+bool enable_opencl_double_buffering();
+
 template <typename T>
 T
 pop_queue(std::queue<T> &q)
@@ -448,6 +450,58 @@ class BatchedBuffer
     update_views();
   }
 
+  AxDataInterface update_iface(
+      const AxDataInterface &data, const AxDataInterface &iface, int batch_size)
+  {
+    // Update iface data from current
+    AxDataInterface output = iface;
+    struct map_data {
+      void *data;
+      int fd;
+    };
+    std::vector<map_data> ptrs;
+    if (std::holds_alternative<AxTensorsInterface>(data)) {
+      auto &tensors = std::get<AxTensorsInterface>(data);
+      for (auto &tensor : tensors) {
+        ptrs.emplace_back(tensor.data, tensor.fd);
+      }
+    } else if (std::holds_alternative<AxVideoInterface>(data)) {
+      auto &video = std::get<AxVideoInterface>(data);
+      ptrs.emplace_back(video.data, video.fd);
+    } else {
+      return output; // nothing to update
+    }
+
+    if (std::holds_alternative<AxTensorsInterface>(output)) {
+      auto &tensors = std::get<AxTensorsInterface>(output);
+      if (tensors.size() != ptrs.size()) {
+        throw std::runtime_error("BatchedBuffer: output tensors size mismatch");
+      }
+      for (int i = 0; i < tensors.size(); ++i) {
+        tensors[i].data = ptrs[i].data;
+        tensors[i].fd = ptrs[i].fd;
+        tensors[i].sizes[0] = batch_size;
+      }
+
+    } else if (std::holds_alternative<AxVideoInterface>(output)) {
+      if (ptrs.size() != 1) {
+        throw std::runtime_error("BatchedBuffer: output tensors size mismatch");
+      }
+      auto &video = std::get<AxVideoInterface>(output);
+      video.data = ptrs[0].data;
+      video.fd = ptrs[0].fd;
+    }
+    return output;
+  }
+
+  //  This updates the buffer description but does not change the data
+  void update_iface(const AxDataInterface &iface, int batch_size)
+  {
+    auto new_iface = update_iface(batched.data(), iface, batch_size);
+    batched.set_data(new_iface);
+    update_views();
+  }
+
   int batch_size() const
   {
     return views.size();
@@ -535,6 +589,8 @@ class BatchedBufferPool
     } else {
       buffer = std::move(free.back());
       free.pop_back();
+      //  Ensure we have the correct caps
+      buffer->update_iface(new_iface, batch_size_);
     }
     if (map) {
       buffer->map();

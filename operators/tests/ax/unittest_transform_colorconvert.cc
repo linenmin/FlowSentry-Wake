@@ -1,156 +1,9 @@
 #include "unittest_transform_common.h"
 
-#define CL_TARGET_OPENCL_VERSION 210
-#define CL_USE_DEPRECATED_OPENCL_1_2_APIS
-#ifdef __APPLE__
-#include <OpenCL/opencl.h>
-#else
-#include <CL/cl.h>
-#endif
-
 namespace
 {
-bool has_opencl_platform = [] {
-  cl_platform_id platformId;
-  cl_uint numPlatforms;
-
-  auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
-  if (error == CL_SUCCESS) {
-    cl_uint num_devices = 0;
-    cl_device_id device_id;
-    error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
-  }
-  return error == CL_SUCCESS;
-}();
-
-struct format_params {
-  AxVideoFormat in;
-  std::string out;
-};
-
-class ColorConvertFixture : public ::testing::TestWithParam<format_params>
-{
-};
-
-INSTANTIATE_TEST_SUITE_P(ColorConvertTestSuite, ColorConvertFixture,
-    ::testing::Values(format_params{ AxVideoFormat::RGBA, "bgra" },
-        format_params{ AxVideoFormat::BGRA, "rgba" },
-        format_params{ AxVideoFormat::NV12, "rgba" },
-        format_params{ AxVideoFormat::NV12, "bgra" },
-        format_params{ AxVideoFormat::I420, "rgba" },
-        format_params{ AxVideoFormat::I420, "bgra" },
-        format_params{ AxVideoFormat::YUY2, "rgba" },
-        format_params{ AxVideoFormat::YUY2, "bgra" }));
-
-
-TEST_P(ColorConvertFixture, happy_path)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  auto format = GetParam();
-  std::unordered_map<std::string, std::string> input = {
-    { "format", format.out },
-  };
-
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  std::vector<int8_t> in_buf(640 * 480 * 4);
-  std::vector<int8_t> out_buf(640 * 480 * 4);
-
-  std::vector<size_t> strides;
-  std::vector<size_t> offsets;
-  if (format.in == AxVideoFormat::NV12) {
-    strides = { 640, 640 };
-    offsets = { 0, 640 * 480 };
-  } else if (format.in == AxVideoFormat::I420) {
-    strides = { 640, 640 / 2, 640 / 2 };
-    offsets = { 0, 640 * 480, 640 * 480 * 5 / 4 };
-  } else if (format.in == AxVideoFormat::YUY2) {
-    strides = { 640 * 2 };
-    offsets = { 0 };
-  } else {
-    strides = { 640 * 4 };
-    offsets = { 0 };
-  }
-  auto in = AxVideoInterface{ { 640, 480, int(strides[0]), 0, format.in },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{
-    { 640, 480, 640 * 4, 0, format.out == "rgba" ? AxVideoFormat::RGBA : AxVideoFormat::BGRA },
-    out_buf.data(), { 640 * 4 }, { 0 }, -1
-  };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  EXPECT_NO_THROW({ color_convert.transform(in, out, metadata, 0, 1); });
-}
-
-struct passthrough_params {
-  AxVideoFormat in;
-  std::string out;
-  bool passthrough;
-};
-
-class PassthroughFixture : public ::testing::TestWithParam<passthrough_params>
-{
-};
-
-INSTANTIATE_TEST_SUITE_P(ColorConvertTestSuite, PassthroughFixture,
-    ::testing::Values(passthrough_params{ AxVideoFormat::RGBA, "bgra", false },
-        passthrough_params{ AxVideoFormat::BGRA, "rgba", false },
-        passthrough_params{ AxVideoFormat::NV12, "rgba", false },
-        passthrough_params{ AxVideoFormat::NV12, "bgra", false },
-        passthrough_params{ AxVideoFormat::I420, "rgba", false },
-        passthrough_params{ AxVideoFormat::I420, "bgra", false },
-        passthrough_params{ AxVideoFormat::YUY2, "rgba", false },
-        passthrough_params{ AxVideoFormat::YUY2, "bgra", false },
-        passthrough_params{ AxVideoFormat::BGRA, "bgra", true },
-        passthrough_params{ AxVideoFormat::RGBA, "rgba", true }));
-
-
-TEST_P(PassthroughFixture, can_passthrough)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  auto format = GetParam();
-  std::unordered_map<std::string, std::string> input = {
-    { "format", format.out },
-  };
-
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  std::vector<int8_t> in_buf(640 * 480 * 4);
-  std::vector<int8_t> out_buf(640 * 480 * 4);
-
-  std::vector<size_t> strides;
-  std::vector<size_t> offsets;
-  if (format.in == AxVideoFormat::NV12) {
-    strides = { 640, 640 };
-    offsets = { 0, 640 * 480 };
-  } else if (format.in == AxVideoFormat::I420) {
-    strides = { 640, 640 / 2, 640 / 2 };
-    offsets = { 0, 640 * 480, 640 * 480 * 5 / 4 };
-  } else if (format.in == AxVideoFormat::YUY2) {
-    strides = { 640 * 2 };
-    offsets = { 0 };
-  } else {
-    strides = { 640 * 4 };
-    offsets = { 0 };
-  }
-  auto in = AxVideoInterface{ { 640, 480, int(strides[0]), 0, format.in },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{
-    { 640, 480, 640 * 4, 0, format.out == "rgba" ? AxVideoFormat::RGBA : AxVideoFormat::BGRA },
-    out_buf.data(), { 640 * 4 }, { 0 }, -1
-  };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  ASSERT_EQ(color_convert.can_passthrough(in, out), format.passthrough);
-}
-
 TEST(Conversions, rgb2bgr)
 {
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
   std::unordered_map<std::string, std::string> input = {
     { "format", "bgra" },
   };
@@ -181,9 +34,6 @@ TEST(Conversions, rgb2bgr)
 
 TEST(Conversions, bgr2rgb)
 {
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
   std::unordered_map<std::string, std::string> input = {
     { "format", "rgba" },
   };
@@ -214,9 +64,6 @@ TEST(Conversions, bgr2rgb)
 
 TEST(Conversion, yuyv2rgb)
 {
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
   std::unordered_map<std::string, std::string> input = {
     { "format", "rgba" },
   };
@@ -253,9 +100,6 @@ TEST(Conversion, yuyv2rgb)
 
 TEST(Conversion, i4202rgb)
 {
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
   std::unordered_map<std::string, std::string> input = {
     { "format", "rgba" },
   };
@@ -264,14 +108,11 @@ TEST(Conversion, i4202rgb)
     // clang-format off
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
-    0x3A, 0x3A, 0x3A,
-    0x3A, 0x3A, 0x3A,
-    0xC9, 0xC9, 0xC9,
-    0xC9, 0xC9, 0xC9,
+    0x3A, 0x3A, 0x3A, 0xC9, 0xC9, 0xC9,
     // clang-format on
   };
 
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto out_buf = std::vector<uint8_t>(in_buf.size() / 3 * 2 * 4, 0x99);
   auto expected = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF,
@@ -281,8 +122,8 @@ TEST(Conversion, i4202rgb)
     // clang-format on
   };
 
-  std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
+  std::vector<size_t> strides{ 0 };
+  std::vector<size_t> offsets{ 0 };
 
   auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
     in_buf.data(), strides, offsets, -1 };
@@ -296,9 +137,6 @@ TEST(Conversion, i4202rgb)
 
 TEST(Conversion, nv12torgb)
 {
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
   std::unordered_map<std::string, std::string> input = {
     { "format", "rgba" },
   };
@@ -308,11 +146,10 @@ TEST(Conversion, nv12torgb)
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
     0x3A, 0xc9, 0x3A, 0xc9, 0x3A, 0xc9,
-    0x3A, 0xc9, 0x3A, 0xc9, 0x3A, 0xc9,
     // clang-format on
   };
 
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
+  auto out_buf = std::vector<uint8_t>(in_buf.size() / 3 * 2 * 4, 0x99);
   auto expected = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF, 0xFF, 0x7E, 0x11, 0xFF,
@@ -322,398 +159,9 @@ TEST(Conversion, nv12torgb)
     // clang-format on
   };
 
-  std::vector<size_t> strides{ 6, 6 };
-  std::vector<size_t> offsets{ 0, 12 };
-
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::NV12 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-
-TEST(Conversion, i4202rgb_clockwise)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "clockwise" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    // clang-format on
-  };
-
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
-
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 2 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-TEST(Conversion, i4202rgb_counterclockwise)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "counterclockwise" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    // clang-format on
-  };
-
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
-
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 2 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-TEST(Conversion, i4202rgb_upper_left_diagonal)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "upper-left-diagonal" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    // clang-format on
-  };
-
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
-
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 2 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-TEST(Conversion, i4202rgb_upper_right_diagonal)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "upper-right-diagonal" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    // clang-format on
-  };
-
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
-
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 2 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-
-TEST(Conversion, i4202rgb_horizontal_flip)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "horizontal-flip" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    // clang-format on
-  };
-
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
-
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-TEST(Conversion, i4202rgb_vertical_flip)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "vertical-flip" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    // clang-format on
-  };
-
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
-
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-TEST(Conversion, i4202rgb_rotate180)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "rotate-180" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    // clang-format on
-  };
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
-
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-
-TEST(Conversion, yuyv_rotate180)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "rotate-180" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // clang-format on
-  };
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 12 };
+  std::vector<size_t> strides{ 0 };
   std::vector<size_t> offsets{ 0 };
 
-  auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::YUY2 },
-    in_buf.data(), strides, offsets, -1 };
-
-  auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
-    out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
-  ASSERT_EQ(out_buf, expected);
-}
-
-TEST(Conversion, nv122rgb_rotate180)
-{
-  if (!has_opencl_platform) {
-    GTEST_SKIP();
-  }
-  std::unordered_map<std::string, std::string> input = {
-    { "format", "rgba" },
-    { "flip_method", "rotate-180" },
-  };
-  Transformer color_convert("libtransform_colorconvert.so", input);
-  auto in_buf = std::vector<uint8_t>{
-    // clang-format off
-    0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00,
-    // clang-format on
-  };
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 8 / 3, 0x99);
-  auto expected = std::vector<uint8_t>{
-    // clang-format off
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF, 0x00, 0x87, 0x00, 0xFF,
-    0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF, 0x49, 0xFF, 0x13, 0xFF,
-    // clang-format on
-  };
-  std::vector<size_t> strides{ 6, 6 };
-  std::vector<size_t> offsets{ 0, 12 };
-
   auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::NV12 },
     in_buf.data(), strides, offsets, -1 };
 
@@ -724,5 +172,108 @@ TEST(Conversion, nv122rgb_rotate180)
   ASSERT_EQ(out_buf, expected);
 }
 
+// Test for RGB to GRAY conversion
+TEST(Conversion, rgb2gray)
+{
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "gray" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{
+    255, 0, 0, // Red
+    0, 255, 0, // Green
+    0, 0, 255, // Blue
+    255, 255, 255 // White
+  };
 
+  // Gray output should be 1 byte per pixel
+  auto out_buf = std::vector<uint8_t>(4, 0);
+  auto expected = std::vector<uint8_t>{
+    76, // Red (0.299*255 = 76)
+    150, // Green (0.587*255 = 149.7 -> 150, different to OpenCL)
+    29, // Blue (0.114*255 = 29)
+    255 // White (0.299*255 + 0.587*255 + 0.114*255 = 255)
+  };
+
+  auto in = AxVideoInterface{ { 1, 4, 3, 0, AxVideoFormat::RGB }, in_buf.data(),
+    { 3 }, { 0 }, -1 };
+
+  auto out = AxVideoInterface{ { 1, 4, 1, 0, AxVideoFormat::GRAY8 },
+    out_buf.data(), { 1 }, { 0 }, -1 };
+
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+// Test for BGRA to GRAY conversion
+TEST(Conversion, bgra2gray)
+{
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "gray" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+  auto in_buf = std::vector<uint8_t>{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255,
+    255, 255, 255, 255, 255 };
+
+  // Gray output should be 1 byte per pixel
+  auto out_buf = std::vector<uint8_t>(4, 0);
+  auto expected = std::vector<uint8_t>{
+    29, // Blue (0.114*255 = 29)
+    150, // Green (0.587*255 = 149.7 -> 150, different to OpenCL)
+    76, // Red (0.299*255 = 76)
+    255 // White (0.114*255 + 0.587*255 + 0.299*255 = 255)
+  };
+
+  std::vector<size_t> strides{ 16 }; // 4 pixels * 4 bytes
+  std::vector<size_t> offsets{ 0 };
+
+  auto in = AxVideoInterface{ { 4, 1, int(strides[0]), 0, AxVideoFormat::BGRA },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 4, 1, 4, 0, AxVideoFormat::GRAY8 },
+    out_buf.data(), { 4 }, { 0 }, -1 };
+
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
+
+// Test for YUY2 to GRAY conversion
+TEST(Conversion, yuyv2gray)
+{
+  std::unordered_map<std::string, std::string> input = {
+    { "format", "gray" },
+  };
+  Transformer color_convert("libtransform_colorconvert.so", input);
+
+  // YUYV format: Y0 U0 Y1 V0
+  auto in_buf = std::vector<uint8_t>{
+    // Y0  U0  Y1  V0
+    100, 128, 150, 128, // First macropixel
+    200, 128, 250, 128 // Second macropixel
+  };
+
+  // Gray output should extract just the Y values
+  auto out_buf = std::vector<uint8_t>(4, 0);
+  auto expected = std::vector<uint8_t>{
+    100, 150, 200, 250 // The 4 Y values from the YUYV input
+  };
+
+  std::vector<size_t> strides{ 8 }; // 2 macropixels * 4 bytes
+  std::vector<size_t> offsets{ 0 };
+
+  auto in = AxVideoInterface{ { 4, 1, int(strides[0]), 0, AxVideoFormat::YUY2 },
+    in_buf.data(), strides, offsets, -1 };
+
+  auto out = AxVideoInterface{ { 4, 1, 4, 0, AxVideoFormat::GRAY8 },
+    out_buf.data(), { 4 }, { 0 }, -1 };
+
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+
+  color_convert.transform(in, out);
+  ASSERT_EQ(out_buf, expected);
+}
 } // namespace

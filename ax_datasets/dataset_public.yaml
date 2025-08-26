@@ -19,7 +19,7 @@
 # - All datasets must have 'description', 'download_hint', and 'splits' keys.
 # - 'splits' must contain one or more of: 'val' or 'train'. Typically, 'val' is used for validation and 'train' for calibration.
 # - Each split must have a 'files' key with a list of file objects.
-# - All URLs should start with 's3://'
+# - All URLs should start with 'http[s]://'
 
 
 SuperResolutionCustomSet128x128:
@@ -194,3 +194,46 @@ VOC2007:
         drop_dirs: 0
         check_files:
           - VOCdevkit/VOC2007/ImageSets/Main/test.txt
+
+
+Market1501ReIdDataset:
+  description: Market1501 for person re-identification
+  download_hint: Dataset is downloaded automatically into the ./data/reid folder.
+  splits:
+    val:
+      - name: val
+        url: https://media.axelera.ai/artifacts/model_cards/datasets/reid/market1501.zip
+        md5: 1093fbe5439e0c9542d1a58b5cc68203
+        drop_dirs: 0
+
+
+MOT17:
+  description: MOT17 multi-object tracking dataset
+  download_hint: Dataset is downloaded automatically into the ./data/mot folder. This is an already preprocessed dataset. See more details in the Data section https://github.com/GerardMaggiolino/Deep-OC-SORT/tree/main?tab=readme-ov-file
+  splits:
+    val:
+      - name: val
+        url: https://media.axelera.ai/artifacts/model_cards/datasets/mot/motChallenge/MOT17.zip
+        md5: ab71c9a8a8f7989149e37c9a6d893ca3
+        drop_dirs: 0
+
+MOT20:
+  description: MOT20 multi-object tracking dataset
+  download_hint: Dataset is downloaded automatically into the ./data/mot folder. This is an already preprocessed dataset. See more details in the Data section https://github.com/GerardMaggiolino/Deep-OC-SORT/tree/main?tab=readme-ov-file
+  splits:
+    val:
+      - name: val
+        url: https://media.axelera.ai/artifacts/model_cards/datasets/mot/motChallenge/MOT20.zip
+        md5: d64feaaad997cfb0bfa277618544450b
+        drop_dirs: 0
+
+
+LFWPairs:
+  description: LFW Pair dataset for face recognition
+  download_hint: Dataset is downloaded automatically into the ./data/LFW/lfw-py folder.
+  splits:
+    val:
+      - name: val
+        url: https://media.axelera.ai/artifacts/model_cards/datasets/face/lfw-py.zip
+        md5: 0c57a2adf3e7683ba3e28443b6856059
+        drop_dirs: 0

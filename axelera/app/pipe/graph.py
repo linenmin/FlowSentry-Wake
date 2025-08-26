@@ -53,9 +53,17 @@ class DependencyGraph:
                     self.graph[source_task_name].append(task.name)
                 elif isinstance(task.input, (operators.Input, operators.InputWithImageProcessing)):
                     self.graph[self.input_placeholder].append(task.name)
-            elif task.model_info.task_category == types.TaskCategory.ObjectTracking:
-                source_task_name = task.cv_process[0].bbox_task_name
-                self.graph[source_task_name].append(task.name)
+            elif TrackerHelper.is_tracker_task(task):
+                # Use TrackerHelper to handle tracker dependencies
+                dependencies = TrackerHelper.get_tracker_dependencies(task)
+
+                # Add edge from detection task to tracker
+                self.graph[dependencies['detection']].append(task.name)
+
+                # Add edge from embeddings task to tracker if it exists
+                if 'embeddings' in dependencies:
+                    embeddings_task_name = dependencies['embeddings']
+                    self.graph[embeddings_task_name].append(task.name)
             else:
                 raise ValueError(
                     f"Handle this case: Task {task.name} is not a DL task or a tracker task"
@@ -88,32 +96,14 @@ class DependencyGraph:
 
         # Find tracker nodes and handle them specially
         for task in tasks:
-            if task.model_info.task_category == types.TaskCategory.ObjectTracking:
-                self._handle_tracker_in_result_graph(task)
+            if TrackerHelper.is_tracker_task(task):
+                # Use the centralized helper to modify the result graph
+                self.result_graph = TrackerHelper.handle_tracker_result_view(
+                    task, self.graph, self.result_graph
+                )
 
         # Create NetworkX graph for result view
         self.result_graph_nx = nx.from_dict_of_lists(self.result_graph, create_using=nx.DiGraph)
-
-    def _handle_tracker_in_result_graph(self, tracker_task):
-        # Get the detection metadata name this tracker depends on
-        bbox_task_name = tracker_task.cv_process[0].bbox_task_name
-
-        # Find the source task for this tracker in our execution graph
-        for source_task, dependent_tasks in self.graph.items():
-            if tracker_task.name in dependent_tasks:
-                # This is the task that produces the detections
-                # In result view, remove dependency and connect tracker directly to input
-                if source_task != self.input_placeholder:  # Only modify if not already from input
-                    if tracker_task.name in self.result_graph.get(source_task, []):
-                        self.result_graph[source_task].remove(tracker_task.name)
-
-                    # Add direct connection from input to tracker
-                    if self.input_placeholder not in self.result_graph:
-                        self.result_graph[self.input_placeholder] = []
-                    if tracker_task.name not in self.result_graph[self.input_placeholder]:
-                        self.result_graph[self.input_placeholder].append(tracker_task.name)
-
-                    break  # Found and handled this tracker
 
     def get_dependencies(self, task_name, view=EdgeType.EXECUTION):
         """Get task dependencies based on the specified view."""
@@ -131,7 +121,7 @@ class DependencyGraph:
             view: Which graph view to use (EXECUTION or RESULT)
 
         Returns:
-            The name of the master task, or '' if there is no master
+            The name of the master task, or None if there is no master
         """
         if self._is_internal_task(task_name):
             return None
@@ -141,8 +131,18 @@ class DependencyGraph:
         graph_to_use = self.graph_nx if view == EdgeType.EXECUTION else self.result_graph_nx
 
         predecessors = list(graph_to_use.predecessors(task_name))
+
+        # Handle special case for trackers
         if len(predecessors) > 1:
+            task = self.task_map.get(task_name)
+            if TrackerHelper.is_tracker_task(task):
+                # For tracker tasks, consider only the bbox_task_name as the master
+                dependencies = TrackerHelper.get_tracker_dependencies(task)
+                if 'detection' in dependencies and dependencies['detection'] in predecessors:
+                    return dependencies['detection']
+            # For other tasks with multiple predecessors, raise an error
             raise ValueError("Unexpected network structure: multiple master nodes found")
+
         if not predecessors or predecessors[0] == self.input_placeholder:
             return None
         return predecessors[0]
@@ -278,6 +278,8 @@ class DependencyGraph:
     def _is_cascade_network(self):
         if not nx.is_directed_acyclic_graph(self.graph_nx):
             return False
+        if self._is_tracker_cascade():
+            return True
         # Check if there's a single path from input to output
         roots = [n for n in self.graph_nx.nodes() if self.graph_nx.in_degree(n) == 0]
         leaves = [n for n in self.graph_nx.nodes() if self.graph_nx.out_degree(n) == 0]
@@ -285,6 +287,15 @@ class DependencyGraph:
             len(roots) == 1
             and len(leaves) == 1
             and nx.has_path(self.graph_nx, roots[0], leaves[0])
+        )
+
+    def _is_tracker_cascade(self):
+        """
+        Check if the network follows the special tracker cascade pattern with detection and re-ID models
+        feeding into a tracker.
+        """
+        return TrackerHelper.is_tracker_cascade(
+            self.graph_nx, self.task_map, self.input_placeholder
         )
 
     def _is_parallel_network(self):
@@ -320,6 +331,25 @@ class DependencyGraph:
             leaf_nodes = [
                 node for node in self.graph_nx.nodes() if self.graph_nx.out_degree(node) == 0
             ]
+
+            # Handle tracker special case
+            if not (len(root_nodes) == 1 and len(leaf_nodes) == 1):
+                # Check if this is a tracker cascade
+                tracker_candidates = [
+                    task_name
+                    for task_name in self.task_map
+                    if TrackerHelper.is_tracker_task(self.task_map[task_name])
+                ]
+
+                if tracker_candidates:
+                    # Find a tracker that's a leaf node
+                    tracker_leaves = [t for t in tracker_candidates if t in leaf_nodes]
+                    if tracker_leaves:
+                        # For tracker cascades, use the first root node and the tracker leaf
+                        tracker_leaf = tracker_leaves[0]
+                        if root_nodes:
+                            return root_nodes[0], tracker_leaf
+
             if len(root_nodes) == 1 and len(leaf_nodes) == 1:
                 return root_nodes[0], leaf_nodes[0]
             else:
@@ -328,3 +358,129 @@ class DependencyGraph:
                 )
         else:
             raise ValueError("Unsupported network type")
+
+
+class TrackerHelper:
+    """Helper class for handling tracker-specific functionality in the dependency graph."""
+
+    @staticmethod
+    def is_tracker_task(task):
+        """Check if the given task is a tracker task."""
+        return (
+            not task.is_dl_task
+            and task.model_info.task_category == types.TaskCategory.ObjectTracking
+        )
+
+    @staticmethod
+    def get_tracker_dependencies(task):
+        """Get the detection and optional embeddings task names that a tracker depends on."""
+        dependencies = {}
+        if hasattr(task.cv_process[0], 'bbox_task_name'):
+            dependencies['detection'] = task.cv_process[0].bbox_task_name
+
+        if (
+            hasattr(task.cv_process[0], 'embeddings_task_name')
+            and task.cv_process[0].embeddings_task_name
+        ):
+            dependencies['embeddings'] = task.cv_process[0].embeddings_task_name
+
+        return dependencies
+
+    @staticmethod
+    def handle_tracker_result_view(tracker_task, graph, result_graph):
+        """
+        Modify the result view graph to show trackers directly connected to input.
+        This reflects that trackers produce standalone results regardless of their inputs.
+        """
+        # Find all source tasks that the tracker depends on
+        for source_task, dependent_tasks in graph.items():
+            if tracker_task.name in dependent_tasks:
+                # Remove dependency from the result view
+                if source_task != 'Input':  # Only modify if not already from input
+                    if tracker_task.name in result_graph.get(source_task, []):
+                        result_graph[source_task].remove(tracker_task.name)
+
+                    # Add direct connection from input to tracker
+                    if 'Input' not in result_graph:
+                        result_graph['Input'] = []
+                    if tracker_task.name not in result_graph['Input']:
+                        result_graph['Input'].append(tracker_task.name)
+
+        return result_graph
+
+    @staticmethod
+    def is_tracker_cascade(graph_nx, task_map, input_placeholder='Input'):
+        """
+        Check if the network follows the special tracker cascade pattern with:
+        - Detection model feeding into a tracker
+        - Re-ID model feeding into the same tracker (optional)
+        - A clear execution flow
+        """
+        # Find nodes that might be trackers
+        tracker_candidates = [
+            task_name
+            for task_name, task in task_map.items()
+            if task.model_info.task_category == types.TaskCategory.ObjectTracking
+        ]
+
+        if not tracker_candidates:
+            return False
+
+        # For each tracker candidate, check if it has appropriate inputs
+        for tracker in tracker_candidates:
+            task = task_map.get(tracker)
+            if not task:
+                continue
+
+            # Get the detection task name this tracker depends on
+            bbox_task_name = task.cv_process[0].bbox_task_name
+
+            # Get embeddings task name if it exists
+            embeddings_task_name = None
+            if hasattr(task.cv_process[0], 'embeddings_task_name'):
+                embeddings_task_name = task.cv_process[0].embeddings_task_name
+
+            # Get all predecessors of the tracker
+            predecessors = list(graph_nx.predecessors(tracker))
+
+            # Check if this is a valid tracker cascade:
+            # 1. Tracker must have the bbox_task_name as a predecessor
+            # 2. If embeddings_task_name is specified, it should also be a predecessor
+            # 3. The graph must be a directed acyclic graph (DAG)
+
+            # Tracker should depend on detection task
+            if bbox_task_name not in predecessors:
+                continue
+
+            # If embeddings task is specified, make sure it's properly connected
+            if embeddings_task_name and embeddings_task_name not in predecessors:
+                continue
+
+            # Check if the graph structure without the tracker is a valid DAG
+            nodes_without_tracker = [
+                n for n in graph_nx.nodes() if n != tracker and n != input_placeholder
+            ]
+            subgraph = graph_nx.subgraph(nodes_without_tracker)
+
+            # It's a tracker cascade if:
+            # - The tracker is a leaf node (no outgoing edges)
+            # - The subgraph without the tracker is either a cascade or a parallel network
+            if graph_nx.out_degree(tracker) == 0:
+                # Check if subgraph is a simple path or parallel structure
+                if len(nodes_without_tracker) <= 2:
+                    # Simple case: just one or two nodes before the tracker
+                    return True
+
+                # For more complex cases, check if the predecessors form a valid structure
+                # All predecessors must be connected to input directly or indirectly
+                input_node = input_placeholder
+                all_connected_to_input = all(
+                    nx.has_path(graph_nx, input_node, pred) for pred in predecessors
+                )
+
+                if all_connected_to_input:
+                    # If the graph is a pure cascade or has a valid cascaded structure
+                    # where all paths eventually lead to the tracker
+                    return True
+
+        return False

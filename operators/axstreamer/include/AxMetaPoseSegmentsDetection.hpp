@@ -14,24 +14,24 @@ class AxMetaPoseSegmentsDetection : public AxMetaBbox, public AxMetaKpts, public
   public:
   AxMetaPoseSegmentsDetection(std::vector<box_xyxy> boxes, KptXyvVector kpts,
       std::vector<ax_utils::segment> segments, std::vector<float> scores,
-      std::vector<int> ids, const SegmentShape &segment_shape, std::vector<int> _kpts_shape,
-      box_xyxy mbox, const std::string &decoder_name_ = "")
-      : AxMetaBbox(std::move(boxes)), AxMetaKpts(std::move(kpts)),
+      std::vector<int> classes, std::vector<int> ids, const SegmentShape &segment_shape,
+      std::vector<int> _kpts_shape, box_xyxy mbox, const std::string &decoder_name_ = "")
+      : AxMetaBbox(std::move(boxes), std::move(scores), std::move(classes), std::move(ids)),
+        AxMetaKpts(std::move(kpts)),
         AxMetaSegments(segment_shape.width, segment_shape.height, std::move(segments)),
-        scoresvec(std::move(scores)), kpts_shape(_kpts_shape), class_ids(ids),
-        base_box(std::move(mbox)), decoder_name(decoder_name_)
+        kpts_shape(_kpts_shape), base_box(std::move(mbox)), decoder_name(decoder_name_)
   {
   }
 
   AxMetaPoseSegmentsDetection(std::vector<box_xyxy> boxes, KptXyvVector kpts,
       std::vector<segment_func> segments_funcs, std::vector<float> scores,
-      std::vector<int> ids, const SegmentShape &segment_shape,
+      std::vector<int> classes, std::vector<int> ids, const SegmentShape &segment_shape,
       std::vector<float> prototype_tensor, std::vector<int> _kpts_shape,
       box_xyxy mbox, const std::string &decoder_name_ = "")
-      : AxMetaBbox(std::move(boxes)), AxMetaKpts(std::move(kpts)),
+      : AxMetaBbox(std::move(boxes), std::move(scores), std::move(classes), std::move(ids)),
+        AxMetaKpts(std::move(kpts)),
         AxMetaSegments(segment_shape.width, segment_shape.height, std::move(segments_funcs)),
-        scoresvec(std::move(scores)), kpts_shape(_kpts_shape), class_ids(ids),
-        base_box(std::move(mbox)), decoder_name(decoder_name_)
+        kpts_shape(_kpts_shape), base_box(std::move(mbox)), decoder_name(decoder_name_)
   {
     set_prototype_tensor(std::move(prototype_tensor));
   }
@@ -46,38 +46,21 @@ class AxMetaPoseSegmentsDetection : public AxMetaBbox, public AxMetaKpts, public
     return AxMetaBbox::num_elements();
   }
 
-  bool is_multi_class() const
-  {
-    return !class_ids.empty();
-  }
-
-  int class_id(size_t idx) const
-  {
-    // TODO: check out of bounds
-    return class_ids[idx];
-  }
-
-  float score(size_t idx) const
-  {
-    return scoresvec[idx];
-  }
-
-
   std::vector<extern_meta> get_extern_meta() const override
   {
     const char *multihead_meta
         = decoder_name.size() == 0 ? "multihead_meta" : decoder_name.c_str();
     auto meta1 = AxMetaSegments::get_extern_meta();
     auto meta2 = extern_meta{ multihead_meta, "scores",
-      int(scoresvec.size() * sizeof(float)),
-      reinterpret_cast<const char *>(scoresvec.data()) };
+      int(scores_.size() * sizeof(float)),
+      reinterpret_cast<const char *>(scores_.data()) };
     const auto &shape = AxMetaSegments::get_segments_shape();
     auto meta3 = extern_meta{ multihead_meta, "segment_shape",
       int(shape.size() * sizeof(size_t)), reinterpret_cast<const char *>(shape.data()) };
     auto meta = AxMetaBbox::get_extern_meta();
     auto meta4 = extern_meta{ multihead_meta, "classes",
-      int(class_ids.size() * sizeof(int)),
-      reinterpret_cast<const char *>(class_ids.data()) };
+      int(classes_.size() * sizeof(int)),
+      reinterpret_cast<const char *>(classes_.data()) };
 
     auto meta5 = extern_meta{ multihead_meta, "kpts_shape",
       int(kpts_shape.size() * sizeof(int)),
@@ -116,9 +99,7 @@ class AxMetaPoseSegmentsDetection : public AxMetaBbox, public AxMetaKpts, public
   }
 
   private:
-  std::vector<float> scoresvec;
   std::vector<int> kpts_shape;
-  std::vector<int> class_ids;
   box_xyxy base_box;
   std::string decoder_name;
 };

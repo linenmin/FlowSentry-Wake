@@ -151,12 +151,23 @@ class DecodeRetinaface(AxOperator):
     nms_class_agnostic: bool = False
     nms_top_k: int = 300
 
+    @classmethod
+    def handles_dequantization_and_depadding(cls):
+        return True
+
+    @classmethod
+    def handles_transpose(cls):
+        return True
+
+    @classmethod
+    def handles_postamble(cls):
+        return True
+
     def _post_init(self):
         self._tmp_labels: Optional[Path] = None
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
             raise ValueError(f"Unknown box format {self.box_format}")
         self.use_multi_label = False
-        self.cpp_decoder_does_all = True
         super()._post_init()
 
     def __del__(self):

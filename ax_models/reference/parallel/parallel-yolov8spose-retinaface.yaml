@@ -15,6 +15,8 @@ pipeline:
             height: 640
             scaleup: True
         - torch-totensor:
+      inference:
+        handle_all: False
       postprocess:
         - decodeyolopose:
             box_format: xywh # box format of the model output
@@ -39,6 +41,8 @@ pipeline:
           - linear-scaling: # [0,1]
               mean: 1, 1, 1
               shift: -104, -117, -123
+      inference:
+        handle_all: False
       postprocess:
           - decode-retinaface:
               box_format: xywh
@@ -93,23 +97,17 @@ models:
           variance: [0.1, 0.2]
           clip: False
 
-datasets: # Python dataloader
+datasets:
   CocoDataset-COCO2017:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: coco
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/coco.names
     label_type: COCO2017
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
   WiderFace:
     class: WiderFaceDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/widerface.py
     data_dir_name: widerface
     labels_path: $AXELERA_FRAMEWORK/ax_datasets/labels/face.names
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa
     # cal_data: train/label.txt
     val_data: val/label.txt

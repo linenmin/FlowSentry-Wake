@@ -11,18 +11,14 @@ from .. import logging_utils, torch_utils, utils
 from ..meta import AxMeta
 from ..torch_utils import torch
 
-if TYPE_CHECKING:
-    from axelera import types
-
 LOG = logging_utils.getLogger(__name__)
 
 
 class TorchPipe(base.Pipe):
-    def gen_end2end_pipe(self, input, output, tile=None):
-        self.frame_generator = input.frame_generator()
-        self.pipeout = output
-        self.pipeout.initialize_writer(input)
-        self.batched_data_reformatter = input.batched_data_reformatter
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.frame_generator = self._pipein.frame_generator()
+        self.batched_data_reformatter = self._pipein.batched_data_reformatter
 
     def init_loop(self) -> Callable[[], None]:
         return self._loop
@@ -41,6 +37,7 @@ class TorchPipe(base.Pipe):
                 image_source = [data.img] if data.img else data.imgs
                 is_pair_validation = data.imgs is not None
 
+                inferences = 0
                 with utils.catchtime('The network', logger=LOG.trace) as t:
                     meta = AxMeta(data.img_id, ground_truth=data.ground_truth)
                     for image in image_source:
@@ -52,6 +49,7 @@ class TorchPipe(base.Pipe):
                             for result in image_list:
                                 for op in model_pipe.preprocess:
                                     result = op.exec_torch(result)
+                                inferences += 1
                                 image, result, meta = model_pipe.inference.exec_torch(
                                     image, result, meta
                                 )
@@ -73,9 +71,10 @@ class TorchPipe(base.Pipe):
                             else:
                                 tensor = None
                     now = time.time()
-                    fr = frame_data.FrameResult(image, tensor, meta, data.stream_id, ts, now)
-                    self.pipeout.sink(fr)
-                    self._callback(self.pipeout.result)
+                    fr = frame_data.FrameResult(
+                        image, tensor, meta, data.stream_id, ts, now, inferences
+                    )
+                    self._result_ready(fr)
         except Exception as e:
             import traceback
 
@@ -88,8 +87,7 @@ class TorchPipe(base.Pipe):
             )
             LOG.error(f'Full traceback:\n{"".join(traceback.format_tb(e.__traceback__))}')
         finally:
-            self._callback(None)  # no further messages
-            self.pipeout.close_writer()
+            self._result_ready(None)
             self.nn.cleanup()
 
 

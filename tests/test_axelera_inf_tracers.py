@@ -1,5 +1,6 @@
 # Copyright Axelera AI, 2023
 import functools
+import io
 import itertools
 import time
 from unittest.mock import Mock, patch
@@ -18,7 +19,7 @@ def make_aipu_tracer(frequency=600e6, log_content=''):
     mi.manifest.input_shapes = [[1, 3, 224, 224]]
     mis.add_model(mi, '/path/to/manifest.json')
     tracer = inf_tracers.AipuTracer(1)
-    tracer.initialize_models(mis, config.Metis.pcie, {0: frequency})
+    tracer.initialize_models(mis, config.Metis.pcie, {0: frequency}, ['metis-0:1:0'])
     tracer.start_monitoring = Mock(return_value=None)
     mock_triton = Mock()
     reads = [log_content]
@@ -30,7 +31,7 @@ def make_aipu_tracer(frequency=600e6, log_content=''):
             return b''
 
     mock_triton.read = read
-    tracer._tritons = {0: mock_triton}
+    tracer._tritons = {(0, 0): mock_triton}
     tracer._running = True
     return tracer
 
@@ -80,36 +81,67 @@ def test_get_metric_fps(frequency, log_content, expected_fps):
 
 
 def test_empty_statistics():
-    s = inf_tracers.Statistics('k', 't', 400, 4)
+    s = inf_tracers.Statistics()
     assert s.min == float('inf')
     assert s.max == float('-inf')
     assert s.mean == 0.0
-    assert s.stddev == 0.0
+    assert s.median == 0.0
+    assert s.std == 0.0
     assert s.sample_count == 0
-    np.testing.assert_equal(s.bins, np.zeros((4,), dtype=np.int32))
 
 
 def test_statistics():
-    s = inf_tracers.Statistics('k', 't', 400, 4)
+    s = inf_tracers.Statistics()
     for v in [100, 200, 100, 200, 100, 200]:
         s.update(v)
-    assert s.max == 200
-    assert s.min == 100
-    assert s.mean == 150
-    assert s.stddev == 50
+    assert s.max == 200.0
+    assert s.min == 100.0
+    assert s.mean == 150.0
+    assert s.median == 150.0
+    assert s.std == 50.0
     assert s.sample_count == 6
-    np.testing.assert_equal(s.bins, np.array([0, 3, 3, 0], dtype=np.int32))
 
 
-def test_stream_statistics():
-    times = [0.1, 0.2, 0.4, 0.5, 0.7, 0.8, 1.0]
-    with patch.object(time, 'time', iter(times).__next__):
-        s = inf_tracers.StreamStatistics()
-        for v in [0.1, 0.2, 0.1, 0.2, 0.1, 0.2]:
-            s.update(v)
-    assert repr(s) == (
-        'frames:6     l-min:100   l-mean:150   l-max:200   l-stddev:50   '
-        + ' i-min:99    i-mean:150   i-max:200   i-stddev:49   '
+def test_statistic_overflow_buffer():
+    s = inf_tracers.Statistics(max_samples=6)
+    for v in [100, 200, 100, 200, 100, 200, 50, 150, 100]:
+        s.update(v)
+    assert s.max == 200.0
+    assert s.min == 50.0
+    assert round(s.mean, 1) == 133.3
+    assert s.median == 125.0
+    assert round(s.std, 1) == 55.3
+    assert s.sample_count == 9
+
+
+def test_statistic_as_metric():
+    s = inf_tracers.Statistics(max_samples=6)
+    for v in [100, 200, 100, 200, 100, 200]:
+        s.update(v)
+    m = s.as_metric('key', 'title', 'unit', 1.0)
+    assert m.key == 'key'
+    assert m.title == 'title'
+    assert m.min == 100.0
+    assert m.median == 150.0
+    assert m.mean == 150.0
+    assert m.value == 150.0
+    assert m.max == 200.0
+    assert round(m.std, 1) == 50.0
+    assert m.text_report() == '150.0unit (min:100.0 max:200.0 σ:50.0 x̄:150.0)unit'
+
+
+def test_display_tracers():
+    m0 = Mock(title='Tracer0', text_report=Mock(return_value='funky report'))
+    m1 = Mock(title='Tracer   1', text_report=Mock(return_value='lovely jubbly'))
+    tracers = [Mock(get_metrics=Mock(return_value=[m0, m1]))]
+    f = io.StringIO()
+    inf_tracers.display_tracers(tracers, f)
+    assert (
+        f.getvalue()
+        == '''\
+Tracer0    : funky report
+Tracer   1 : lovely jubbly
+'''
     )
 
 

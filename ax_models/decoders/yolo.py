@@ -69,6 +69,18 @@ class DecodeYolo(AxOperator):
     nms_top_k: int = 300
     generic_gst_decoder: bool = False
 
+    @classmethod
+    def handles_dequantization_and_depadding(cls):
+        return True
+
+    @classmethod
+    def handles_transpose(cls):
+        return True
+
+    @classmethod
+    def handles_postamble(cls):
+        return True
+
     def _post_init(self):
         self.label_filter = utils.parse_labels_filter(self.label_filter)
         self.label_exclude = utils.parse_labels_filter(self.label_exclude)
@@ -78,7 +90,6 @@ class DecodeYolo(AxOperator):
             raise ValueError(f"Unknown box format {self.box_format}")
         # TODO: check config to determine the value of sigmoid_in_postprocess
         self.sigmoid_in_postprocess = False
-        self.cpp_decoder_does_all = True
         super()._post_init()
 
     def __del__(self):
@@ -155,7 +166,7 @@ class DecodeYolo(AxOperator):
         master_key = str()
         if self._where:
             master_key = f'master_meta:{self._where};'
-        elif gst.tile:
+        elif gst.tiling:
             master_key = f'master_meta:axelera-tiles-internal;'
         association_key = str()
         if self._association:
@@ -265,7 +276,7 @@ class DecodeYolo(AxOperator):
                 f"Unsupported model type {self.model_type}. Please try to enable generic_gst_decoder in YAML config."
             )
 
-        if gst.tile:
+        if gst.tiling:
             master_key = 'flatten_meta:1;master_meta:axelera-tiles-internal;'
         gst.axinplace(
             lib='libinplace_nms.so',
@@ -276,7 +287,7 @@ class DecodeYolo(AxOperator):
             f'class_agnostic:{int(self.nms_class_agnostic)};'
             f'location:CPU',
         )
-        if gst.tile and not gst.tile.get("show_tiles", False):
+        if gst.tiling.size and not gst.tiling.show:
             gst.axinplace(
                 lib='libinplace_hidemeta.so', options=f'meta_key:axelera-tiles-internal;'
             )
@@ -398,7 +409,6 @@ class DecodeYolo(AxOperator):
         if self._where:
             boxes[:, [0, 2]] += base_box[0]
             boxes[:, [1, 3]] += base_box[1]
-
         model_meta = ObjectDetectionMeta.create_immutable_meta(
             boxes=boxes,
             scores=scores,

@@ -7,6 +7,7 @@
 #include <iostream>
 #include <unordered_set>
 
+
 struct crop_properties {
   int scale_size = 0;
   int crop_size = 0;
@@ -63,6 +64,7 @@ determine_crop_box(int img_width, int img_height, int scale_size, int crop_size)
   auto y1 = crop_top + (shortest - cropped_size) / 2;
   auto x2 = x1 + cropped_size;
   auto y2 = y1 + cropped_size;
+
   return { x1, y1, x2, y2 };
 }
 
@@ -87,7 +89,6 @@ set_output_interface(const AxDataInterface &interface,
   }
 
   auto &input_video = std::get<AxVideoInterface>(interface);
-
   crop_box box = determine_crop_box(input_video.info.width,
       input_video.info.height, prop->scale_size, prop->crop_size);
 
@@ -111,13 +112,13 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
 {
   auto &input_video = std::get<AxVideoInterface>(input);
   auto &output_video = std::get<AxVideoInterface>(output);
-
   if (input_video.info.format != output_video.info.format) {
     logger(AX_ERROR) << "input and output formats must match\n";
     throw std::runtime_error("input and output formats must match");
   }
   if (input_video.info.format != AxVideoFormat::RGBA
-      && input_video.info.format != AxVideoFormat::BGRA) {
+      && input_video.info.format != AxVideoFormat::BGRA
+      && input_video.info.format != AxVideoFormat::GRAY8) {
     //  TODO: Add support for other formats
     logger(AX_ERROR) << "centre crop only works on RGBA or BGRA\n";
     throw std::runtime_error("centre crop only works on RGBA or BGRA");

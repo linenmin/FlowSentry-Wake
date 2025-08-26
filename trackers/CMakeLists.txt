@@ -17,29 +17,29 @@ include_directories(
 )
 
 # Add subdirectories
-if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/3rd_parties/bytetrack")
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/algorithms/bytetrack")
     message(STATUS "Building bytetrack")
-    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/3rd_parties/bytetrack")
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/algorithms/bytetrack")
     add_definitions(-DHAVE_BYTETRACK)
 endif()
 
-if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/3rd_parties/oc_sort")
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/algorithms/oc_sort")
     message(STATUS "Building oc_sort")
-    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/3rd_parties/oc_sort")
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/algorithms/oc_sort")
     add_definitions(-DHAVE_OC_SORT)
 endif()
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/axtracker)
 
 # Trackers library
-file(GLOB TRACKERS_SOURCES "src/TrackerFactory.cpp")
+file(GLOB TRACKERS_SOURCES "src/TrackerFactory.cpp" "src/cmc.cpp")
 add_library(tracker_factory SHARED ${TRACKERS_SOURCES})
 target_include_directories(tracker_factory PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(tracker_factory PUBLIC axtracker ${OpenCV_LIBS} ${Python3_LIBRARIES})
-if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/3rd_parties/bytetrack")
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/algorithms/bytetrack")
     target_link_libraries(tracker_factory PUBLIC bytetrack)
 endif()
-if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/3rd_parties/oc_sort")
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/algorithms/oc_sort")
     target_link_libraries(tracker_factory PUBLIC oc_sort)
 endif()
 

@@ -81,12 +81,11 @@ class HuggingFaceObjDetDataAdapter(types.DataAdapter):
         self.data_dir = dataset_config.get('data_dir_name') or None
 
     def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
-        if repr_dataloader := self.check_representative_images(transform, batch_size, **kwargs):
-            return repr_dataloader
         return torch.utils.data.DataLoader(
             HuggingFaceDataset(self.dataset_name, self.data_dir, transform, 'train', kwargs),
             batch_size=batch_size,
             shuffle=True,
+            generator=kwargs.get('generator'),
             collate_fn=lambda x: x,
             num_workers=0,
         )

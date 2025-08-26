@@ -11,13 +11,13 @@ pipeline:
         type: image
       preprocess:
         - resize:
-            width: 128
             height: 128
+            width: 128
         - torch-totensor:
       postprocess:
         - image_decoder:
             output_datatype: uint8
-            scale: True
+            scale: true
 
 operators:
   image_decoder:
@@ -38,7 +38,7 @@ models:
     dataset: SuperResolutionCustomSet128x128
     extra_kwargs:
       max_compiler_cores: 4
-      unlimited_stack_for_compilation: True
+      unlimited_stack_for_compilation: true
       compilation_config:
         resources_used: 1
 
@@ -48,6 +48,3 @@ datasets:
     class_path: $AXELERA_FRAMEWORK/ax_datasets/super_resolution.py
     data_dir_name: superres
     val_data: sr_128x128/val
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/coco2017_400_b680128
-    repr_imgs_url: https://media.axelera.ai/artifacts/data/coco/coco2017_repr400.zip
-    repr_imgs_md5: b680128512392586e3c86b670886d9fa

@@ -60,6 +60,7 @@ set_output_interface(const AxDataInterface &interface,
   }
   auto input = std::get<AxTensorsInterface>(interface);
 
+
   // Make sure we have at least one tensor
   if (input.empty() || input[0].bytes != 1) {
     throw std::runtime_error("transform_padding requires at least one int8 tensor input");
@@ -115,6 +116,7 @@ set_output_interface(const AxDataInterface &interface,
 
     output[i].sizes = prop->out_shape.empty() ? info.out_sizes : prop->out_shape;
   }
+
 
   return { output };
 }

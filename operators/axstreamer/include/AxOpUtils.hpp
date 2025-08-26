@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <eigen3/unsupported/Eigen/CXX11/Tensor>
 #include <future>
 #include <vector>
 #include "AxDataInterface.h"
@@ -10,6 +11,9 @@
 #include "AxMetaBBox.hpp"
 #include "AxMetaKpts.hpp"
 #include "AxMetaTracker.hpp"
+
+#include <fstream>
+#include <nlohmann/json.hpp>
 
 #define CL_TARGET_OPENCL_VERSION 210
 #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
@@ -22,6 +26,44 @@
 
 namespace ax_utils
 {
+enum DistanceMetric {
+  EUCLIDEAN_DISTANCE = 1,
+  SQUARED_EUCLIDEAN_DISTANCE,
+  COSINE_DISTANCE,
+  COSINE_SIMILARITY
+};
+
+// Only declarations in header
+std::vector<float> embeddings_cosine_similarity(
+    const std::vector<float> &desc, const Eigen::MatrixXf &embeddings);
+
+std::vector<float> embeddings_euclidean_distance(
+    const std::vector<float> &desc, const Eigen::MatrixXf &embeddings);
+
+std::vector<float> embeddings_squared_euclidean_distance(
+    const std::vector<float> &desc, const Eigen::MatrixXf &embeddings);
+
+std::vector<float> embeddings_cosine_distance(
+    const std::vector<float> &desc, const Eigen::MatrixXf &embeddings);
+
+void add_vec_to_matrix(const std::vector<float> &vec, Eigen::MatrixXf &matrix);
+
+std::pair<Eigen::MatrixXf, std::vector<std::string>> read_embedding_json(
+    const std::string &filename, bool normalise, Ax::Logger &logger);
+
+void write_embedding_json(const Eigen::MatrixXf &embeddings,
+    const std::vector<std::string> &labels, const std::string &filename,
+    Ax::Logger &logger);
+
+
+typedef enum : int {
+  RGBA_OUTPUT = 0,
+  BGRA_OUTPUT = 1,
+  RGB_OUTPUT = 3,
+  BGR_OUTPUT = 4,
+  GRAY_OUTPUT = 5
+} output_format;
+
 struct buffer_details {
   cl_int width{};
   cl_int height{};
@@ -42,6 +84,7 @@ struct transfer_info {
   std::vector<int> out_sizes{};
   std::vector<cv::Range> ranges{};
 };
+size_t get_bytes_per_pixel(AxVideoFormat format);
 transfer_info get_transfer_info(
     const std::vector<int> &sizes, const std::vector<int> &padding);
 
@@ -447,33 +490,39 @@ get_meta(const std::string &meta_name,
 }
 
 template <typename T, typename... Args>
-void
+T *
 insert_meta(std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
     const std::string &key, const std::string &master_key, int subframe_index,
     int number_of_subframes, Args &&...args)
 {
   if (master_key.empty()) {
-    map[key] = std::make_unique<T>(std::forward<Args>(args)...);
+    auto res = map.try_emplace(key, std::make_unique<T>(std::forward<Args>(args)...));
+    if (!res.second) {
+      throw std::runtime_error("insert_meta : key already exists: " + key);
+    }
+    return dynamic_cast<T *>(res.first->second.get());
   } else {
     auto *master_meta = get_meta<AxMetaBase>(master_key, map, "insert_meta");
     if (number_of_subframes != master_meta->get_number_of_subframes()) {
       throw std::runtime_error("insert_meta : number_of_subframes mismatch");
     }
-    master_meta->insert_submeta(key, subframe_index, number_of_subframes,
-        std::make_shared<T>(std::forward<Args>(args)...));
+    auto submeta = std::make_shared<T>(std::forward<Args>(args)...);
+    T *submeta_ptr = submeta.get();
+    master_meta->insert_submeta(
+        key, subframe_index, number_of_subframes, std::move(submeta));
+    return submeta_ptr;
   }
 }
 
 template <typename T, typename... Args>
-void
+T *
 insert_and_associate_meta(std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
     const std::string &key, const std::string &master_key, int subframe_index,
     int number_of_subframes, const std::string &associate_key, Args &&...args)
 {
   if (associate_key.empty() || associate_key == master_key) {
-    insert_meta<T>(map, key, master_key, subframe_index, number_of_subframes,
-        std::forward<Args>(args)...);
-    return;
+    return insert_meta<T>(map, key, master_key, subframe_index,
+        number_of_subframes, std::forward<Args>(args)...);
   }
   auto *associate_meta
       = get_meta<AxMetaBbox>(associate_key, map, "insert_and_associate_meta");
@@ -486,18 +535,23 @@ insert_and_associate_meta(std::unordered_map<std::string, std::unique_ptr<AxMeta
   }
   auto *master_meta = get_meta<AxMetaBase>(master_key, map, "insert_and_associate_meta");
   if (auto *tracker_meta = dynamic_cast<AxMetaTracker *>(master_meta)) {
+    auto submeta = std::make_unique<T>(std::forward<Args>(args)...);
+    T *submeta_ptr = submeta.get();
     auto &tracking_descriptor
         = tracker_meta->track_id_to_tracking_descriptor.at(unfiltered_subframe_index);
-    tracking_descriptor.collection->set_frame_data_map(tracking_descriptor.frame_id,
-        key, std::make_shared<T>(std::forward<Args>(args)...));
-    return;
+    tracking_descriptor.collection->set_frame_data_map(
+        tracking_descriptor.frame_id, key, std::move(submeta));
+    return submeta_ptr;
   }
   int unfiltered_number_of_subframes = master_meta->get_number_of_subframes();
   if (unfiltered_subframe_index >= unfiltered_number_of_subframes) {
     throw std::runtime_error("insert_and_associate_meta : subframe_index out of bounds");
   }
-  master_meta->insert_submeta(key, unfiltered_subframe_index, unfiltered_number_of_subframes,
-      std::make_shared<T>(std::forward<Args>(args)...));
+  auto submeta = std::make_shared<T>(std::forward<Args>(args)...);
+  T *submeta_ptr = submeta.get();
+  master_meta->insert_submeta(key, unfiltered_subframe_index,
+      unfiltered_number_of_subframes, std::move(submeta));
+  return submeta_ptr;
 }
 
 template <typename T>

@@ -35,7 +35,7 @@ You can generate a default compiler configuration file with:
 ```bash
 compile --generate-config /path/to/output/directory
 ```
-This saves default_conf.json to the output directory. You can modify this file and use it later:
+This saves `default_conf.json` to the output directory. You can modify this file and use it later:
 
 ```bash
 compile -i /path/to/input/model.onnx --conf /path/to/configuration/file -o /path/to/output/directory
@@ -51,7 +51,7 @@ To perform quantization only and skip full compilation:
 compile -i /path/to/input/model.onnx --quantize-only -o /path/to/output/directory
 ```
 
-This produces quantized_model_manifest.json, which you can later pass to compile:
+This produces `quantized_model_manifest.json`, which you can later pass to compile:
 
 ```bash
 compile -i /path/to/quantized/model/quantized_model_manifest.json -o /path/to/output/directory
@@ -102,7 +102,7 @@ Make sure your transformation logic correctly interprets the input image based o
 
 ## Reusing CLI Arguments from a JSON File
 
-Every compilation automatically generates a cli_args.json file in the output directory. This file contains all command-line arguments used during that compilation and can be reused in future runs.
+Every compilation automatically generates a `cli_args.json` file in the output directory. This file contains all command-line arguments used during that compilation and can be reused in future runs.
 
 To reuse a previously saved argument set:
 

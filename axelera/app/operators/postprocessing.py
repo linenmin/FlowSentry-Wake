@@ -75,6 +75,7 @@ class TopK(AxOperator):
         model_meta = meta.ClassificationMeta(
             labels=self.labels,
             num_classes=self.num_classes,
+            extra_info={"softmax": self.softmax},
         )
         import torch.nn.functional as TF
 
@@ -164,7 +165,6 @@ class CTCDecoder(AxOperator):
     def _post_init(self):
         self._tmp_chars: Optional[Path] = None
         self._gst_decoder_do_reduce_mean = False  # Default value
-        self.cpp_decoder_does_postamble = False  # Default value
 
     def __del__(self):
         if self._tmp_chars is not None and self._tmp_chars.exists():
@@ -245,7 +245,6 @@ class CTCDecoder(AxOperator):
             LOG.debug(
                 f'[{self.task_name}] _gst_decoder_do_reduce_mean: {self._gst_decoder_do_reduce_mean}'
             )
-            self.cpp_decoder_does_postamble = self._gst_decoder_do_reduce_mean
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         master_meta_option = str()
@@ -322,11 +321,8 @@ class CTCDecoder(AxOperator):
 
 def _reorder_embeddings_by_names(
     labels: list, ref_embedding: np.ndarray, names_file: Path
-) -> tuple[list, np.ndarray]:
+) -> tuple[list, np.ndarray, bool]:
     """Reorders embeddings and labels according to a reference names file.
-
-    where embeddings built from LFWPair dataset have a different order compared to LFWPeople.
-    This function ensures consistent ordering between different LFW variants.
 
     Args:
         labels: Original list of label names
@@ -334,13 +330,22 @@ def _reorder_embeddings_by_names(
         names_file: Path to file containing reference name ordering
 
     Returns:
-        tuple: (reordered_labels, reordered_embeddings)
+        tuple: (reordered_labels, reordered_embeddings, was_reordered)
     """
     names = names_file.read_text().splitlines()
 
     # Special handling for LFW names file format
-    if names_file.name == 'lfw-names.txt':
+    if 'lfw-names.txt' in names_file.name:
         names = [name.split()[0] for name in names]
+
+    # Check if reordering is needed
+    if labels == names:
+        return labels, ref_embedding, False
+
+    unexpected_names = set(labels) - set(names)
+    assert (
+        not unexpected_names
+    ), f"labels: {labels} must be a subset of names: {names}, unexpected names {unexpected_names}"
 
     embedding_dim = ref_embedding.shape[1]
     new_embeddings = np.zeros((len(names), embedding_dim))
@@ -354,7 +359,7 @@ def _reorder_embeddings_by_names(
             # If name not found, leave as zeros
             pass
 
-    return names, new_embeddings
+    return names, new_embeddings, True
 
 
 @builtin
@@ -371,9 +376,11 @@ class DecodeEmbeddings(AxOperator):
         super().configure_model_and_context_info(
             model_info, context, task_name, taskn, where, compiled_model_dir
         )
+        self._association = context.association or None
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         master_meta_option = str()
+        association_key = f'association_meta:{self._association};' if self._association else str()
         self.meta_type_name = "EmbeddingsMeta"
         if self._where:
             master_meta_option = f'master_meta:{self._where};'
@@ -383,6 +390,7 @@ class DecodeEmbeddings(AxOperator):
             lib='libdecode_embeddings.so',
             options=f'meta_key:{str(self.task_name)};'
             f'decoder_name:{self.meta_type_name};'
+            f'{association_key}'
             f'{master_meta_option}',
         )
 
@@ -404,9 +412,14 @@ class Recognition(AxOperator):
     distance_threshold: float = 0.2
     distance_metric: embed_utils.DistanceMetric = embed_utils.DistanceMetric.euclidean_distance
     k: int = 1
-    generate_embeddings: bool = False
 
-    # a file containing the labels in a specific order
+    # Controls whether new embeddings can be added to the embeddings file.
+    # Set to True to allow adding/updating embeddings from new images.
+    update_embeddings: bool = False
+
+    # Optional path to a file containing ordered labels for consistent embedding ordering.
+    # If provided, embeddings will be reordered to match this ordering.
+    # The file should contain one label per line.
     names_file: Optional[str] = None
 
     # pair validation params
@@ -416,6 +429,7 @@ class Recognition(AxOperator):
     def _post_init(self):
         self._enforce_member_type('distance_metric')
         self._tmp_labels: Optional[Path] = None
+        self._tmp_embeddings: Optional[Path] = None
         self.embeddings_file = embed_utils.open_embeddings_file(self.embeddings_file)
         LOG.info(f'Take embeddings file from {self.embeddings_file.path}')
 
@@ -423,7 +437,11 @@ class Recognition(AxOperator):
         if self._is_pair_validation:
             LOG.debug("Pair Verification is enabled")
         else:
-            self.ref_embedding = None
+            if self.names_file is not None:
+                self.embeddings_file_path = self._create_reordered_embeddings_file()
+            else:
+                self.embeddings_file_path = self.embeddings_file.path
+            self._load_reference_embeddings()
 
         if self._is_pair_validation:
             self.register_validation_params(
@@ -445,13 +463,17 @@ class Recognition(AxOperator):
             and self._tmp_labels.exists()
         ):
             self._tmp_labels.unlink()
+
         if (
-            self.embeddings_file
-            and hasattr(self.embeddings_file, 'dirty')
-            and self.embeddings_file.dirty
+            hasattr(self, '_tmp_embeddings')
+            and self._tmp_embeddings is not None
+            and self._tmp_embeddings.exists()
         ):
-            self.embeddings_file.commit()
-            LOG.info(f'Embeddings committed to {self.embeddings_file.path}')
+            self._tmp_embeddings.unlink()
+
+        if self.embeddings_file and hasattr(self.embeddings_file, 'commit'):
+            if self.embeddings_file.commit():
+                LOG.debug(f'Embeddings committed to {self.embeddings_file.path}')
 
     def configure_model_and_context_info(
         self,
@@ -465,40 +487,199 @@ class Recognition(AxOperator):
         super().configure_model_and_context_info(
             model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
-        self.labels = model_info.labels
+        if not self._is_pair_validation:
+            model_info.labels = self.labels
+            model_info.num_classes = self.num_classes
+        self._association = context.association or None
+
+    def _create_reordered_embeddings_file(self):
+        """Create a temporary embeddings file with names_file ordering applied."""
+        import json
+        import time
+        import uuid
+
+        original_embeddings = self.embeddings_file.load_embeddings()
+        original_labels = self.embeddings_file.read_labels()
+
+        if original_embeddings.size == 0:
+            LOG.debug("No embeddings found to reorder")
+            return self.embeddings_file.path
+
+        names_file_path = Path(self.names_file)
+        LOG.debug(f"Creating reordered embeddings file using names file: {names_file_path}")
+
+        reordered_labels, reordered_embeddings, was_reordered = _reorder_embeddings_by_names(
+            original_labels, original_embeddings, names_file_path
+        )
+
+        if not was_reordered:
+            LOG.debug("No reordering needed, using original embeddings file")
+            return self.embeddings_file.path
+
+        reordered_dict = {
+            label: embedding.tolist()
+            for label, embedding in zip(reordered_labels, reordered_embeddings)
+        }
+
+        timestamp = int(time.time())
+        unique_id = str(uuid.uuid4())[:8]
+        temp_path = Path("/tmp") / f"reordered_embeddings_{timestamp}_{unique_id}.json"
+
+        with open(temp_path, 'w') as f:
+            json.dump(reordered_dict, f)
+
+        self._tmp_embeddings = Path(temp_path)
+        LOG.debug(f"Created reordered embeddings file: {self._tmp_embeddings}")
+        return str(self._tmp_embeddings)
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        raise NotImplementedError()
+        self.meta_type_name = (
+            "PairValidationMeta" if self._is_pair_validation else "ClassificationMeta"
+        )
+        master_key = f'master_meta:{self._where};' if self._where else str()
+        association_key = f'association_meta:{self._association};' if self._association else str()
+        embeddings_file_option = (
+            f'embeddings_file:{self.embeddings_file_path};'
+            if not self._is_pair_validation
+            else str()
+        )
+        gst.decode_muxer(
+            name=f'decoder_task{self._taskn}{stream_idx}',
+            lib='libdecode_facenet.so',
+            options=f'meta_key:{str(self.task_name)};'
+            f'decoder_name:{self.meta_type_name};'
+            f'{master_key}'
+            f'{association_key}'
+            f'{embeddings_file_option}'
+            f'distance_threshold:{self.distance_threshold};'
+            f'metric_type:{int(self.distance_metric.value)};'
+            f'pair_validation:{int(self._is_pair_validation)};'
+            f'top_k:{self.k};'
+            f'update_embeddings:{int(self.update_embeddings)};'
+            f'{self._join_labels_for_update(gst.images)}',
+        )
+
+    def _extract_person_name_from_path(self, image_id):
+        """Extract person name from an image path.
+
+        Handles paths like:
+        - AJ_Cook/AJ_Cook_0001.jpg (folder/person_name_image.jpg)
+        - DIR/AJ_Cook.jpg (any_folder/person_name.jpg)
+        """
+        if not image_id:
+            LOG.warning(f"Cannot extract person name: empty image_id")
+            return None
+
+        path = Path(image_id)
+
+        if path.parent.name and path.parent.name in path.stem:
+            return path.parent.name
+        else:
+            return path.stem
+
+    def _join_labels_for_update(self, images):
+        if not self.update_embeddings:
+            return str()
+        if not images:
+            raise ValueError(
+                "Embeddings can only be updated if the input is an image or a folder of images."
+            )
+        labels_for_update = 'labels_for_update:'
+        for img_id in images:
+            person_name = self._extract_person_name_from_path(img_id)
+            if not person_name:
+                raise ValueError(
+                    f"Cannot extract person name from image path: {img_id}. "
+                    "Ensure the image path follows the expected format."
+                )
+            labels_for_update += f'{person_name},'
+        if labels_for_update.endswith(','):
+            labels_for_update = labels_for_update[:-1]
+        labels_for_update += ';'
+        return labels_for_update
+
+    def _load_reference_embeddings(self):
+        self.ref_embedding = self.embeddings_file.load_embeddings()
+        if self.ref_embedding.size == 0:
+            LOG.info(
+                "No reference embeddings found in the file. Will create new if update_embeddings=True."
+            )
+            self.labels = []
+            self.num_classes = 0
+            return
+
+        self.labels = self.embeddings_file.read_labels()
+        self.num_classes = len(self.labels)
+
+        LOG.info(
+            f"Loaded {self.num_classes} reference embeddings, shape: {self.ref_embedding.shape}"
+        )
+
+        # Reorder embeddings only once if names_file is provided
+        if self.names_file is not None:
+            names_file_path = Path(self.names_file)
+            LOG.info(f"Using names file for embedding ordering: {names_file_path}")
+
+            (self.labels, self.ref_embedding, was_reordered) = _reorder_embeddings_by_names(
+                self.labels, self.ref_embedding, names_file_path
+            )
+            self.num_classes = len(self.labels)
+            LOG.info(
+                f"After reordering: {len(self.labels)} labels, embedding shape: {self.ref_embedding.shape}"
+            )
 
     def exec_torch(self, image, predict, axmeta):
-        if not self._is_pair_validation:
-            if self.ref_embedding is None:
-                self.ref_embedding = self.embeddings_file.load_embeddings()
-                if self.ref_embedding.size == 0:
+        embedding = predict.cpu().detach().numpy()
+        if embedding.ndim != 2:  # Handle both 1D and 2D embeddings
+            embedding = embedding.reshape(1, -1)
+
+        norm = np.linalg.norm(embedding, axis=1, keepdims=True)
+        embedding = embedding / norm
+
+        if self._is_pair_validation:
+            # Face Verification mode
+            model_meta = axmeta.get_instance(
+                self.task_name,
+                meta.PairValidationMeta,
+            )
+
+            if model_meta.add_result(embedding) and self._where:
+                axmeta.add_instance(self.task_name, model_meta, self._where)
+                axmeta.delete_instance(self.task_name)
+
+            if self.update_embeddings and axmeta.image_id:
+                person_name = self._extract_person_name_from_path(axmeta.image_id)
+                if person_name:
+                    self.embeddings_file.update(embedding, person_name)
+
+        else:
+            # Check if we have reference embeddings
+            if self.ref_embedding is None or self.ref_embedding.size == 0:
+                if self.update_embeddings and axmeta.image_id:
+                    # No reference embeddings yet, but we can start building them
+                    person_name = self._extract_person_name_from_path(axmeta.image_id)
+                    if person_name:
+                        self.embeddings_file.update(embedding, person_name)
+
+                        # Initialize reference embeddings with this first one
+                        self.ref_embedding = embedding
+                        self.labels = [person_name]
+                        self.num_classes = 1
+                        self._embeddings_loaded = True
+                else:
                     raise RuntimeError(
-                        f'No reference embedding found, please check {self.embeddings_file.path}'
+                        f"No reference embedding found, please check {self.embeddings_file.path}"
                     )
-                self.labels = self.embeddings_file.read_labels(self.labels)
-                self.num_classes = len(self.labels)
+                # Skip classification if we just added the first embedding
+                return image, predict, axmeta
 
-                if self.names_file is not None:
-                    self.labels, self.ref_embedding = _reorder_embeddings_by_names(
-                        self.labels, self.ref_embedding, Path(self.names_file)
-                    )
-
+            # Perform classification
             model_meta = meta.ClassificationMeta(
                 labels=self.labels,
                 num_classes=self.num_classes,
             )
 
-        # find closest embedding
-        embedding = predict.cpu().detach().numpy()
-        # L2 norm, equal to TF.normalize(predict, p=2, dim=1)
-        norm = np.linalg.norm(embedding, axis=1, keepdims=True)
-        embedding = embedding / norm
-
-        if not self._is_pair_validation:
-            embedding.shape, self.ref_embedding.shape
+            # Calculate distances/similarities
             if self.distance_metric == embed_utils.DistanceMetric.euclidean_distance:
                 distances_or_similarities = embed_utils.euclidean_distance(
                     embedding, self.ref_embedding
@@ -529,26 +710,37 @@ class Recognition(AxOperator):
             top_scores[index] = -1
 
             for i in range(len(top_ids)):
-                try:
-                    label = self.labels(int(top_ids[i])).name
-                except TypeError:
-                    label = self.labels[int(top_ids[i])]
-                LOG.trace(f'top_ids: {top_ids[i]}, top_scores: {top_scores[i]}, person: {label}')
+                if top_ids[i] >= 0:
+                    try:
+                        label = self.labels(int(top_ids[i])).name
+                    except TypeError:
+                        label = self.labels[int(top_ids[i])]
+                    LOG.debug(
+                        f'top_ids: {top_ids[i]}, top_scores: {top_scores[i]}, person: {label}'
+                    )
 
             model_meta.add_result(top_ids, top_scores)
             axmeta.add_instance(self.task_name, model_meta, self._where)
-        else:
-            # print(f"axmeta: {axmeta}")
-            model_meta = axmeta.get_instance(
-                self.task_name,
-                meta.PairValidationMeta,
-            )
-            if model_meta.add_result(embedding) and self._where:
-                # put the task meta into the secondary meta map
-                axmeta.add_instance(self.task_name, model_meta, self._where)
-                axmeta.delete_instance(self.task_name)
-            if self.generate_embeddings:
-                self.embeddings_file.update(embedding, axmeta.image_id)
+
+            # Handle updating embeddings in classification mode
+            if self.update_embeddings and axmeta.image_id:
+                person_name = self._extract_person_name_from_path(axmeta.image_id)
+                if person_name:
+                    # Check if this is a new person or an update
+                    is_new_person = person_name not in self.labels
+
+                    LOG.debug(
+                        f"[CLASSIFICATION] {'Adding new' if is_new_person else 'Updating'} embedding for: {person_name}"
+                    )
+                    self.embeddings_file.update(embedding, person_name)
+
+                    # Only update in-memory references for truly new persons
+                    if is_new_person:
+                        LOG.info(f"New person detected, adding to reference: {person_name}")
+                        # Append new embedding to existing ones
+                        self.ref_embedding = np.vstack([self.ref_embedding, embedding])
+                        self.labels.append(person_name)
+                        self.num_classes = len(self.labels)
 
         return image, predict, axmeta
 
@@ -729,19 +921,6 @@ class GetRawTensor(AxOperator):
     - consider using GetRawTensor automatically when --tensor
     - set default as True when we have a powerful SuperPostamble to handle all the transforms efficiently
     """
-
-    dequantized_and_depadded: bool = False
-    transposed: bool = False
-    postamble_processed: bool = False
-
-    def _post_init(self):
-        if self.postamble_processed:
-            assert (
-                self.dequantized_and_depadded and self.transposed
-            ), "dequantized_and_depadded and transposed must be True when postamble_processed is True"
-        self.cpp_decoder_does_dequantization_and_depadding = not self.dequantized_and_depadded
-        self.cpp_decoder_does_transpose = not self.transposed
-        self.cpp_decoder_does_postamble = not self.postamble_processed
 
     def configure_model_and_context_info(
         self,

@@ -11,6 +11,7 @@ import textwrap
 import yaml
 
 from axelera import types
+from axelera.app import config
 
 _YELLOW = "\x1b[33;20m"
 _RESET = "\x1b[0m"
@@ -44,7 +45,9 @@ _EXCLUDE_DIRS = ['training_yamls', 'yolo/cfg']
 def get_model_files(dir, exclude_dirs):
     all_exclude_dirs = _EXCLUDE_DIRS + exclude_dirs
     files = []
-    for path in Path(dir).rglob('*.yaml'):
+
+    search_dir = config.env.framework / dir
+    for path in search_dir.rglob('*.yaml'):
         if path.is_file() and not any([d in str(path) for d in all_exclude_dirs]):
             files.append(str(path))
     return files
@@ -72,16 +75,36 @@ def model_sanity_check(model, path) -> list[str] | None:
     # check for expected sections
     # TODO: could be an enforced schema instead
     msgs = []
+
+    # If _AXELERA_FORMAT_KEY is not in the YAML, we should skip it
+    if _AXELERA_FORMAT_KEY not in model:
+        return None
+
     axelera_model_format = model.get(_AXELERA_FORMAT_KEY)
     if axelera_model_format != _EXPECTED_MODEL_FORMAT:
         msgs += [
             f'{path}: Expected {_AXELERA_FORMAT_KEY}: {_EXPECTED_MODEL_FORMAT} but found {axelera_model_format}'
         ]
+
+    # Check if the model has a models section
+    if 'models' not in model or not model['models']:
+        msgs += [f'{path}: Missing or empty models section']
+        NN_FILE_MSGS.append("\n".join(msgs))
+        return None
+
     # At the moment we can't mix vision and language model task
-    task_category = getattr(
-        types.TaskCategory, next(iter(model['models'].values()))['task_category']
-    )
-    task_category = task_category if task_category == types.TaskCategory.LanguageModel else None
+    try:
+        task_category = getattr(
+            types.TaskCategory, next(iter(model['models'].values()))['task_category']
+        )
+        task_category = (
+            task_category if task_category == types.TaskCategory.LanguageModel else None
+        )
+    except (KeyError, StopIteration, AttributeError):
+        msgs += [f'{path}: Invalid model structure - missing task_category in models']
+        NN_FILE_MSGS.append("\n".join(msgs))
+        return None
+
     expected_keys = _expected_model_keys.get(task_category).get(_EXPECTED_MODEL_FORMAT)
     model_keys = set(model.keys())
     if not expected_keys.issubset(model_keys):
@@ -452,6 +475,7 @@ def get_network_yaml_info(
     model_cards_only: bool = False,
     check_customer_models: bool = False,
     apply_framework_dir: bool = True,
+    llm_in_model_cards: bool = True,  # this replaces `not model_cards_only` in initial implementation
     include_collections: list[str] | None = None,
 ):
     """Get network YAML information for specified model collections.
@@ -467,7 +491,7 @@ def get_network_yaml_info(
         model_cards_only,
         check_customer_models,
         apply_framework_dir,
-        llm_in_model_cards=not model_cards_only,
+        llm_in_model_cards,
     )
 
     if model_cards_only:

@@ -21,7 +21,6 @@ TEST(ax_meta_base, insert_submeta)
 
   EXPECT_NO_THROW(meta.insert_submeta("submeta", 1, 2, submeta1));
   EXPECT_NO_THROW(meta.insert_submeta("submeta", 0, 2, submeta2));
-  EXPECT_THROW(meta.insert_submeta("submeta", 2, 3, submeta3), std::runtime_error);
 }
 
 TEST(ax_meta_base, get_submeta)

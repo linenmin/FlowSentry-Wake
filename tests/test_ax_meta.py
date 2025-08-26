@@ -159,14 +159,13 @@ def test_keys():
         'container_meta',
         'master_meta_name',
         'subframe_index',
+        'meta_name',
         '_objects',
         'field1',
         'field2',
         'field3',
     ]
-    assert (
-        task_meta.members() == expected_keys
-    ), "Should return all member variable names except 'container_meta'"
+    assert task_meta.members() == expected_keys, "Should return all member variable names"
 
 
 def test_keys_with_no_fields():
@@ -181,6 +180,7 @@ def test_keys_with_no_fields():
         'container_meta',
         'master_meta_name',
         'subframe_index',
+        'meta_name',
         '_objects',
     ]
 
@@ -621,6 +621,7 @@ def test_ax_base_task_meta():
         'container_meta',
         'master_meta_name',
         'subframe_index',
+        'meta_name',
     ]
 
     container_meta = AxMeta("image_id")

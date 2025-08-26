@@ -161,10 +161,12 @@ TEST(ax_oputils_tests, test_indices_for_topk)
   auto result_c_topk
       = ax_utils::indices_for_topk_center(bboxes, 5, image_width, image_height);
   auto result_a_topk = ax_utils::indices_for_topk_area(bboxes, 5);
-  std::vector<int> expected_k = { 0, 1, 2 };
-  ASSERT_EQ(result_s_topk, expected_k);
-  ASSERT_EQ(result_c_topk, expected_k);
-  ASSERT_EQ(result_a_topk, expected_k);
+  std::vector<int> expected_s = { 1, 2, 0 }; // indices sorted by scores
+  std::vector<int> expected_c = { 1, 0, 2 }; // indices sorted by distance to center
+  std::vector<int> expected_a = { 2, 0, 1 }; // indices sorted by area
+  ASSERT_EQ(result_s_topk, expected_s);
+  ASSERT_EQ(result_c_topk, expected_c);
+  ASSERT_EQ(result_a_topk, expected_a);
 }
 
 const std::unordered_map<std::string, std::string> properties = {

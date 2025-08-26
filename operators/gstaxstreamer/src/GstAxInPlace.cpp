@@ -152,7 +152,6 @@ gst_axinplace_propose_allocation(GstBaseTransform *sink, GstQuery *decide_query,
   gst_query_parse_allocation(query, &caps, &need_pool);
 
   if (!caps) {
-    GST_ERROR_OBJECT(self, "Allocation query has no caps");
     return TRUE;
   }
 

@@ -1,37 +1,7 @@
-![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-
 # SLM Inference on Axelera AI Platform
 
-- [SLM Inference on Axelera AI Platform](#slm-inference-on-axelera-ai-platform)
-  - [Environment Setup](#environment-setup)
-  - [Supported Pipelines](#supported-pipelines)
-  - [Usage Modes](#usage-modes)
-    - [1. Single Prompt Mode](#1-single-prompt-mode)
-    - [2. Interactive CLI Mode](#2-interactive-cli-mode)
-    - [3. Beautiful CLI (Rich) Mode](#3-beautiful-cli-rich-mode)
-    - [4. Web UI Mode](#4-web-ui-mode)
-  - [Showing Performance Statistics](#showing-performance-statistics)
-  - [Customizing System Prompt and Temperature](#customizing-system-prompt-and-temperature)
-    - [`--system-prompt`](#--system-prompt)
-    - [`--temperature`](#--temperature)
-  - [Chat Memory (History)](#chat-memory-history)
-  - [File Structure](#file-structure)
-  - [Embedding File Generation](#embedding-file-generation)
-  - [Additional Notes](#additional-notes)
-  - [Further support](#further-support)
-
 Axelera AI is excited to offer support for Small Language Models (SLMs) on our Metis platform. The Voyager SDK enables a selection of popular, license-free SLMs, allowing users to experience language model inference on our hardware.
-The below models are available in pre-compiled form and require a Metis PCIe Card to run due to a minimum RAM size requirement of 4 GB. This feature demonstrates the potential of running efficient language model inference on Axelera AI's hardware architecture.
-
-| Model                                                                                      | LLM reference name             | Max Context Window (tokens) | Required PCIe Card RAM |
-| :----------------------------------------------------------------------------------------- | :----------------------------- | --------------------------: | ---------------------: |
-| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-512-static.yaml)           | phi3-mini-512-static           | 512                         | 4 GB                   |
-| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-1024-4core-static.yaml)    | phi3-mini-1024-4core-static    | 1024                        | 16 GB                  |
-| [microsoft/Phi-3-mini-4k-instruct](/ax_models/zoo/llm/phi3-mini-2048-4core-static.yaml)    | phi3-mini-2048-static          | 2048                        | 16 GB                  |
-| [meta-llama/Llama-3.2-1B-Instruct](/ax_models/zoo/llm/llama-3-2-1b-1024-4core-static.yaml) | llama-3-2-1b-1024-4core-static | 1024                        | 4 GB                   |
-| [meta-llama/Llama-3.2-3B-Instruct](/ax_models/zoo/llm/llama-3-2-3b-1024-4core-static.yaml) | llama-3-2-3b-1024-4core-static | 1024                        | 4 GB                   |
-| [meta-llama/Llama-3.1-8B-Instruct](/ax_models/zoo/llm/llama-3-1-8b-1024-4core-static.yaml) | llama-3-1-8b-1024-static       | 1024                        | 16 GB                  |
-| [Almawave/Velvet-2B](/ax_models/zoo/llm/velvet-2b-1024-4core-static.yaml)                  | velvet-2b-1024-static          | 1024                        | 4 GB                   |
+You can try several precompiled models to explore the capabilities available today. This feature demonstrates the potential of running efficient language model inference on Axelera AI's hardware architecture.
 
 ---
 
@@ -246,11 +216,3 @@ The script `llm/extract_embeddings.py` is used to generate embedding files **off
 
 - The CLI and UI both support streaming output, but TTFT may be high due to model prefill.
 - For more advanced usage, see the help: `./inference_llm.py --help`
-
----
-
-## Further support
-
-For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
-
-For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

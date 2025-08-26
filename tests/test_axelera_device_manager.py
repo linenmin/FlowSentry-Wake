@@ -193,13 +193,17 @@ def test_tracer_clock_correct(caplog, clock, expected, warnings):
     mock_nn.tasks = [Mock()]
     mock_nn.tasks[0].aipu_cores = ncores
     mock_nn.tasks[0].model_info.name = 'mymodel'
+    mock_nn.tasks[0].is_dl_task = True
+    mock_nn.model_infos.clock_profile.return_value = clock
+    mock_nn.model_infos.mvm_limitation.return_value = 100
     with mock_runtime(['OMEGA_PCIE'], read_device_configuration=cfg):
         with device_manager.create_device_manager('gst') as dm:
             got = dm.configure_boards_and_tracers(mock_nn, [mock_tracer])
     assert got == [mock_tracer]
     exp = {n: expected for n in range(ncores)}
+    devices = ['metis-0:1:0']
     mock_tracer.initialize_models.assert_called_once_with(
-        mock_nn.model_infos, config.Metis.pcie, exp
+        mock_nn.model_infos, config.Metis.pcie, exp, devices
     )
     if warnings:
         assert warnings in caplog.text
@@ -261,6 +265,9 @@ def test_configure_board_bad_input(in_env, err):
         nn = Mock()
         nn.tasks = [Mock()]
         nn.tasks[0].aipu_cores = 1
+        nn.tasks[0].is_dl_task = True
+        nn.model_infos.clock_profile.return_value = 800
+        nn.model_infos.mvm_limitation.return_value = 100
         with device_manager.create_device_manager('gst') as dm:
             with pytest.raises(
                 ValueError, match=f'Badly formatted AXELERA_CONFIGURE_BOARD : {err}'

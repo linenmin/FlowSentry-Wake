@@ -7,6 +7,8 @@ preprocess:
      scaleup: True
      half_pixel_centers: True
  - torch-totensor:
+inference:
+  handle_all: False
 postprocess:
   - decodeyoloseg:
       box_format: xywh # box format of the model output

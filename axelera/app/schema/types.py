@@ -4,7 +4,14 @@ from abc import ABC
 from axelera.types import enums
 import strictyaml as sy
 
-from .validators import AllowDashValidator, CaseInsensitiveEnumValidator, IntEnumValidator
+from .validators import (
+    AllowDashValidator,
+    CaseInsensitiveEnumValidator,
+    IntEnumValidator,
+    LabelTypeValidator,
+    NullValidator,
+    OperatorMapValidator,
+)
 
 # Fundamental types - not for direct use
 
@@ -99,9 +106,17 @@ class Required(CompoundType):
 class Map(MapType):
     @classmethod
     def _as_strictyaml(cls, schema, allow_key_dashes):
-        if allow_key_dashes:
-            return sy.Map(schema, key_validator=AllowDashValidator())
-        return sy.Map(schema)
+        key_validator = AllowDashValidator() if allow_key_dashes else None
+        return sy.Map(schema, key_validator)
+
+
+class OperatorMap(MapType):
+    """A Map with better error messages for undeclared operators."""
+
+    @classmethod
+    def _as_strictyaml(cls, schema, allow_key_dashes):
+        key_validator = AllowDashValidator() if allow_key_dashes else None
+        return OperatorMapValidator(schema, key_validator)
 
 
 class MapCombined(MapType):
@@ -224,15 +239,6 @@ class EmptyList(BaseType):
 class Null(BaseType):
     @classmethod
     def _as_strictyaml(cls):
-        class NullValidator(sy.Validator):
-            def validate(self, chunk):
-                if chunk.contents == "null":
-                    return None
-                else:
-                    raise sy.exceptions.YAMLValidationError(
-                        "when expecting null", f"found {chunk.contents}", chunk
-                    )
-
         return sy.EmptyNone() | NullValidator()
 
 
@@ -284,49 +290,6 @@ class TopKRanking(Enum):
     ]
 
 
-class LabelTypeValidator(sy.ScalarValidator):
-    def __init__(self):
-        from ax_datasets.objdataadapter import SupportedLabelType
-
-        self.label_type_enum = SupportedLabelType
-
-    def validate_scalar(self, chunk):
-        try:
-            # Use the improved from_string method
-            enum_value = self.label_type_enum.from_string(chunk.contents)
-            return enum_value.name
-        except ValueError:
-            # Generate error with all valid format options
-            valid_formats = set()
-            # Include keys from mapping
-            for key in self._get_mapping_keys():
-                valid_formats.add(key)
-            # Include enum names
-            for member in self.label_type_enum:
-                valid_formats.add(member.name)
-
-            raise sy.exceptions.YAMLValidationError(
-                f"when expecting one of {sorted(list(valid_formats))}",
-                f"found '{chunk.contents}'",
-                chunk,
-            )
-
-    def _get_mapping_keys(self):
-        """Get keys from the mapping dictionary in from_string method"""
-        import inspect
-
-        source = inspect.getsource(self.label_type_enum.from_string)
-        keys = []
-        if 'mapping = {' in source:
-            mapping_str = source.split('mapping = {')[1].split('}')[0]
-            for line in mapping_str.strip().split('\n'):
-                if ':' in line:
-                    key = line.split(':')[0].strip().strip("'\"")
-                    if key:
-                        keys.append(key)
-        return keys
-
-
 class SupportedLabelType(BaseType):
     @classmethod
     def _as_strictyaml(cls):
@@ -348,11 +311,11 @@ class Expression(Regex):
 
 def compile_schema(definition, check_required):
     compiled = {}
-    MapOrMapCombined = Map
+    MapType = Map
     allow_key_dashes = False
     for key, value in definition.items():
         if key == "_type":
-            MapOrMapCombined = value
+            MapType = value
         elif key == "_allow_key_dashes":
             allow_key_dashes = value
         elif isinstance(value, dict):
@@ -361,4 +324,4 @@ def compile_schema(definition, check_required):
             compiled[key(check_required)] = value(check_required)
         else:
             compiled[key(check_required)] = value()
-    return MapOrMapCombined(compiled, allow_key_dashes)
+    return MapType(compiled, allow_key_dashes)

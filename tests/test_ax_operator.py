@@ -278,9 +278,12 @@ def test_ax_operator_configure_model_and_context_info():
     mi.name = 'modelname'
     mi.manifest = types.Manifest(
         'modellib',
+        input_shapes=[(1, 3, 224, 224)],
+        input_dtypes=['uint8'],
+        output_shapes=[(1, 1000)],
+        output_dtypes=['float32'],
         quantize_params=[(0.1, -14)],
         dequantize_params=[(0.3, 0.4)],
-        input_shapes=[(1, 3, 224, 224)],
     )
 
     class TestOp(AxOperator):

@@ -31,15 +31,10 @@ from . import (
     operators,
     pipe,
     schema,
+    torch_utils,
     utils,
 )
-from .operators import (
-    AxOperator,
-    Inference,
-    InferenceConfig,
-    compose_preprocess_transforms,
-    get_input_operator,
-)
+from .operators import AxOperator, compose_preprocess_transforms, get_input_operator
 
 LOG = logging_utils.getLogger(__name__)
 COMPILER_LOG = logging_utils.getLogger('compiler')
@@ -48,6 +43,7 @@ COMPILER_LOG = logging_utils.getLogger('compiler')
 TASK_PROPERTIES = {
     'input',
     'preprocess',
+    'inference',
     'postprocess',
     'template_path',
     'operators',
@@ -62,22 +58,25 @@ class AxTask:
     name: str
     input: AxOperator
     preprocess: List[AxOperator] = dataclasses.field(default_factory=list)
+    image_preproc_ops: dict[int, list[AxOperator]] = dataclasses.field(default_factory=dict)
     model_info: types.ModelInfo = None
     context: operators.PipelineContext = None
-    inference_config: InferenceConfig = None
-    inference: Optional[Inference] = None
+    inference_op_config: operators.InferenceOpConfig = None
+    inference: Optional[operators.Inference] = None
     postprocess: List[AxOperator] = dataclasses.field(default_factory=list)
     aipu_cores: Optional[int] = None
     validation_settings: dict = dataclasses.field(default_factory=dict)
     data_adapter: types.DataAdapter = None
     # cv_process will be assigned for classical CV operators only
     cv_process: AxOperator = None
+    # default render config from YAML; can be overridden by APIs
+    task_render_config: Optional[config.RenderConfig] = None
 
     def __repr__(self):
         return f"""AxTask('{self.name}',
     input={self.input},
     preprocess={self.preprocess},
-    inference_config={self.inference_config},
+    inference_op_config={self.inference_op_config},
     inference={self.inference},
     postprocess={self.postprocess},
     model_info={self.model_info},
@@ -86,6 +85,7 @@ class AxTask:
     validation_settings={self.validation_settings},
     data_adapter={self.data_adapter},
     cv_process={self.cv_process},
+    task_render_config={self.task_render_config},
 )"""
 
     @property
@@ -101,17 +101,11 @@ class AxTask:
         return self.model_info.model_type == types.ModelType.DEEP_LEARNING
 
 
-def update_pending_expansions(task):
-    for ops in [task.preprocess, task.postprocess]:
-        for op in ops:
-            for field in op.supported:
-                x = getattr(op, field)
-                if x == schema.SENTINELS['labels']:
-                    setattr(op, field, task.model_info.labels)
-                elif x == schema.SENTINELS['label_filter']:
-                    setattr(op, field, task.model_info.label_filter)
-                elif x == schema.SENTINELS['num_classes']:
-                    setattr(op, field, task.model_info.num_classes)
+def _parse_task_render_config(phases: dict) -> Optional[config.TaskRenderConfig]:
+    task_render_config = None
+    if task_render_config_dict := phases.pop('render', {}):
+        task_render_config = config.TaskRenderConfig.from_dict(task_render_config_dict)
+    return task_render_config
 
 
 def _parse_deep_learning_task(
@@ -124,10 +118,12 @@ def _parse_deep_learning_task(
     model_name = phases.get('model_name', task_name)
     model_info = model_infos.model(model_name)
     phases = utils.substitute_vars_and_expr(phases, model_info_as_kwargs(model_info), model_name)
+    task_render_config = _parse_task_render_config(phases)
     template = _get_template_processing_steps(phases, model_info)
     for d in [template, phases]:
         d.setdefault('input', {})
         d.setdefault('preprocess', [])
+        d.setdefault('inference', {})
         d.setdefault('postprocess', [])
         if unknown := [k for k in d.keys() if k not in TASK_PROPERTIES]:
             msg = 'is not a valid property' if len(unknown) == 1 else 'are not valid properties'
@@ -140,18 +136,20 @@ def _parse_deep_learning_task(
     postprocess = _gen_processing_transforms(
         phases, template, custom_operators, 'postprocess', task_name, eval_mode
     )
-    first_postprocess_op = postprocess[0] if postprocess else None
-
+    inf_op_config = operators.InferenceOpConfig.from_yaml_dict(
+        phases['inference'], template['inference'], postprocess
+    )
     task = AxTask(
         task_name,
         input=inp,
         preprocess=preprocess,
         model_info=model_info,
         context=operators.PipelineContext(),
-        inference_config=operators.InferenceConfig.from_model_info(model_info.extra_kwargs),
+        inference_op_config=inf_op_config,
         inference=None,
         postprocess=postprocess,
         aipu_cores=model_info.extra_kwargs.get('aipu_cores'),
+        task_render_config=task_render_config,
     )
 
     validation_settings = {}
@@ -195,12 +193,14 @@ def _parse_classical_cv_task(
             raise ValueError(f"{opname}: Not a valid classical CV operator")
         attribs = dict(attribs or {}, **(cv_transforms.get(opname) or {}))
         cv_process.append(operator(**attribs))
+    task_render_config = _parse_task_render_config(phases)
     return AxTask(
         task_name,
         input=input,
         cv_process=cv_process,
         context=operators.PipelineContext(),
         model_info=model_info,
+        task_render_config=task_render_config,
     )
 
 
@@ -268,13 +268,17 @@ def _get_dict_of_operator_list(list_of_dicts):
     return {k: v for d in list_of_dicts for k, v in d.items()} if list_of_dicts else {}
 
 
+def _normalize_operator_name(name: str) -> str:
+    return name.replace('-', '').replace('_', '').lower()
+
+
 def _convert_yaml_operator_name(operation_steps: list, target: str) -> None:
     '''Remove dash and underscore from input operator names in-place'''
     if not operation_steps:
         return []
     for operation in operation_steps:
         key, value = operation.popitem()  # should have one element only
-        operation[key.replace('-', '').replace('_', '')] = value
+        operation[_normalize_operator_name(key)] = value
 
 
 def _gen_processing_transforms(
@@ -359,6 +363,13 @@ def _check_calibration_data_loader(model: types.Model, data_loader: types.DataLo
         )
 
 
+def _register_model_output_info(model_obj: types.Model, model_info: types.ModelInfo):
+    if isinstance(model_obj, types.ONNXModel):
+        model_info.register_outputs_from_onnx(model_info.weight_path)
+    else:
+        model_info.register_outputs_from_pytorch(model_obj)
+
+
 builtin_print = builtins.print
 matcher = re.compile(r'(error|warning|info|debug|trace|fatal|critical|exception)', re.IGNORECASE)
 
@@ -380,15 +391,18 @@ def _deploy_model(
     nn,
     compilation_cfg,
     num_cal_images,
-    batch,
     model_dir,
     is_export: bool,
     compile_object: bool,
     deploy_mode: config.DeployMode,
     metis: config.Metis,
     model_infos: network.ModelInfos,
+    cal_seed: int | None,
+    is_default_representative_images: bool = True,
+    dump_core_model: bool = False,
 ):
     # Compile specified model
+    batch = 1
     try:
         dataset_cfg = nn.model_dataset_from_task(task.name) or {}
 
@@ -400,16 +414,32 @@ def _deploy_model(
 
                 if compile_object:
                     data_root_path = Path(dataset_cfg['data_dir_path'])
+
+                    generator = None
+                    if cal_seed is not None:
+                        import torch
+
+                        generator = torch.Generator()
+                        generator.manual_seed(cal_seed)
+
                     if "repr_imgs_dir_path" in dataset_cfg:
                         value = dataset_cfg["repr_imgs_dir_path"]
                         if not isinstance(value, Path):
                             dataset_cfg["repr_imgs_dir_path"] = Path(value)
-                    calibration_data_loader = model_obj.create_calibration_data_loader(
-                        preprocess,
-                        data_root_path,
-                        batch,
-                        **dataset_cfg,
-                    )
+                        calibration_data_loader = model_obj.check_representative_images(
+                            preprocess,
+                            batch,
+                            generator=generator,
+                            **dataset_cfg,
+                        )
+                    else:  # this need to change to when users saying --cal_seed == None
+                        calibration_data_loader = model_obj.create_calibration_data_loader(
+                            preprocess,
+                            data_root_path,
+                            batch,
+                            generator=generator,
+                            **dataset_cfg,
+                        )
 
                     _check_calibration_data_loader(model_obj, calibration_data_loader)
                     num_cal_images_from_dataset = len(calibration_data_loader) * batch
@@ -420,9 +450,14 @@ def _deploy_model(
                             f"  1. Reduce --num-cal-images to {num_cal_images_from_dataset} or less\n"
                             f"  2. Add more images to the calibration dataset"
                         )
+                    if is_default_representative_images:
+                        reformat_for_calibration = lambda x: x
+                    else:
+                        reformat_for_calibration = model_obj.reformat_for_calibration
+
                     batch_loader = data_utils.NormalizedDataLoaderImpl(
                         calibration_data_loader,
-                        model_obj.reformat_for_calibration,
+                        reformat_for_calibration,
                         is_calibration=True,
                         num_batches=(num_cal_images + batch - 1) // batch,
                     )
@@ -437,6 +472,7 @@ def _deploy_model(
                         decoration_flags = model_infos.determine_deploy_decoration(
                             model_name, ncores, metis
                         )
+                        _register_model_output_info(model_obj, task.model_info)
 
                     with patch.object(builtins, 'print', print_as_logger):
                         compile.compile(
@@ -448,6 +484,7 @@ def _deploy_model(
                             deploy_mode,
                             metis,
                             decoration_flags,
+                            dump_core_model,
                         )
 
         _trace_model_info(task.model_info, LOG.trace)
@@ -474,45 +511,36 @@ def _deploy_model(
 
 def deploy_from_yaml(
     nn_name: str,
-    path,
     pipeline_only,
     models_only,
     model,
-    pipe_type,
+    system_config: config.SystemConfig,
+    pipeline_config: config.PipelineConfig,
+    deploy_config: config.DeployConfig,
     deploy_mode: config.DeployMode,
-    num_cal_images,
-    calibration_batch,
-    data_root,
-    build_root,
     is_export,
-    hardware_caps: config.HardwareCaps,
     metis: config.Metis,
-    cal_seed: int,
 ):
-    with device_manager.create_device_manager(pipe_type, metis, deploy_mode) as dm:
+    with device_manager.create_device_manager(pipeline_config.pipe_type, metis, deploy_mode) as dm:
         return _deploy_from_yaml(
             dm,
             nn_name,
-            path,
             pipeline_only,
             models_only,
             model,
-            pipe_type,
+            system_config,
+            pipeline_config,
+            deploy_config,
             deploy_mode,
-            num_cal_images,
-            calibration_batch,
-            data_root,
-            build_root,
             is_export,
-            hardware_caps,
             metis,
-            cal_seed,
         )
 
 
 def run(cmd, shell=True, check=True, verbose=False, capture_output=True):
     if verbose:
         print(cmd)
+        capture_output = False  # for debugging
     try:
         result = subprocess.run(
             cmd,
@@ -528,34 +556,133 @@ def run(cmd, shell=True, check=True, verbose=False, capture_output=True):
                 print(result.stderr)
         return result
     except subprocess.CalledProcessError as e:
+        print(f"Command failed: {e.cmd}")
+        print(f"Return code: {e.returncode}")
+        if e.stdout:
+            print(f"STDOUT: {e.stdout}")
+        if e.stderr:
+            print(f"STDERR: {e.stderr}")
         raise
+
+
+def _build_deploy_command_and_run(
+    nn_name: str,
+    model_name: str,
+    num_cal_images: int,
+    calibration_batch: int,
+    data_root: str,
+    pipe_type: str,
+    build_root,
+    metis: config.Metis,
+    cal_seed: int | None = None,
+    hardware_caps: config.HardwareCaps | None = None,
+    aipu_cores: int | None = None,
+    mode: str | None = None,
+    debug: bool = False,
+    trace: str = '',
+    default_representative_images: bool = True,
+    capture_output: bool = True,
+    verbose_run: bool = False,
+    use_spinner: bool = False,
+) -> None:
+    """
+    Build and execute a deploy.py command with all the consolidated logic.
+
+    This function consolidates all deploy.py subprocess calling patterns across
+    the codebase, including run_dir handling, command construction, and execution.
+    """
+    run_dir = config.env.framework
+
+    # Build base command
+    cmd_parts = [
+        f'{run_dir}/deploy.py',
+        f'--model {model_name}',
+        f'--num-cal-images {num_cal_images}',
+        f'--calibration-batch {calibration_batch}',
+    ]
+
+    # Add hardware capabilities if provided
+    if hardware_caps:
+        cap_argv = hardware_caps.as_argv()
+        if cap_argv:
+            cmd_parts.append(cap_argv)
+
+    # Add default representative images flag
+    if default_representative_images:
+        cmd_parts.append('--default-representative-images')
+
+    # Add other standard parameters
+    cmd_parts.extend(
+        [
+            f'--data-root {data_root}',
+            f'--pipe {pipe_type}',
+            f'--build-root {build_root}',
+            nn_name,
+        ]
+    )
+
+    # Add AIPU cores if specified
+    if aipu_cores is not None:
+        cmd_parts.append(f'--aipu-cores {aipu_cores}')
+
+    # Add metis configuration
+    cmd_parts.append(f'--metis {metis.name}')
+
+    # Add mode if specified (for quantization)
+    if mode:
+        cmd_parts.append(f'--mode {mode}{"_DEBUG" if debug else ""}')
+
+    # Add trace flag if provided
+    if trace:
+        cmd_parts.append(trace)
+
+    # Add calibration seed if provided
+    if cal_seed is not None:
+        cmd_parts.append(f'--cal-seed {cal_seed}')
+
+    cmd = ' '.join(cmd_parts)
+
+    # Execute the command with appropriate context
+    def _execute():
+        run(cmd, capture_output=capture_output, verbose=verbose_run)
+
+    if use_spinner:
+        with utils.spinner():
+            _execute()
+    else:
+        _execute()
 
 
 def _quantize_single_model(
     nn_name: str,
     model_name: str,
-    num_cal_images: int,
-    calibration_batch: int,
-    hardware_caps: config.HardwareCaps,
-    data_root: str,
+    system_config: config.SystemConfig,
+    deploy_config: config.DeployConfig,
     pipe_type: str,
-    build_root,
     metis: config.Metis,
-    cal_seed: int,
     debug: bool = False,
 ):
     """quantize a model in a separate process because of quantizer OOM"""
     deploy_info = f'{nn_name}: {model_name}'
     LOG.info(f"Prequantizing {deploy_info}")
-    run_dir = os.environ.get('AXELERA_FRAMEWORK', '.')
+    run_dir = config.env.framework
     try:
         trace = '-v ' if LOG.isEnabledFor(logging_utils.TRACE) else ''
+        # default_representative_images
+        cal_argv = f'--cal-seed {deploy_config.cal_seed}' if deploy_config.cal_seed else ''
+        cal_argv += (
+            ' --no-default-representative-images'
+            if not deploy_config.default_representative_images
+            else ''
+        )
+        dump_core_model_argv = ' --dump-core-model' if deploy_config.dump_core_model else ''
         run(
-            f'{run_dir}/deploy.py --num-cal-images {num_cal_images} --model {model_name} '
-            f'--calibration-batch {calibration_batch} {hardware_caps.as_argv()} '
-            f'--data-root {data_root} --pipe {pipe_type} --build-root {build_root} {nn_name} '
+            f'{run_dir}/deploy.py --num-cal-images {deploy_config.num_cal_images} --model {model_name} '
+            f'{system_config.hardware_caps.as_argv()} '
+            # Q? do we need hw_caps here? and do we need to also pass aipu_cores for quant?
+            f'--data-root {system_config.data_root} --pipe {pipe_type} --build-root {system_config.build_root} {nn_name} '
             f'--mode QUANTIZE{"_DEBUG" if debug else ""} {trace}'
-            f'--metis {metis.name} --cal-seed {cal_seed}',
+            f'--metis {metis.name} {cal_argv} {dump_core_model_argv}',
             capture_output=False,
             verbose=LOG.isEnabledFor(logging.DEBUG),
         )
@@ -572,38 +699,41 @@ def _quantize_single_model(
 def _deploy_from_yaml(
     device_man: device_manager.DeviceManager,
     nn_name: str,
-    path,
     pipeline_only,
     models_only,
     model,
-    pipe_type,
+    system_config: config.SystemConfig,
+    pipeline_config: config.PipelineConfig,
+    deploy_config: config.DeployConfig,
     deploy_mode: config.DeployMode,
-    num_cal_images,
-    calibration_batch,
-    data_root,
-    build_root,
     is_export,
-    hardware_caps: config.HardwareCaps,
     metis: config.Metis,
-    cal_seed: int,
 ):
+    path = pipeline_config.network
     ok = True
-    compile_obj = pipe_type in ['gst', 'torch-aipu']
+    compile_obj = pipeline_config.pipe_type in ['gst', 'torch-aipu']
 
-    nn = network.parse_network_from_path(path, data_root=data_root, from_deploy=True)
+    nn = network.parse_network_from_path(
+        pipeline_config.network,
+        deploy_config,
+        data_root=system_config.data_root,
+        from_deploy=True,
+    )
     utils.ensure_dependencies_are_installed(nn.dependencies)
     nnname = f"network {nn.name}"
-    nn_dir = build_root / nn.name
+    nn_dir = system_config.build_root / nn.name
 
     if compile_obj and metis == config.Metis.none:
         metis = device_man.get_metis_type()
         LOG.info("Detected Metis type as %s", metis.name)
 
-    network.restrict_cores(nn, pipe_type, hardware_caps.aipu_cores, metis, deploy=True)
+    network.restrict_cores(
+        nn, pipeline_config.pipe_type, pipeline_config.aipu_cores, metis, deploy=True
+    )
 
-    requested_exec_cores = hardware_caps.aipu_cores
+    requested_exec_cores = pipeline_config.aipu_cores
     model_infos = network.read_deployed_model_infos(
-        nn_dir, nn, pipe_type, requested_exec_cores, metis
+        nn_dir, nn, pipeline_config.pipe_type, requested_exec_cores, metis
     )
 
     if len(nn.tasks) < 1:
@@ -662,14 +792,10 @@ def _deploy_from_yaml(
                 _quantize_single_model(
                     nn_name,
                     model_name,
-                    num_cal_images,
-                    calibration_batch,
-                    hardware_caps,
-                    data_root,
-                    pipe_type,
-                    build_root,
+                    system_config,
+                    deploy_config,
+                    pipeline_config.pipe_type,
                     metis,
-                    cal_seed,
                     debug=(deploy_mode == config.DeployMode.QUANTIZE_DEBUG),
                 )
                 ok = True
@@ -689,14 +815,16 @@ def _deploy_from_yaml(
                             model_name,
                             nn,
                             compilation_cfg,
-                            num_cal_images,
-                            calibration_batch,
+                            deploy_config.num_cal_images,
                             model_dir,
                             is_export,
                             compile_obj,
                             this_deploy_mode,
                             metis,
                             model_infos,
+                            deploy_config.cal_seed,
+                            deploy_config.default_representative_images,
+                            deploy_config.dump_core_model,
                         )
                     except exceptions.PrequantizedModelRequired as e:
                         if not retried_quantize:
@@ -704,14 +832,11 @@ def _deploy_from_yaml(
                             _quantize_single_model(
                                 nn_name,
                                 e.model_name,
-                                num_cal_images,
-                                calibration_batch,
-                                hardware_caps,
-                                data_root,
-                                pipe_type,
-                                build_root,
+                                system_config,
+                                deploy_config,
+                                pipeline_config.pipe_type,
                                 metis,
-                                cal_seed,
+                                deploy_config.cal_seed,
                             )
                             continue
                         ok = False
@@ -730,35 +855,27 @@ def _deploy_from_yaml(
 
     # redetect ready state, or else `check_ready` fails in _deploy_pipeline
     model_infos = network.read_deployed_model_infos(
-        nn_dir, nn, pipe_type, requested_exec_cores, metis
+        nn_dir, nn, pipeline_config.pipe_type, requested_exec_cores, metis
     )
     if models_only or model:
         return ok
     elif ok:
-        ax_precompiled_gst = ''  # TODO make this configurable on the command line
         LOG.info(f"Compile {Path(path).name}:pipeline")
-        return _deploy_pipeline(
-            device_man, nn, pipe_type, build_root, hardware_caps, ax_precompiled_gst, model_infos
-        )
+        return _deploy_pipeline(nn, system_config, model_infos)
     else:
         return False
 
 
 def _deploy_pipeline(
-    device_man: device_manager.DeviceManager,
     nn: network.AxNetwork,
-    pipe_type: str,
-    build_root: Path,
-    hardware_caps,
-    ax_precompiled_gst,
-    model_infos,
+    system_config: config.SystemConfig,
+    model_infos: network.ModelInfos,
 ):
-    # Build low-level network pipeline representation
-    # and compile pre-/post-processing components
     try:
         model_infos.check_ready()
         nn.model_infos = model_infos
-        get_pipeline(device_man, pipe_type, nn, build_root, hardware_caps, ax_precompiled_gst)
+        download_nn_assets(system_config, nn)
+
     except Exception as e:
         LOG.error(e)
         LOG.trace_exception()
@@ -766,33 +883,12 @@ def _deploy_pipeline(
     return True
 
 
-def get_pipeline(
-    device_man: device_manager.DeviceManager,
-    pipe_type,
-    nn,
-    build_root,
-    hardware_caps,
-    ax_precompiled_gst,
-    task_graph=None,
-):
-    logging_dir = build_root / nn.name / 'logs'
+def download_nn_assets(system_config: config.SystemConfig, nn: network.AxNetwork):
+    logging_dir = system_config.build_root / nn.name / 'logs'
     logging_dir.mkdir(parents=True, exist_ok=True)
-    p = pipe.create_pipe(
-        device_man,
-        pipe_type,
-        nn,
-        logging_dir,
-        hardware_caps,
-        ax_precompiled_gst,
-        task_graph,
-    )
-
     for asset in nn.assets:
         utils.download_and_extract_asset(asset.url, Path(asset.path), asset.md5)
-
-    p.gen_network_pipe()
-    nn.model_infos.add_label_enums(nn.datasets)
-    return p
+    return logging_dir
 
 
 def _gen_process_list(
@@ -869,6 +965,33 @@ def _gen_process_list(
             if 'pair_eval' in attribs:
                 del attribs['pair_eval']
         transforms.append(operator(**attribs))
+    return transforms
+
+
+def create_transforms_from_config(
+    ops: list[config.ImagePreproc], custom_operators: dict[str, type[AxOperator]]
+) -> list[operators.Operator]:
+    """Create image preprocessing ops from ops specified in a config.Source.
+
+    Args:
+        list[config.ImagePreproc]: List of image preprocessing operator configurations.
+        custom_operators (dict[str, type[AxOperator]]): Custom operators to be used in the pipeline.
+
+    Returns:
+        List[Operator]: List of instantiated image preprocessing operators.
+    """
+    all_ops = collections.ChainMap(operators.builtins, custom_operators)
+    transforms = []
+
+    for op in ops:
+        norm = _normalize_operator_name(op.name)
+        try:
+            operator = all_ops[norm]
+        except KeyError:
+            raise ValueError(f"Unknown image processing operator: {norm}") from None
+
+        transforms.append(operator(*op.args, **op.kwargs))
+
     return transforms
 
 

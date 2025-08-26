@@ -14,6 +14,8 @@ preprocess:
   - normalize:
       mean: 103.53, 116.28, 123.675
       std: 57.375, 57.12, 58.395
+inference:
+  handle_all: False
 postprocess:
   - decodertmdet:
       box_format: xyxy

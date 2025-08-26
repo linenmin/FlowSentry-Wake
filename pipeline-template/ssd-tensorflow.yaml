@@ -11,6 +11,8 @@ preprocess:
     - linear-scaling:
         mean: 127.5
         shift: -1
+inference:
+    handle_all: False
 postprocess:
     - decode-ssd-mobilenet:
         box_format: xyxy # box format of the model output

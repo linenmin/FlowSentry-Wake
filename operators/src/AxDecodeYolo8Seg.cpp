@@ -375,10 +375,11 @@ decode_to_meta(const AxTensorsInterface &in_tensors,
   auto sizes = SegmentShape{ static_cast<size_t>(predictions.prototype_width),
     static_cast<size_t>(predictions.prototype_height) };
 
+  std::vector<int> ids;
   ax_utils::insert_and_associate_meta<AxMetaSegmentsDetection>(map, prop->meta_name,
       prop->master_meta, subframe_index, number_of_subframes, prop->association_meta,
       std::move(pixel_boxes), std::move(predictions.seg_funcs),
-      std::move(predictions.scores), std::move(predictions.class_ids), sizes,
+      std::move(predictions.scores), std::move(predictions.class_ids), ids, sizes,
       std::move(predictions.prototype_coefs), std::move(base_box), prop->decoder_name);
 
   auto end_time = std::chrono::high_resolution_clock::now();

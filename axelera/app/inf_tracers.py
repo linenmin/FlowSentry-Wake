@@ -9,12 +9,12 @@ import dataclasses
 import fcntl
 import itertools
 import logging
-import math
 import multiprocessing
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -53,7 +53,7 @@ class TraceMetric:
     value: float
     '''The current value of the metric.'''
 
-    max: float = 1.0
+    max_scale_value: float = 1.0
     '''The upper scale to use in a speedometer.
 
     This does not usually represent the maximum value yet measured.
@@ -62,11 +62,51 @@ class TraceMetric:
     unit: str = ''
     '''Display unit, for example '°C' or 'fps'.'''
 
-    def draw(self, draw: display.Draw, **kwargs):
+    def draw(self, draw: display.Draw):
         draw.draw_speedometer(self)
 
     def visit(self, visitor, *args, **kwargs):
         visitor(self, *args, **kwargs)
+
+    def text_report(self) -> str:
+        '''Return a string representation of the metric for text reports.'''
+        return f"{self.value:.1f}{self.unit}"
+
+
+@dataclasses.dataclass
+class TraceMetricWithStats(TraceMetric):
+    '''A metric that has min/max/mean and stddev statistics.
+
+    Note that the `value` property returns the median value, which is the primary value
+    for compatibility with the TraceMetric class.
+    '''
+
+    mean: float = 0.0
+    '''The mean value of the samples collected.'''
+
+    min: float = 0.0
+    max: float = 0.0
+    '''The minimum and maximum values of the samples collected.'''
+
+    std: float = 0.0
+    '''The standard deviation of the samples collected.'''
+
+    @property
+    def median(self) -> float:
+        '''Return the median value of the samples collected.
+
+        This is an alias for `value` and is provided for clarity.
+        '''
+        return self.value
+
+    # def draw(self, draw: display.Draw):
+    #  TODO render other stats in a speedometer somehow
+    #     stats_text = f"{self.median:.1f} (min:{self.min_val:.1f} max:{self.max_val:.1f} σ:{self.stddev:.1f}){self.unit}"
+    #     draw.text((10, 10), f"{self.title}: {stats_text}", (255, 255, 255, 255))
+
+    def text_report(self) -> str:
+        '''Return a string representation of the metric for text reports.'''
+        return f"{self.median:.1f}{self.unit} (min:{self.min:.1f} max:{self.max:.1f} σ:{self.std:.1f} x̄:{self.mean:.1f}){self.unit}"
 
 
 def _add_to_environ(environ, key, value):
@@ -140,7 +180,11 @@ class Tracer(abc.ABC):
         pass
 
     def initialize_models(
-        self, model_infos: network.ModelInfos, metis: config.Metis, core_clocks: dict[int, int]
+        self,
+        model_infos: network.ModelInfos,
+        metis: config.Metis,
+        core_clocks: dict[int, int],
+        devices: list[str],
     ) -> None:
         '''Called before inference with information about the loaded models, and connected devices.
 
@@ -162,12 +206,12 @@ def _first_and_only_model_info(model_infos, tracer):
     return model_infos.singular_model(f"Only one model is supported with {tracer} tracer")
 
 
-def _determine_fps_multiplier(requested_cores, model_infos, metis):
+def _determine_fps_multiplier(requested_cores, num_devices, model_infos, metis):
     # If the model batch is > 1 then it must support batching, and we will ignore the
     # user requested cores.
     model_info = _first_and_only_model_info(model_infos, 'aipu')
     ncores = model_infos.determine_execution_cores(model_info.name, requested_cores, metis)
-    return ncores
+    return ncores * num_devices
 
 
 class _ThreadedTracerAdapter(Tracer):
@@ -193,9 +237,13 @@ class _ThreadedTracerAdapter(Tracer):
         return self._tracer.title
 
     def initialize_models(
-        self, model_infos: network.ModelInfos, metis: config.Metis, core_clocks: dict[int, int]
+        self,
+        model_infos: network.ModelInfos,
+        metis: config.Metis,
+        core_clocks: dict[int, int],
+        devices: list[str],
     ) -> None:
-        self._tracer.initialize_models(model_infos, metis, core_clocks)
+        self._tracer.initialize_models(model_infos, metis, core_clocks, devices)
 
     def start_monitoring(self):
         if not self._running:
@@ -233,18 +281,20 @@ def _drop_old_chunks(chunks, now, max_age=5):
 class _TritonTrace:
     def __init__(
         self,
+        device: str,
         reset_args: list[str],
         initial_args: list[str],
         continuous: list[str],
         restore_args: list[str],
     ):
+        tt = ['triton_trace'] + (['--device', device] if device else [])
         if reset_args:
-            _run(["triton_trace"] + reset_args)
-        _run(["triton_trace"] + initial_args)
-        cmd = ["stdbuf", "-oL", "triton_trace", "--clear-buffer"] + continuous
+            _run(tt + reset_args)
+        _run(tt + initial_args)
+        cmd = ["stdbuf", "-oL"] + tt + ["--clear-buffer"] + continuous
         LOG.trace("Running %s as subprocess to collect log", ' '.join(cmd))
         self._p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        self._restore = lambda: _run(["triton_trace"] + restore_args)
+        self._restore = lambda: _run(tt + restore_args)
         stdout_fd = self._p.stdout.fileno()
         flags = fcntl.fcntl(stdout_fd, fcntl.F_GETFL)
         fcntl.fcntl(stdout_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
@@ -285,7 +335,7 @@ class AipuTracer(Tracer):
 
     def __init__(self, aipu_cores: int):
         super().__init__()
-        self._tritons: dict[int, _TritonTrace] = {}
+        self._tritons: dict[tuple[int, int], _TritonTrace] = {}
         self._requested_cores = list(range(aipu_cores))
         from .config import DEFAULT_CORE_CLOCK
 
@@ -297,40 +347,48 @@ class AipuTracer(Tracer):
         self._next_drop = time.time() + 5.0
 
     def initialize_models(
-        self, model_infos: network.ModelInfos, metis: config.Metis, core_clocks: dict[int, int]
+        self,
+        model_infos: network.ModelInfos,
+        metis: config.Metis,
+        core_clocks: dict[int, int],
+        devices: list[str],
     ) -> None:
+        self._devices = devices
         self._clock_durations_in_us = {n: 1.0 / c for n, c in core_clocks.items()}
         self._fps_multiplier = _determine_fps_multiplier(
-            len(self._requested_cores), model_infos, metis
+            len(self._requested_cores), len(self._devices), model_infos, metis
         )
         LOG.debug(f"Device FPS multiplier: {self._fps_multiplier}")
 
     def start_monitoring(self):
-        for i in self._requested_cores:
-            self._tritons[i] = _TritonTrace(
-                [], ["--alog-level", f'{i}:wrn'], ["--alog", f"{i}"], ["--alog-level", f'{i}:err']
-            )
+        for dn, d in enumerate(self._devices):
+            for i in self._requested_cores:
+                self._tritons[(dn, i)] = _TritonTrace(
+                    d,
+                    [],
+                    ["--alog-level", f'{i}:wrn'],
+                    ["--alog", f"{i}"],
+                    ["--alog-level", f'{i}:err'],
+                )
 
     def _read_trace_output(self) -> dict[str, str]:
-        return {coren: p.read() for coren, p in self._tritons.items()}
+        return {devn_coren: p.read() for devn_coren, p in self._tritons.items()}
 
-    def _process_trace_output(self, outputs: dict[str, str]):
+    def _process_trace_output(self, outputs: dict[tuple[int, int], str]):
         now = time.time()
-        for coren, log in outputs.items():
+        for (devn, coren), log in outputs.items():
             if matches := self._PATTERN.findall(log):
                 cycles = np.array([int(m) for m in matches], dtype=np.int32)
-                self._all_chunks[coren].append((now, cycles))
+                self._all_chunks[(devn, coren)].append((now, cycles))
         if now > self._next_drop:
             for chunks in self._all_chunks.values():
                 _drop_old_chunks(chunks, now, self._max_age)
             self._next_drop = now + 1
 
-    def _make_metric(self, fps, coren=None):
-        key_s = f'-c{coren}' if coren is not None else ''
-        title_s = f' Core {coren}' if coren is not None else ''
-        return TraceMetric(
-            f'{self.key}{key_s}', f'{self.title}{title_s}', fps, max(self._max * 1.05, 1.0), 'fps'
-        )
+    def _make_metric(self, fps, devn=None, coren=None):
+        key_s = f'__device_d{devn}_{coren}_fps__' if coren is not None else self.key
+        title_s = f' Core d{devn}.{coren}' if coren is not None else ''
+        return TraceMetric(key_s, f'{self.title}{title_s}', fps, max(self._max * 1.05, 1.0), 'fps')
 
     def get_metrics(self):
         '''Return FPS of metis.'''
@@ -339,24 +397,17 @@ class AipuTracer(Tracer):
         metrics = []
         if LOG.isEnabledFor(logging.DEBUG):
             # show per-core. TODO should do per-model, not per-core
-            for coren, now_chunks in self._all_chunks.items():
+            for (devn, coren), now_chunks in self._all_chunks.items():
                 if now_chunks:
                     nows, chunks = zip(*now_chunks)
                     cycles = np.concatenate(chunks)
                     latency = self._clock_durations_in_us[coren]
                     median = np.median(cycles) * latency
                     fps = fps_from_latency(median)
-                    if LOG.isEnabledFor(logging_utils.TRACE):
-                        minl = np.min(cycles) * latency
-                        mean = np.mean(cycles) * latency
-                        maxl = np.max(cycles) * latency
-                        LOG.trace(
-                            f"device({coren}) latency(ms): {median:1f} nsamples={len(cycles)} min={minl:.1f} max={maxl:.1f} mean_l={mean:.1f}",
-                        )
-                    metrics.append(self._make_metric(fps, coren))
+                    metrics.append(self._make_metric(fps, devn, coren))
 
         flattened = []
-        for coren, now_chunks in self._all_chunks.items():
+        for (devn, coren), now_chunks in self._all_chunks.items():
             if now_chunks:
                 nows, chunks = zip(*now_chunks)
                 cycles = np.concatenate(chunks)
@@ -364,7 +415,7 @@ class AipuTracer(Tracer):
                 flattened.append(cycles)
         if flattened:
             flattened = np.concatenate(flattened)
-            median = np.median(cycles)
+            median = np.median(flattened)
             fps = fps_from_latency(median) * self._fps_multiplier
             self._max = max(self._max, fps)
             metrics.append(self._make_metric(fps))
@@ -373,7 +424,7 @@ class AipuTracer(Tracer):
     def stop_monitoring(self):
         for p in self._tritons.values():
             p.prepare_to_stop()
-        outputs = {coren: p.stop() for coren, p in self._tritons.items()}
+        outputs = {devn_coren: p.stop() for devn_coren, p in self._tritons.items()}
         # don't forget to get final samples
         self._process_trace_output(outputs)
         self._tritons.clear()
@@ -389,36 +440,65 @@ class CoreTempTracer(Tracer):
 
     def __init__(self):
         super().__init__()
-        self._triton: _TritonTrace | None = None
-        self._last = [0.0] * 5
-        self._max = max(self._last)
+        self._tritons: list[_TritonTrace] = []
+        self._last: dict[int, list[float]] = {}
+        self._max = 200.0
+
+    def initialize_models(
+        self,
+        model_infos: network.ModelInfos,
+        metis: config.Metis,
+        core_clocks: dict[int, int],
+        devices: list[str],
+    ) -> None:
+        del model_infos
+        del metis
+        del core_clocks
+        self._devices = devices
 
     def start_monitoring(self):
-        self._triton = _TritonTrace(
-            ["--slog-level", 'err'],
-            ["--slog-level", f'inf:collector'],
-            ["--slog"],
-            ["--slog-level", 'err'],
-        )
+        self._tritons = [
+            _TritonTrace(
+                d,
+                ["--slog-level", 'err'],
+                ["--slog-level", f'inf:collector'],
+                ["--slog"],
+                ["--slog-level", 'err'],
+            )
+            for d in self._devices
+        ]
 
-    def _process_trace_output(self, log: str):
+    def _process_trace_output(self, devicen, log: str):
         if matches := self._PATTERN.findall(log):
-            self._last = [int(x) for x in matches[-1].split(',')]
+            self._last[devicen] = [int(x) for x in matches[-1].split(',')]
 
     def get_metrics(self):
         '''Return FPS of metis.'''
-        if self._triton:
-            self._process_trace_output(self._triton.read())
-        value = float(max(self._last))
-        self._max = max(value, self._max)
-        return [TraceMetric(self.key, self.title, value, self._max, '°C')]
+        for n, t in enumerate(self._tritons):
+            self._process_trace_output(n, t.read())
+        if not self._last:
+            max_value = 0.0
+        else:
+            max_value = float(max(max(l) for l in self._last.values()))
+            self._max = max(max_value, self._max)
+        m = [TraceMetric(self.key, self.title, max_value, self._max, '°C')]
+        if LOG.isEnabledFor(logging_utils.DEBUG):
+            for d, coresvals in self._last.items():
+                for c, v in enumerate(coresvals):
+                    key = f"__core_d{d}_{c}_temp__"
+                    title = f"Core d{d}.{c} Temp"
+                    m.append(TraceMetric(key, title, v, self._max, '°C'))
+        return m
 
     def stop_monitoring(self):
         LOG.trace("SIGTERM triton_trace slog process")
-        self._triton.prepare_to_stop()
-        output = self._triton.stop()
-        self._triton = None
-        self._process_trace_output(output)
+        for t in self._tritons:
+            t.prepare_to_stop()
+        outputs = [t.stop() for t in self._tritons]
+        self._tritons = []
+        # don't forget to get final samples
+        for n, o in enumerate(outputs):
+            self._process_trace_output(n, o)
 
 
 _axr_mappings = {
@@ -461,12 +541,18 @@ class HostTracer(Tracer):
         LOG.debug(f"HostTracer will write to {self._file_path}")
 
     def initialize_models(
-        self, model_infos: network.ModelInfos, metis: config.Metis, core_clocks: dict[int, int]
+        self,
+        model_infos: network.ModelInfos,
+        metis: config.Metis,
+        core_clocks: dict[int, int],
+        devices: list[str],
     ) -> None:
         del core_clocks
         os.environ['AXE_LZ_PERF_LOG_PATH'] = str(self._file_path)
         _add_to_environ(os.environ, 'AXE_PROFILING_CONFIG', 'HOST_TEMPLATE')
-        self._fps_multiplier = _determine_fps_multiplier(self._requested_cores, model_infos, metis)
+        self._fps_multiplier = _determine_fps_multiplier(
+            self._requested_cores, len(devices), model_infos, metis
+        )
         LOG.debug(f"Host FPS multiplier: {self._fps_multiplier}")
 
     def start_monitoring(self):
@@ -598,131 +684,124 @@ class End2EndTracer(Tracer):
         return [TraceMetric(self.key, self.title, self._fps, self._max, 'fps')]
 
 
-class Statistics:
-    def __init__(self, key, title, max_bin_value, num_bins=200):
-        self.key = key
-        self.title = title
-        self.max_bin_value = max_bin_value
-        self.num_bins = num_bins
-        self.sample_count = 0
-        self.min, self.max, self.mean, self._sumvar = float('inf'), float('-inf'), 0.0, 0.0
-        self.bins = np.zeros((self.num_bins,), np.int32)
-
-    @property
-    def bin_size(self):
-        return self.max_bin_value / self.num_bins
-
-    @property
-    def stddev(self):
-        return math.sqrt(self._sumvar / self.sample_count) if self.sample_count else 0.0
-
-    def bin_for_value(self, value):
-        if value < 0:
-            return 0
-        return max(0, min(int(value / self.bin_size), self.num_bins - 1))
-
-    def update(self, value):
-        self.sample_count += 1
-        self.bins[self.bin_for_value(value)] += 1
-        self.min = min(self.min, value)
-        self.max = max(self.max, value)
-        # Welford's method to calculate mean/std dev in a single pass
-        delta = value - self.mean
-        self.mean += delta / self.sample_count
-        self._sumvar += (value - self.mean) * delta
-
-    def draw(self, draw: display.Draw):
-        draw.draw_statistics(self)
-
-
-class StreamStatistics:
-    def __init__(self):
-        self._last_time = time.time()
-        self.latency = Statistics('__stream_latency__', 'Latency', 10000.0)
-        self.interval = Statistics('__stream_intervals__', 'Intervals', 1000.0)
-
-    def update(self, latency):
-        self.latency.update(latency * 1000)
-        now = time.time()
-        self.interval.update((now - self._last_time) * 1000)
-        self._last_time = now
-
-    def __repr__(self):
-        # This is not directly used anywhere, but it's useful for debugging
-        cells = []
-        for prefix, s in [('l', self.latency), ('i', self.interval)]:
-            cells.append(f'{prefix}-min:{int(s.min):<5d}')
-            cells.append(f'{prefix}-mean:{int(s.mean):<5d}')
-            cells.append(f'{prefix}-max:{int(s.max):<5d}')
-            cells.append(f'{prefix}-stddev:{int(s.stddev):<5d}')
-        return f'frames:{self.latency.sample_count:<5d} ' + ' '.join(cells)
-
-
-class StreamTiming(Tracer):
-    key = '__stream_timing__'
-    title = '__stream_statistics__'
+class End2EndInfRateTracer(End2EndTracer):
+    key = '__end_to_end_infs__'
+    title = 'Inf. Rate'
 
     def __init__(self):
-        self.timing = collections.defaultdict(StreamStatistics)
-        self.total = 0
+        super().__init__()
+        self._infs = self._fps
+        self._max_infs = self._max
 
     def update(self, frame_result):
-        stream_id = frame_result.stream_id
-        self.total += 1
-        t = self.timing[stream_id]
-        latency = frame_result.sink_timestamp - frame_result.src_timestamp
-        t.update(latency)
+        super().update(frame_result)
+        self._infs = self._fps * frame_result.inferences
+        self._max_infs = max(self._max_infs, self._infs * 1.05)
 
     def get_metrics(self):
-        metrics = []
-        for sid, t in self.timing.items():
-            i = t.interval
-            l = t.latency
-            d = f'#{sid} ' if len(self.timing) > 1 else ''
-            metrics.append(TraceMetric(i.key, f'{d}Jitter', i.stddev, i.max, 'ms'))
-            metrics.append(TraceMetric(l.key, f'{d}{l.title}', l.mean, l.max, 'ms'))
-        if len(self.timing) > 1:
-            mean_latency = sum(t.latency.mean for t in self.timing.values()) / len(self.timing)
-            mean_jitter = sum(t.interval.stddev for t in self.timing.values()) / len(self.timing)
-            metrics.append(TraceMetric(i.key, 'Jitter', mean_jitter, i.max, 'ms'))
-            metrics.append(TraceMetric(l.key, l.title, mean_latency, l.max, 'ms'))
-        return metrics
+        return [TraceMetric(self.key, self.title, self._infs, self._max_infs, 'inf/s')]
+
+
+class Statistics:
+    def __init__(self, max_samples: int = 10000, dtype=np.float32):
+        self.sample_count = 0
+        self._max_samples = max_samples
+        self._dtype = dtype
+        self._samples = np.zeros((self._max_samples,), self._dtype)
+        self._verbose = LOG.isEnabledFor(logging_utils.DEBUG)
+
+    @staticmethod
+    def _npproperty(npfunc, default=0):
+        def getter(self) -> float:
+            if self.sample_count == 0:
+                return default
+            return float(npfunc(self._samples[0 : min(self.sample_count, self._max_samples)]))
+
+        return property(getter)
+
+    min = _npproperty(np.min, default=float('inf'))
+    max = _npproperty(np.max, default=float('-inf'))
+    mean = _npproperty(np.mean, default=0.0)
+    median = _npproperty(np.median, default=0.0)
+    std = _npproperty(np.std, default=0.0)
+
+    def update(self, value):
+        self._samples[self.sample_count % self._max_samples] = self._dtype(value)
+        self.sample_count += 1
+
+    def as_metric(
+        self,
+        key: str,
+        title: str,
+        unit: str,
+        scale: float,
+    ) -> TraceMetricWithStats:
+        # TODO really we ought to pass the unscaled values and format with x1000 when we render
+        median = self.median * scale
+        mean = self.mean * scale
+        min = self.min * scale
+        max = self.max * scale
+        std = self.std * scale
+        max_scale_value = max * 1.05 if max != float('-inf') else 500.0
+        return TraceMetricWithStats(key, title, median, max_scale_value, unit, mean, min, max, std)
+
+
+class Latency(Tracer):
+    key = '__latency__'
+    title = 'Latency'
+
+    def __init__(self):
+        self._stats = collections.defaultdict(Statistics)
+        self._all_streams = Statistics()
+        self._show_per_stream: bool | None = None
+        self._frame_no = 0
+
+    def update(self, frame_result):
+        if self._show_per_stream is None:
+            # read this lazily because logging has not been configured at startup
+            self._show_per_stream = LOG.isEnabledFor(logging_utils.DEBUG)
+        if self._frame_no > 200:  # the first 200 frames latency are ignored
+            latency = frame_result.sink_timestamp - frame_result.src_timestamp
+            self._all_streams.update(latency)
+            if self._show_per_stream:
+                self._stats[frame_result.stream_id].update(latency)
+        self._frame_no += 1
+
+    def get_metrics(self) -> list[TraceMetric]:
+        m = []
+        m.append(self._all_streams.as_metric('__latency__', 'Latency', 'ms', 1000))
+        if self._show_per_stream and len(self._stats) > 1:
+            for s, t in sorted(self._stats.items(), key=lambda x: x[0]):
+                m.append(t.as_metric(f'__latency_{s}__', f'Latency (stream {s})', 'ms', 1000))
+        return m
 
 
 _key = lambda x: x.strip('_')
 
-has_aipu = False
-
-try:
-    saved = utils.LOG.level
-    utils.LOG.setLevel(logging_utils.logging.ERROR)
-    has_aipu = device_manager.detect_metis_type() != config.Metis.none
-finally:
-    utils.LOG.setLevel(saved)
-
 supported_tracers = {
     _key(CpuTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(CpuTracer(), period=3.0),
     _key(End2EndTracer.key): lambda aipu_cores: End2EndTracer(),
-    _key(StreamTiming.key): lambda aipu_cores: StreamTiming(),
+    _key(End2EndInfRateTracer.key): lambda aipu_cores: End2EndInfRateTracer(),
+    _key(Latency.key): lambda aipu_cores: Latency(),
 }
 
-if has_aipu and not config.env.inference_mock:
-    supported_tracers.update(
-        {
-            _key(AipuTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
-                AipuTracer(aipu_cores), period=0.3
-            ),
-            _key(CoreTempTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
-                CoreTempTracer(), period=1.0
-            ),
-            _key(HostTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
-                HostTracer(aipu_cores), period=0.3
-            ),
-        }
-    )
+# AIPU-specific tracers will be conditionally added at creation time
+_aipu_tracers = {
+    _key(AipuTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
+        AipuTracer(aipu_cores), period=0.3
+    ),
+    _key(CoreTempTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
+        CoreTempTracer(), period=1.0
+    ),
+    _key(HostTracer.key): lambda aipu_cores: _ThreadedTracerAdapter(
+        HostTracer(aipu_cores), period=0.3
+    ),
+}
 
 
-def create_tracers(*requested: tuple[str, ...], _aipu_cores: int = 4) -> List[Tracer]:
+def create_tracers(
+    *requested: tuple[str, ...], _aipu_cores: int = 4, pipe_type: str = None
+) -> List[Tracer]:
     '''Create a list of tracers based on the requested tracer keys.
 
     Tracers provide real-time metrics that help you better understand device resource utilization,
@@ -734,7 +813,7 @@ def create_tracers(*requested: tuple[str, ...], _aipu_cores: int = 4) -> List[Tr
     * `end_to_end_fps` - collects end-to-end fps metric
     * `core_temp` - collects the temperature of the metis core
     * `cpu_usage` - collects information about the host CPU usage
-    * `stream_timing`  - collects metrics about stream latency and jitter
+    * `latency`  - collects metrics about stream latency
 
     Tracers passed to `create_inference_stream` will be started automatically when the stream is
     started, and periodically queried for their current value which will be shown in the
@@ -747,14 +826,32 @@ def create_tracers(*requested: tuple[str, ...], _aipu_cores: int = 4) -> List[Tr
           core_temp = metrics['core_temp']
           print(f"Core temperature: {core_temp.value} {core_temp.unit}")
 
+    Args:
+        *requested: The tracer keys to create.
+        _aipu_cores: The number of AIPU cores to use.
+        pipe_type: The pipe type being used (e.g. 'torch', 'gst', 'torch-aipu').
     '''
     tracers = []
     unsupported = []
     # disable tracing by default, tracers below will enable it if necessary
     os.environ.setdefault('AXE_PROFILING_CONFIG', '')
+
+    available_tracers = supported_tracers.copy()
+    has_aipu = False
+    if pipe_type in ['gst', 'torch-aipu'] and not config.env.inference_mock:
+        try:
+            saved = utils.LOG.level
+            utils.LOG.setLevel(logging_utils.logging.ERROR)
+            has_aipu = device_manager.detect_metis_type() != config.Metis.none
+        finally:
+            utils.LOG.setLevel(saved)
+
+        if has_aipu:
+            available_tracers.update(_aipu_tracers)
+
     for tracer in requested:
         try:
-            ctor = supported_tracers[tracer]
+            ctor = available_tracers[tracer]
         except KeyError:
             unsupported.append(tracer)
         else:
@@ -763,7 +860,7 @@ def create_tracers(*requested: tuple[str, ...], _aipu_cores: int = 4) -> List[Tr
     if unsupported:
         s = 's' if len(unsupported) > 1 else ''
         LOG.warning(
-            f"Unsupported tracer{s}: {', '.join(unsupported)}: valid tracers are: {', '.join(supported_tracers.keys())}"
+            f"Unsupported tracer{s}: {', '.join(unsupported)}: valid tracers are: {', '.join(available_tracers.keys())}"
         )
     return tracers
 
@@ -802,6 +899,20 @@ def create_tracers_from_args(args: argparse.Namespace) -> List[Tracer]:
         requested.append(_key(CpuTracer.key))
     if args.show_system_fps:
         requested.append(_key(End2EndTracer.key))
-    if args.show_stream_timing:
-        requested.append(_key(StreamTiming.key))
-    return create_tracers(*requested, _aipu_cores=args.aipu_cores)
+    if args.show_inference_rate:
+        requested.append(_key(End2EndInfRateTracer.key))
+    if args.show_latency:
+        requested.append(_key(Latency.key))
+    pipe_type = getattr(args, 'pipe', 'gst')
+    return create_tracers(*requested, _aipu_cores=args.aipu_cores, pipe_type=pipe_type)
+
+
+def display_tracers(tracers: List[Tracer], file=sys.stdout):
+    '''Display the tracers to the console.
+
+    This is called by the application to display the tracers in the UI.
+    '''
+    all_metrics = list(itertools.chain.from_iterable(t.get_metrics() for t in tracers))
+    widest = max(len(m.title) for m in all_metrics) if all_metrics else 0
+    for m in all_metrics:
+        print(f"{m.title.ljust(widest)} : {m.text_report()}", file=file)

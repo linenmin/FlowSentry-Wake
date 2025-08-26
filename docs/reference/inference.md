@@ -2,7 +2,7 @@
 # Inference
 
 - [Inference](#inference)
-  - [Configuration \& Advanced Usage](#configuration--advanced-usage)
+  - [Configuration & Advanced Usage](#configuration--advanced-usage)
     - [--pipe `<type>`](#--pipe-type)
     - [--frames `<frame-count>`](#--frames-frame-count)
     - [--display/--no-display](#--display--no-display)
@@ -64,7 +64,6 @@ In this case, the model will be run in parallel on each input stream, with the i
 the overall statistics from all of the media.
 
 Various sources beyond video files may be used as input. These are:
- * A csi camera (`csi:0`)
  * A usb camera (`usb`, `usb:0`, `usb:1` etc.)
  * A video pulled from a uri (`http(s)://`, `rtsp://`)
  * A fake video can also be used to simply run the pipeline (`fakevideo:widthxheight`)

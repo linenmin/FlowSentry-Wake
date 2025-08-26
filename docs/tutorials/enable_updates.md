@@ -21,10 +21,10 @@ First, you need to install the Voyager SDK following the official setup instruct
 
 ### Step 2: Download the Bootloader Update File
 
-Download the required bootloader update file using curl:
+Download the required bootloader update file:
 
 ```bash
-wget https://axelera-public.s3.eu-central-1.amazonaws.com/aipu_firmware_enabler/voyager-sdk-v1.3.2/enable_bootloader_update.sh
+wget https://axelera-public.s3.eu-central-1.amazonaws.com/aipu_firmware_enabler/voyager-sdk-v1.4.0/enable_bootloader_update.sh
 chmod +x enable_bootloader_update.sh
 ```
 
@@ -48,7 +48,7 @@ After running the bootloader update command:
 
 ## Verification
 
-After completing these steps, you should be able to use the standard firmware flash update procedures. Refer to the [Firmware Flash Update Guide](https://github.com/axelera-ai-hub/voyager-sdk/blob/release/v1.3/docs/tutorials/firmware_flash_update.md) for detailed instructions on updating your firmware.
+After completing these steps, you should be able to use the standard firmware flash update procedures. Refer to the [Firmware Flash Update Guide](/docs/tutorials/firmware_flash_update.md) for detailed instructions on updating your firmware.
 
 ## Troubleshooting
 
@@ -56,8 +56,8 @@ If you encounter any issues:
 
 1. Ensure the Voyager SDK is properly installed
 2. Verify that the bootloader update file was downloaded successfully
-3. Check that the `triton_multi_ctx` command completed without errors
-4. Make sure to perform a complete power cycle (not just a restart)
+3. Check there are no errors displayed on screen
+4. Make sure to perform a complete power off and back on again (not just a restart)
 
 ## Support
 

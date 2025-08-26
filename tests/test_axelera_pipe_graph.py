@@ -22,6 +22,7 @@ class TestDependencyGraph:
         input_type=None,
         input_source=None,
         input_where=None,
+        embeddings_task_name=None,
     ):
         """Helper to create mock tasks with specified properties"""
         task = MagicMock()
@@ -48,6 +49,9 @@ class TestDependencyGraph:
             task.is_dl_task = False
             cv_process = MagicMock()
             cv_process.bbox_task_name = input_where
+            # Add embeddings_task_name if provided
+            if embeddings_task_name:
+                cv_process.embeddings_task_name = embeddings_task_name
             task.cv_process = [cv_process]
 
         return task
@@ -183,7 +187,7 @@ class TestDependencyGraph:
         """Test a simple cascade network"""
         detector = self.create_mock_task("detections")
         classifier = self.create_mock_task(
-            "classifier", input_type="ROI", input_where="detections"
+            "classifications", input_type="ROI", input_where="detections"
         )
 
         graph = DependencyGraph([detector, classifier])
@@ -193,7 +197,7 @@ class TestDependencyGraph:
         # Test get_root_and_leaf_tasks
         root, leaf = graph.get_root_and_leaf_tasks()
         assert root == "detections"
-        assert leaf == "classifier"
+        assert leaf == "classifications"
 
     def test_task_validation(self):
         """Test task validation"""
@@ -217,19 +221,67 @@ class TestDependencyGraph:
         """Test cache clearing"""
         detector = self.create_mock_task("detections")
         classifier = self.create_mock_task(
-            "classifier", input_type="ROI", input_where="detections"
+            "classifications", input_type="ROI", input_where="detections"
         )
 
         graph = DependencyGraph([detector, classifier])
 
         # Call get_master to populate cache
-        master = graph.get_master("classifier")
+        master = graph.get_master("classifications")
         assert master == "detections"
 
         # Clear cache and verify it still works
         graph.clear_cache()
-        master = graph.get_master("classifier")
+        master = graph.get_master("classifications")
         assert master == "detections"
+
+    def test_tracker_with_reid_cascade(self):
+        """Test a tracker cascade with detection and re-identification"""
+        # Create mock tasks similar to the tracker with reid example
+        detector = self.create_mock_task("detections")
+        reid = self.create_mock_task(
+            "reid",
+            task_category=types.TaskCategory.ObjectDetection,
+            input_type="ROI",
+            input_where="detections",
+        )
+        tracker = self.create_mock_task(
+            "pedestrian_and_vehicle_tracker",
+            is_dl_task=False,
+            task_category=types.TaskCategory.ObjectTracking,
+            input_type="full",
+            input_where="detections",
+            embeddings_task_name="reid",
+        )
+
+        # Create dependency graph
+        graph = DependencyGraph([detector, reid, tracker])
+
+        # Test execution view connections
+        assert "detections" in graph.graph["Input"]
+        assert "reid" in graph.graph["detections"]
+        assert "pedestrian_and_vehicle_tracker" in graph.graph["detections"]
+        assert "pedestrian_and_vehicle_tracker" in graph.graph["reid"]
+
+        # Test result view (tracker should be directly connected to input)
+        assert "pedestrian_and_vehicle_tracker" in graph.result_graph["Input"]
+        assert "pedestrian_and_vehicle_tracker" not in graph.result_graph["detections"]
+        assert "pedestrian_and_vehicle_tracker" not in graph.result_graph["reid"]
+
+        # Test get_master with different views
+        assert (
+            graph.get_master("pedestrian_and_vehicle_tracker", EdgeType.EXECUTION) == "detections"
+        )
+        assert graph.get_master("pedestrian_and_vehicle_tracker", EdgeType.RESULT) is None
+        assert graph.get_master("reid", EdgeType.EXECUTION) == "detections"
+
+        # Test network type - should be a cascade now with our improved detection
+        assert graph.network_type == NetworkType.CASCADE_NETWORK
+
+        # Test get_root_and_leaf_tasks
+        root, leaf = graph.get_root_and_leaf_tasks()
+        assert root == "detections"
+        assert leaf == "pedestrian_and_vehicle_tracker"
 
 
 class TestDependencyGraphIntegration:
@@ -531,7 +583,7 @@ pipeline:
   - detections:
       model_name: yolov5m
       template_path: template.yaml
-  - classifier:
+  - classifications:
       model_name: resnet50
       input:
         source: roi
@@ -567,7 +619,7 @@ preprocess:
         # Test get_root_and_leaf_tasks
         root, leaf = graph.get_root_and_leaf_tasks()
         assert root == "detections"
-        assert leaf == "classifier"
+        assert leaf == "classifications"
 
     def test_parallel_network(self):
         """Test a parallel network"""
@@ -634,3 +686,103 @@ Input
   └─vehicle_detection''' == "\n".join(
             lines
         )
+
+    def test_tracker_reid_cascade_integration(self):
+        """Test a tracker cascade with detection and re-identification from YAML"""
+        yaml_str = """
+name: reid-tracker-cascade
+description: Detection + ReID + Tracker cascade network
+pipeline:
+  - detections:
+      model_name: yolox-pedestrian-onnx
+      preprocess:
+        - resize:
+            width: 640
+            height: 640
+        - torch-totensor:
+      postprocess:
+  - reid:
+      model_name: osnet-x1-0-market1501-onnx
+      input:
+        type: image
+        source: roi
+        where: detections
+      preprocess:
+        - resize:
+            width: 128
+            height: 256
+        - torch-totensor:
+        - normalize:
+            mean: [0.485, 0.456, 0.406]
+            std: [0.229, 0.224, 0.225]
+      postprocess:
+        - decodeembeddings:
+  - pedestrian_and_vehicle_tracker:
+      model_name: oc_sort
+      input:
+        source: full
+        color_format: RGB
+      cv_process:
+        - tracker:
+            algorithm: oc-sort
+            bbox_task_name: detections
+            embeddings_task_name: reid
+            algo_params:
+              det_thresh: 0.6
+              min_hits: 3
+              iou_threshold: 0.3
+              max_id: 0
+models:
+  yolox-pedestrian-onnx:
+    task_category: ObjectDetection
+    input_tensor_layout: NCHW
+    input_tensor_shape: [1, 3, 640, 640]
+    input_color_format: RGB
+  osnet-x1-0-market1501-onnx:
+    task_category: ReIdentification
+    input_tensor_layout: NCHW
+    input_tensor_shape: [1, 3, 256, 128]
+    input_color_format: RGB
+  oc_sort:
+    model_type: CLASSICAL_CV
+    task_category: ObjectTracking
+"""
+
+        template_yaml = """
+preprocess:
+  - letterbox:
+      width: 640
+      height: 640
+"""
+
+        # Parse the network
+        network = self.parse_network_yaml(yaml_str, template_yaml)
+
+        # Create the dependency graph
+        graph = DependencyGraph(network.tasks)
+
+        # Test execution view connections
+        assert "detections" in graph.graph["Input"]
+        assert "reid" in graph.graph["detections"]
+        assert "pedestrian_and_vehicle_tracker" in graph.graph["detections"]
+        assert "pedestrian_and_vehicle_tracker" in graph.graph["reid"]
+
+        # Test result view (tracker should be directly connected to input)
+        assert "pedestrian_and_vehicle_tracker" in graph.result_graph["Input"]
+        assert "pedestrian_and_vehicle_tracker" not in graph.result_graph["detections"]
+        assert "pedestrian_and_vehicle_tracker" not in graph.result_graph["reid"]
+
+        # Test get_master with different views
+        assert (
+            graph.get_master("pedestrian_and_vehicle_tracker", EdgeType.EXECUTION) == "detections"
+        )
+        assert graph.get_master("pedestrian_and_vehicle_tracker", EdgeType.RESULT) is None
+        assert graph.get_master("reid", EdgeType.EXECUTION) == "detections"
+
+        # Test network type - should be a cascade now with our improved detection
+        assert graph.network_type == NetworkType.CASCADE_NETWORK
+
+        # Test get_root_and_leaf_tasks
+        root, leaf = graph.get_root_and_leaf_tasks()
+        assert root == "detections"
+        assert leaf == "pedestrian_and_vehicle_tracker"

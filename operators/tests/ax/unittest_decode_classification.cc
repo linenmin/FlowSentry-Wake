@@ -293,7 +293,9 @@ TEST(no_softmax, test_labels_size_too_large)
 TEST(classification, throws_on_invalid_number_of_subframes)
 {
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  metadata.emplace("master_meta", std::make_unique<AxMetaBbox>(BboxXyxyVector{}));
+  metadata.emplace("master_meta",
+      std::make_unique<AxMetaBbox>(BboxXyxyVector{}, std::vector<float>{},
+          std::vector<int>{}, std::vector<int>{}));
   std::vector<float> scores = { 0.5F, 0.4F, 0.0F, 1.0F, 0.1F };
   auto tensors = tensors_from_vector(scores);
   std::string meta_identifier = "top_k";
@@ -308,7 +310,8 @@ TEST(classification, throws_on_invalid_subframe_index)
 {
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
   metadata.emplace("master_meta",
-      std::make_unique<AxMetaBbox>(BboxXyxyVector{ BboxXyxy{ 0, 0, 1, 1 } }));
+      std::make_unique<AxMetaBbox>(BboxXyxyVector{ BboxXyxy{ 0, 0, 1, 1 } },
+          std::vector<float>{ 0.2f }, std::vector<int>{ 0 }, std::vector<int>{}));
   std::vector<float> scores = { 0.5F, 0.4F, 0.0F, 1.0F, 0.1F };
   auto tensors = tensors_from_vector(scores);
   std::string meta_identifier = "top_k";
@@ -323,7 +326,8 @@ TEST(classification, throws_on_inconsistent_number_of_subframes)
 {
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
   metadata.emplace("master_meta",
-      std::make_unique<AxMetaBbox>(BboxXyxyVector{ BboxXyxy{ 0, 0, 1, 1 } }));
+      std::make_unique<AxMetaBbox>(BboxXyxyVector{ BboxXyxy{ 0, 0, 1, 1 } },
+          std::vector<float>{ 0.2f }, std::vector<int>{ 0 }, std::vector<int>{}));
   std::vector<float> scores = { 0.5F, 0.4F, 0.0F, 1.0F, 0.1F };
   auto tensors = tensors_from_vector(scores);
   std::string meta_identifier = "top_k";

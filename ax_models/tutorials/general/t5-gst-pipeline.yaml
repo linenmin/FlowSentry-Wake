@@ -5,7 +5,7 @@ name: t5-gst-pipeline
 description: Tutorial-5 - An example demonstrating how to deploy an end-to-end GStreamer pipeline to harness the full power of Metis, measuring performance, including FPS and accuracy.
 
 pipeline:
-  - classifier:
+  - classifications:
       model_name: model1
       input:
           type: image

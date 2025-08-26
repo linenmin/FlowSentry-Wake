@@ -18,6 +18,8 @@ pipeline:
             height: 640
             scaleup: True
         - torch-totensor:
+      inference:
+        handle_all: False
       postprocess:
         - decodeyolo:
             box_format: xywh # box format of the model output
@@ -59,12 +61,16 @@ datasets:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: Weapon2.v2i
+    # New Ultralytics data YAML support - this replaces cal_data, val_data, and labels_path
+    ultralytics_data_yaml: data.yaml
     # comment out the url/md5 if you are using your local dataset
     dataset_url: https://media.axelera.ai/artifacts/data/Weapon2.v2i.zip
     dataset_md5: 92a3905a986b28a33bb66b0b17184d16 # optional to check md5sum
     dataset_drop_dirs: 1
     label_type: YOLOv8
+
+    # OLD FORMAT (commented out for reference):
     # tools/list_relative_image_paths.py can be used to generate the following 2 files
-    cal_data: train.txt
-    val_data: val.txt
-    labels_path: $AXELERA_FRAMEWORK/ax_models/tutorials/yolo/weapons.names
+    # cal_data: train.txt
+    # val_data: val.txt
+    # labels_path: $AXELERA_FRAMEWORK/ax_models/tutorials/yolo/weapons.names

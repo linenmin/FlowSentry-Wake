@@ -49,6 +49,17 @@ _SHOW_BUFFER_STATUS = config.env.render_show_buffer_status
 _SHOW_RENDER_FPS = config.env.render_show_fps
 _STREAM_QUEUE_SIZE = config.env.render_queue_size
 
+# Soft as won't fail, but may have visual glitches if exceeded
+SOFT_MAX_STREAMS = 100
+
+# Offsets for OpenGL groups used for rendering - higher groups
+# are rendered on top of lower groups.
+GR_BACK_OFFSET = 0  # Bottom
+GR_FORE_OFFSET = GR_BACK_OFFSET + SOFT_MAX_STREAMS
+GR_SPEEDO_OFFSET = GR_FORE_OFFSET + SOFT_MAX_STREAMS
+GR_LAYER_OFFSET = GR_SPEEDO_OFFSET + SOFT_MAX_STREAMS
+GR_PROG_OFFSET = GR_LAYER_OFFSET + SOFT_MAX_STREAMS  # Top
+
 
 class Box(pyglet.shapes.MultiLine):
     def __init__(self, x, y, width, height, **kwargs):
@@ -433,6 +444,7 @@ class MasterDraw:
         self._draws = {}
         self._progresses = {}
         self._meta_cache = display.MetaCache()
+        self._speedometer_smoothing = display.SpeedometerSmoothing()
         self._options: dict[int, GLOptions] = collections.defaultdict(GLOptions)
         self._layers: dict[uuid.UUID, display._Layer] = collections.defaultdict()
 
@@ -462,17 +474,11 @@ class MasterDraw:
 
         Stream 0 will render window layers, as well as stream 0 layers.
         '''
-        now = time.time()
-        expired = [
-            k
-            for k, v in self._layers.items()
-            if v.fadeout_start and now - v.fadeout_start >= v.fadeout_duration
-        ]
+        _stream_ids = (stream_id, -1) if stream_id == 0 else (stream_id,)
+        layers, expired = display._get_visible_and_expired_layers(self._layers, _stream_ids)
         for k in expired:
             self._layers.pop(k)
-        if stream_id == 0:
-            return [x for x in self._layers.values() if stream_id in [-1, 0]]
-        return [x for x in self._layers.values() if x.stream_id == stream_id]
+        return layers
 
     def new_frame(
         self, stream_id: int, image: types.Image, axmeta: Optional[meta.AxMeta], buf_state: float
@@ -480,6 +486,9 @@ class MasterDraw:
         cached, meta_map = self._meta_cache.get(stream_id, axmeta)
         cached  # TODO we should optimise by updating the image and leaving the rest of the draw
         layers = self._get_layers(stream_id)
+        speedometer_smoothing = (
+            self._speedometer_smoothing if self._options[-1].speedometer_smoothing else None
+        )
 
         self._draws[stream_id] = GLDraw(
             stream_id,
@@ -493,6 +502,7 @@ class MasterDraw:
             self._options[stream_id],
             self._options[-1],  # window options is stream_id -1
             layers,
+            speedometer_smoothing=speedometer_smoothing,
         )
         if _SHOW_BUFFER_STATUS:
             self.set_buffering(stream_id, buf_state)
@@ -501,13 +511,6 @@ class MasterDraw:
 
     def options(self, stream_id: int, options: dict[str, Any]) -> None:
         self._options[stream_id].update(**options)
-
-    def delete(self, msg):
-        if msg.id in self._layers and not self._layers[msg.id].fadeout_start:
-            self._layers[msg.id].fadeout_start = time.time()
-            self._layers[msg.id].fadeout_duration = msg.fadeout
-        else:
-            LOG.trace(f'layer {msg.id} already deleted or fading out')
 
     def layer(self, msg: display._Text):
         self._layers[msg.id] = msg
@@ -537,13 +540,19 @@ class MasterDraw:
 
 
 def _gen_title_message(stream_id, options):
+    if isinstance(options.title_position, str):
+        position = display.Coords(options.title_position)
+    else:
+        position = display.Coords(*options.title_position)
     return display._Text(
         stream_id,
         uuid.uuid4(),
-        display.Coords(*options.title_position),
+        position,
         options.title_anchor_x,
         options.title_anchor_y,
-        -1,
+        None,
+        None,
+        None,
         None,
         options.title,
         options.title_color,
@@ -566,6 +575,7 @@ class GLDraw(display.Draw):
         options: GLOptions,
         window_options: GLOptions,
         layers: list[display._Layer],
+        speedometer_smoothing: display.SpeedometerSmoothing = None,
     ):
         self._stream_id = stream_id
         self._window_size = window_size
@@ -574,15 +584,17 @@ class GLDraw(display.Draw):
         self._keypoint_cache = keypoint_cache
         self._shapes = []
         self._canvas = _create_canvas(self._stream_id, num_streams, image.size, window_size)
-        self._back = pyglet.graphics.Group(stream_id + 0)
-        self._fore = pyglet.graphics.Group(stream_id + 100)
-        self._speedo0 = pyglet.graphics.Group(100)
-        self._speedo1 = pyglet.graphics.Group(101)
+        self._back = pyglet.graphics.Group(GR_BACK_OFFSET + stream_id)
+        self._fore = pyglet.graphics.Group(GR_FORE_OFFSET + stream_id)
+        self._speedo0 = pyglet.graphics.Group(GR_SPEEDO_OFFSET + 0)
+        self._speedo1 = pyglet.graphics.Group(GR_SPEEDO_OFFSET + 1)
+        self._layer_gr = pyglet.graphics.Group(GR_LAYER_OFFSET + stream_id)
         self._sprite = _new_sprite_from_image(
             image, self._canvas, self._batch, self._back, options.grayscale, options.grayscale_area
         )
         self._speedometer_index = 0
         self._meta_map = meta_map
+        self._speedometer_smoothing = speedometer_smoothing
         self._options = options
         self._render_meta()
 
@@ -591,25 +603,19 @@ class GLDraw(display.Draw):
         if window_options.title:
             layers.append(_gen_title_message(-1, window_options))
 
-        now = time.time()
         for x in layers:
-            if x.fadeout_start is None or x.fadeout_start > now:
-                opacity = 255
-            else:
-                opacity = max(
-                    0, 255 - int((now - x.fadeout_start) / float(x.fadeout_duration) * 255)
-                )
-
             if x.stream_id == -1:
                 pt_transform = lambda pt: (pt[0], window_size[1] - pt[1])
                 image_size = window_size
             else:
                 pt_transform = self._canvas.glp
                 image_size = image.size
+            opacity = int(255 * x.visibility)  # TODO: 255 should be x.opacity once added
             if isinstance(x, display._Text):
                 self._text(
                     pt_transform(x.position.as_px(image_size)),
                     x.text,
+                    self._layer_gr,
                     x.color,
                     x.bgcolor,
                     display.Font(size=x.font_size),
@@ -618,7 +624,7 @@ class GLDraw(display.Draw):
                     opacity,
                 )
             elif isinstance(x, display._Image):
-                s = _load_sprite_from_file(x.path, x.scale, self._batch, self._fore)
+                s = _load_sprite_from_file(x.path, x.scale, self._batch, self._layer_gr)
                 s.x, s.y = pt_transform(x.position.as_px(image_size))
                 s.opacity = opacity
                 if x.anchor_x == 'center':
@@ -716,12 +722,13 @@ class GLDraw(display.Draw):
         back_color: display.OptionalColor = None,
         font=display.Font(),
     ):
-        self._text(self._canvas.glp(p), text, txt_color, back_color, font)
+        self._text(self._canvas.glp(p), text, self._fore, txt_color, back_color, font)
 
     def _text(
         self,
         p,
         text,
+        group,
         txt_color,
         back_color: display.OptionalColor = None,
         font=display.Font(),
@@ -746,23 +753,26 @@ class GLDraw(display.Draw):
                 anchor_x=anchor_x,
                 anchor_y=anchor_y,
                 batch=self._batch,
-                group=self._fore,
+                group=group,
                 opacity=opacity,
             )
         )
 
     def draw_speedometer(self, metric: inf_tracers.TraceMetric):
-        text = display.calculate_speedometer_text(metric)
-        needle_pos = display.calculate_speedometer_needle_pos(metric)
+        if self._speedometer_smoothing:
+            self._speedometer_smoothing.update(metric)
+        text = display.calculate_speedometer_text(metric, self._speedometer_smoothing)
+        needle_pos = display.calculate_speedometer_needle_pos(metric, self._speedometer_smoothing)
         m = display.SpeedometerMetrics(self._window_size, self._speedometer_index)
 
         image = _get_speedometer()
-        sprite = pyglet.sprite.Sprite(image, *m.top_left, batch=self._batch, group=self._speedo0)
+        top_left = (m.top_left[0], self._window_size[1] - m.bottom_left[1])
+        sprite = pyglet.sprite.Sprite(image, *top_left, batch=self._batch, group=self._speedo0)
         sprite.anchor_y = -image.height
         sprite.scale = m.diameter / image.width
         self._shapes.append(sprite)
 
-        C = m.center
+        C = (m.center[0], self._window_size[1] - m.center[1])
         x1 = round(C[0] + math.cos(_to_radians(needle_pos)) * m.needle_radius)
         y1 = round(C[1] - math.sin(_to_radians(needle_pos)) * m.needle_radius)
         self._shapes.append(
@@ -803,9 +813,6 @@ class GLDraw(display.Draw):
             )
         )
         self._speedometer_index += 1
-
-    def draw_statistics(self, stats):
-        pass
 
     def draw(self):
         self._batch.draw()
@@ -891,8 +898,8 @@ class ProgressBar:
         self._width = w
         b = self._border = 2
         assert h > self._border * 2, "Border is too small"
-        g0 = pyglet.graphics.Group(1000)
-        g1 = pyglet.graphics.Group(1001)
+        g0 = pyglet.graphics.Group(GR_PROG_OFFSET + 0)
+        g1 = pyglet.graphics.Group(GR_PROG_OFFSET + 1)
         self._outer = pyglet.shapes.BorderedRectangle(
             x, y, w, h, border=1, color=back_color, border_color=color, group=g0
         )
@@ -949,13 +956,13 @@ class GLOptions(display.Options):
     title_size: int = 20
     '''Size of the title text in points'''
 
-    title_position: tuple[str] = ('0%', '0%')  # TODO wrong type annotation
-    '''Position of title. ('0%', '0%') top left. ('100%', '100%') bottom right.'''
+    title_position: str | tuple[str, str] = '0%, 0%'
+    '''Position of title. '0%, 0%' top left. '100%, 100%' bottom right.'''
 
-    title_color: tuple[int] = (244, 190, 24, 255)  # TODO wrong type annotation
+    title_color: tuple[int, int, int, int] = (244, 190, 24, 255)
     '''Text color of title, RGBA (0-255)'''
 
-    title_bgcolor: tuple[int] = (0, 0, 0, 192)  # TODO wrong type annotation
+    title_bgcolor: tuple[int, int, int, int] = (0, 0, 0, 192)
     '''Background color of title, RGBA (0-255)'''
 
     title_anchor_x: str = 'left'
@@ -1030,8 +1037,6 @@ class GLWindow(pyglet.window.Window):
                         continue  # ignore, just wait for user to close
                     if isinstance(msg, display._SetOptions):
                         self._master.options(msg.stream_id, msg.options)
-                    elif isinstance(msg, display._Delete):
-                        self._master.delete(msg)
                     elif isinstance(msg, display._Layer):
                         self._master.layer(msg)
                     elif isinstance(msg, display._Frame):

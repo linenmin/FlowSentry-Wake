@@ -11,6 +11,17 @@
 #include "AxInferenceNet.hpp"
 #include "AxLog.hpp"
 
+using namespace std::string_literals;
+
+bool
+Ax::enable_opencl_double_buffering()
+{
+  // if AXELERA_LOW_LATENCY is set then by default disable CL double buffering
+  // but allow more precise control with AXELERA_USE_CL_DOUBLE_BUFFER
+  const auto def = Ax::get_env("AXELERA_LOW_LATENCY", "0") == "1" ? "0"s : "1"s;
+  return Ax::get_env("AXELERA_USE_CL_DOUBLE_BUFFER", def) == "1";
+}
+
 #define AX_VIDEO_FORMATS(AX_VIDEO_FORMAT_REGISTER) \
   AX_VIDEO_FORMAT_REGISTER(RGB, 3)                 \
   AX_VIDEO_FORMAT_REGISTER(RGBA, 4)                \

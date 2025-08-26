@@ -15,10 +15,10 @@ class AxMetaKptsDetection : public AxMetaBbox, public AxMetaKpts
 {
   public:
   AxMetaKptsDetection(std::vector<box_xyxy> boxes, KptXyvVector kpts,
-      std::vector<float> scores, std::vector<int> kpts_shape_,
-      const std::string &decoder_name_ = "")
-      : AxMetaBbox(std::move(boxes)), AxMetaKpts(std::move(kpts)),
-        scoresvec(std::move(scores)), kpts_shape(kpts_shape_), decoder_name(decoder_name_)
+      std::vector<float> scores, std::vector<int> ids,
+      std::vector<int> kpts_shape_, const std::string &decoder_name_ = "")
+      : AxMetaBbox(std::move(boxes), std::move(scores), {}, std::move(ids)),
+        AxMetaKpts(std::move(kpts)), kpts_shape(kpts_shape_), decoder_name(decoder_name_)
   {
   }
 
@@ -33,28 +33,13 @@ class AxMetaKptsDetection : public AxMetaBbox, public AxMetaKpts
                                                AxMetaKpts::num_elements();
   }
 
-  bool is_multi_class() const
-  {
-    return false;
-  }
-
-  int class_id(size_t idx) const
-  {
-    return 0;
-  }
-
-  float score(size_t idx) const
-  {
-    return scoresvec[idx];
-  }
-
   std::vector<extern_meta> get_extern_meta() const override
   {
     const char *kpts_meta
         = decoder_name.size() == 0 ? "keypoints" : decoder_name.c_str();
     auto meta1 = AxMetaKpts::get_extern_meta();
-    auto meta2 = extern_meta{ kpts_meta, "scores", int(scoresvec.size() * sizeof(float)),
-      reinterpret_cast<const char *>(scoresvec.data()) };
+    auto meta2 = extern_meta{ kpts_meta, "scores", int(scores_.size() * sizeof(float)),
+      reinterpret_cast<const char *>(scores_.data()) };
     auto meta3 = extern_meta{ kpts_meta, "kpts_shape",
       int(kpts_shape.size() * sizeof(int)),
       reinterpret_cast<const char *>(kpts_shape.data()) };
@@ -77,7 +62,7 @@ class AxMetaKptsDetection : public AxMetaBbox, public AxMetaKpts
   {
     return decoder_name;
   }
-  std::vector<float> scoresvec;
+
   std::vector<int> kpts_shape;
   std::string decoder_name;
 };

@@ -126,9 +126,6 @@ class WiderFaceDataAdapter(types.DataAdapter):
         pass
 
     def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
-        if repr_dataloader := self.check_representative_images(transform, batch_size, **kwargs):
-            return repr_dataloader
-
         data_utils.check_and_download_dataset(
             dataset_name='WiderFace', data_root_dir=root, split='train'
         )
@@ -137,6 +134,7 @@ class WiderFaceDataAdapter(types.DataAdapter):
             WiderFaceDetection(str(txt_path)),
             batch_size=batch_size,
             shuffle=True,
+            generator=kwargs.get('generator'),
             collate_fn=detection_collate,
             num_workers=0,
         )

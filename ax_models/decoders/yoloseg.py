@@ -41,13 +41,24 @@ class DecodeYoloSeg(AxOperator):
     nms_top_k: int = 30
     unpad: bool = True
 
+    @classmethod
+    def handles_dequantization_and_depadding(cls):
+        return True
+
+    @classmethod
+    def handles_transpose(cls):
+        return True
+
+    @classmethod
+    def handles_postamble(cls):
+        return True
+
     def _post_init(self):
         self.label_filter = utils.parse_labels_filter(self.label_filter)
         self.label_exclude = utils.parse_labels_filter(self.label_exclude)
         self._tmp_labels: Optional[Path] = None
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
             raise ValueError(f"Unknown box format {self.box_format}")
-        self.cpp_decoder_does_all = True
         super()._post_init()
 
     def __del__(self):

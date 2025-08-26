@@ -29,7 +29,7 @@ To demonstrate the usage of AxInferenceNet in a real example, we are going to wa
 To run this demo, you must first obtain a suitable model, for example:
 
 ```bash
-(venv) $ ./download_prebuilt.py yolov8s-coco
+(venv) $ axdownloadmodel yolov8s-coco
 ```
 
 Additionally, we need to use the Axelera pipeline builder to create a description of the pipeline. This is a file used to configure AxInferenceNet for the model, and any local hardware-specific acceleration available, for example, OpenCL. In the future, this will be available without executing inference, but in this initial version, we need to just run `./inference.py` with suitable arguments.
@@ -84,7 +84,7 @@ manually pass the parameters to AxInferenceNet.
 The first step is to compile or download a prebuilt model, here we will show
 downloading a prebuilt model:
 
-  ./download_prebuilt.py yolov8s-coco-onnx
+  axdownloadmodel yolov8s-coco-onnx
 
 We then need to run inference.py. This can be done using any media file
 for example the fakevideo source, and we need only inference 1 frame:
@@ -322,25 +322,55 @@ postprocess1_lib=libinplace_nms.so
 
 **Raw tensor output example:**
 
-The `get-raw-tensor` postprocess step has several flags that control how much processing is done before the tensor is returned to your application:
-- If a flag (such as `dequantized_and_depadded` or `transposed`) is `True`, AxInferenceNet will perform that transform before returning the tensor.
-- If a flag is `False`, you are responsible for handling that transform after receiving the tensor.
-- If `postamble_processed` is `True`, then `dequantized_and_depadded` and `transposed` will also be enabled automatically, so the output tensor will fully align with the source ONNX model's output nodes.
+To get raw tensor output that matches your original ONNX or PyTorch model, use this configuration:
 
-Here is a YAML example:
 ```yaml
+inference:
+  handle_all: True  # Default: produces output matching your original model  
 postprocess:
   - get-raw-tensor:
-      dequantized_and_depadded: True
-      transposed: True
-      postamble_processed: True
 ```
+
+This gives you the same tensor output as your original ONNX or PyTorch model - fully dequantized, with correct dimensions and layout.
+
+**Performance optimization (advanced):**
+
+For improved performance, especially with smaller models, you can handle processing steps yourself:
+
+**Option 1 - Handle nothing (maximum performance potential):**
+```yaml
+inference:
+  handle_all: False  # You handle all processing steps yourself
+postprocess:
+  - get-raw-tensor:
+```
+
+**Option 2 - Fine-grained control:**
+```yaml
+inference:
+  # Don't set handle_all, configure individual steps
+  handle_dequantization_and_depadding: True
+  handle_transpose: False
+  handle_postamble: False
+postprocess:
+  - get-raw-tensor:
+```
+
+With `handle_all: False`, you take responsibility for all processing steps yourself, but this can enable additional optimizations in the pipeline.
 
 With the standard pipeline, you receive ready-to-use detection objects in `meta["detections"]` (an `AxMetaObjDetection`). With the raw tensor output, you receive a tensor in `meta["detections"]` (an `AxMetaRawTensor`) and must implement all postprocessing (decoding, NMS, etc.) yourself.
 
+### When to use raw tensor output
+
+Raw tensor output is ideal for:
+- Custom models not supported in the Axelera model zoo
+- Experimental postprocessing algorithms
+- Integration with existing analytics pipelines
+
+For maximum performance in production applications, consider building a standard decoder as done for models in the Axelera model zoo.
 
 ### Performance note
 
-This path is not as optimized as the default pipeline, especially for large batch sizes or high-throughput. If you want maximum speed, we encourage you to build a standard decoder (as done for models in the Axelera model zoo), which allows the pipeline to use fully optimized postprocessing. The raw tensor path is intended for flexibility, experimentation, and integration - not for maximum speed. We plan to improve this path by optimizing how we perform postprocessing before providing the tensor output in future releases.
+The raw tensor output path is intended for flexibility, experimentation, and integration - not for maximum speed. This path is not as optimized as the default pipeline, especially for large batch sizes or high-throughput. If you want maximum performance, we encourage you to build a standard decoder (as done for models in the Axelera model zoo), which allows the pipeline to use fully optimized postprocessing. We plan to improve this path by optimizing how we perform postprocessing before providing the tensor output in future releases.
 
 See the full source in [`axinferencenet_tensor.cpp`](/examples/axinferencenet/axinferencenet_tensor.cpp).

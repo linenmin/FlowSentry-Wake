@@ -24,3 +24,14 @@ class CustomONNXModel(base_onnx.AxONNXModel):
         #     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         # ])(img)
         return TRANSFORM['val'](img)
+
+
+class CustomONNXModelWithoutResize(base_onnx.AxONNXModel):
+    def override_preprocess(self, img: PIL.Image.Image | np.ndarray) -> torch.Tensor:
+        return transforms.Compose(
+            [
+                # transforms.Resize((100, 100)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ]
+        )(img)
