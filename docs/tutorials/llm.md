@@ -23,7 +23,7 @@ source venv/bin/activate
 > [!IMPORTANT]  
 > The LLM venv works well for `inference_llm.py` which is LLM-specific, but it may not work for other vision tasks. If you want to run vision tasks, please deactivate the venv, regenerate the vision requirements and run the vision installer again:
 > ```sh
-> git checkout cfg/*
+> git checkout cfg
 > ./install.sh --no-driver --development
 > ```
 >
