@@ -151,7 +151,13 @@ For technical assistance on compiling your own model please turn to the [Axelera
 with single-MSI, host device monitoring with `AxMonitor` does not display any data. An example of
 a host with this issue is Arduino Portena X8 Mini.
 - Built operators are not retained in a docker environment (SDK-5228): As a workaround, on entering
-a docker container you must run `make operators`. 
+a docker container you must run `make operators`.
+- Firmware update script misbehaves on multi-device systems (SDK-7682).
+  * Affects systems with multiple Metis cards as well as systems with one or multiple PCIe cards with 4 Metis AIPU cores.
+  * **Workaround**: On affected systems, perform the following actions to update the firmware:
+    * `cd $HOME && wget https://media.axelera.ai/artifacts/firmware/scripts/v1.4/interactive_flash_update_multi_device.sh`
+    * `chmod +x $HOME/interactive_flash_update_multi_device.sh`
+    * Then follow [the official firmware update guide](/docs/tutorials/firmware_flash_update.md) but run `$HOME/interactive_flash_update_multi_device.sh` instead of `$AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh` when asked to do so by the update guide.
 
 ## Further Support
 For blog posts, projects and technical support please visit [Axelera AI Customer Portal](https://support.axelera.ai)
