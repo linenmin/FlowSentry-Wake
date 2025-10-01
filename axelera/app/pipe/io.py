@@ -650,7 +650,7 @@ class _VideoWriter:
             self._location = [
                 _resolve_output_index(location, i) for i in range(input.stream_count())
             ]
-            self._fps = [i.fps for i in input.inputs]
+            self._fps = [i.fps for _, i in sorted(input.inputs.items())]
         else:
             self._location = [location]
             self._fps = [input.fps]

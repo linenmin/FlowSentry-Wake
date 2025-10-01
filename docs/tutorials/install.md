@@ -3,6 +3,7 @@
 # Installation guide
 
 - [Installation guide](#installation-guide)
+  - [Generate a token for the installer](#generate-a-token-for-the-installer)
   - [Run the installer](#run-the-installer)
   - [Activate the development environment](#activate-the-development-environment)
 
@@ -29,8 +30,8 @@ The repository contains the following files and directories.
 | [`docs`](/docs/) | Tutorial and reference documentation |
 | [`licenses/`](/licenses) | Licenses for all SDK components and dependencies |
 
-The default branch of the repository is always set to the latest published SDK release. You can use
-standard `git` commands to list the available releases and to checkout different versions of the
+The head of the repository is always set to the latest published SDK release. You can use
+standard git commands to list the available releases and to checkout different versions of the
 SDK. Run the following command to  view the current release branch and all available releases:
 
 ```bash
@@ -44,16 +45,27 @@ git checkout release/v1.2.5
 git rebase
 ```
 
-The latest publicly released SDK version is the default branch of the `git` repository; the name of
-the branch can be found by visiting the Github page or by looking for `HEAD` at the output of 
-`git remote show origin`. To rebase to the latest publicly released SDK version, run the following commands:
+To rebase to the latest publicly released SDK version, run the following command:
 
 ```bash
-git fetch
-export LATEST_RELEASE=$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')
-git checkout "${LATEST_RELEASE}"
+git checkout main
 git rebase
 ```
+
+## Generate a token for the installer
+
+To run the installer create an Axelera AI account and accept our Software End User License Agreement. Open a browser tab and navigate to [https://software.axelera.ai/ui/login](https://software.axelera.ai/ui/login) where you can use Axelera AI account credentials. It is the same account for our
+[Community](https://community.axelera.ai/) and [Support Portal](https://support.axelera.ai/). Once you have registered, you need to generate a token for the installer.
+
+> [!TIP]
+> In the Login page, click on the button labeled "customers" which will prompt you to authenticate
+> with your Axelera AI account (or, register a new account if you don't have one already).
+> Once logged in, on the top-right corner of the website under your profile, click **Edit Profile**
+> and then click the button **Generate an Identity Token**. In the Generate Identity Token window, 
+> the token you need to use is found under "Reference Token" **(not the Token ID which is a much shorter string)**. Please make sure to copy and store
+> the token somewhere safe.
+
+Note: that for installing only the runtime environment accepting the EULA and providing a token is not required.
 
 ## Run the installer
 
@@ -61,8 +73,11 @@ You must run the installer each time you checkout a new SDK release.
 The following command installs everything you need to deploy and run models on Metis hardware:
 
 ```bash
-./install.sh --all --media
+./install.sh --all --media --user <user> --token <token>
 ```
+
+The option to `--user` is the email address used for your registered Axelera AI account and the
+option to `--token` is the token generated using the registered Axelera AI account.
 
 The installer inspects the system and ensures the Metis PCIe driver, system runtime
 libraries and Python virtual environment are all correctly installed. The Python virtual
@@ -89,7 +104,7 @@ components you require. Running the installer with the `--help` option gives mor
 information on how to enable and disable these individual components on the command line.
 
 > [!TIP]
-> To install only the runtime on a deployment system run the installer
+> To install only the runtime on a deployment system, without using a token, run the installer
 > with the options `--runtime` and `--no-development`.
 
 ## Activate the development environment

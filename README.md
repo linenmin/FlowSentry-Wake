@@ -1,7 +1,6 @@
 ![image](/docs/images/Ax_Voyager_SDK_Repo_Banner_1600x457_01.png)
 
 # Voyager SDK repository
-v1.4.0 : [Release notes](/RELEASE_NOTES.md)
 
 - [Voyager SDK repository](#voyager-sdk-repository)
   - [Install SDK and get started](#install-sdk-and-get-started)
@@ -10,7 +9,6 @@ v1.4.0 : [Release notes](/RELEASE_NOTES.md)
   - [Application integration APIs](#application-integration-apis)
   - [Reference pipelines](#reference-pipelines)
   - [Additional documentation](#additional-documentation)
-  - [Further support](#further-support)
 
 The Voyager SDK makes it easy to build high-performance inferencing applications with Axelera AI Metis devices. The sections below provide links to code examples, tutorials and reference documentation.
 

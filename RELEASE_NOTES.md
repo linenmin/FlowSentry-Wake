@@ -1,7 +1,7 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-# Voyager SDK release notes v1.4.0
+# Voyager SDK release notes vx.x.x
 
-- [Voyager SDK release notes v1.4.0](#voyager-sdk-release-notes-v140)
+- [Voyager SDK release notes vx.x.x](#voyager-sdk-release-notes-vxxx)
   - [Release Description](#release-description)
     - [Release Qualification](#release-qualification)
     - [Host Environment](#host-environment)
@@ -10,35 +10,36 @@
     - [New Platforms](#new-platforms)
     - [New Networks Supported](#new-networks-supported)
       - [Object Detection](#object-detection)
-      - [Semantic Segmentation](#semantic-segmentation)
-      - [Face Recognition](#face-recognition)
-      - [Re-identification](#re-identification)
-    - [End-to-End Pipelines](#end-to-end-pipelines)
-  - [New Features](#new-features)
+      - [Instance Segmentation](#instance-segmentation)
+      - [Keypoint Detection](#keypoint-detection)
+      - [Monocular Depth Estimation](#monocular-depth-estimation)
+      - [Image Enhancement / Super Resolution](#image-enhancement--super-resolution)
+      - [License Plate Recognition](#license-plate-recognition)
+      - [Large Language Models](#large-language-models)
+  - [Supported models (not offered in Model Zoo)](#supported-models-not-offered-in-model-zoo)
+  - [NN Operator Support](#nn-operator-support)
+  - [End-to-end Pipelines](#end-to-end-pipelines)
+  - [General Features](#general-features)
     - [AI Pipeline Builder](#ai-pipeline-builder)
-    - [Model Compiler](#mark\\[Beta\\]-model-compiler)
+    - [Inference Visualization](#inference-visualization)
+    - [Compiler](#compiler)
     - [Runtime](#runtime)
-    - [Tools](#tools)
     - [Firmware](#firmware)
-  - [Fixed Issues since Last Release](#fixed-issues-since-last-release)
-  - [Known Issues and Limitations](#known-issues-and-limitations)
-  - [Further Support](#further-support)
+    - [Monitoring](#monitoring)
+  - [Removed Features](#removed-features)
+  - [New and Updated Documentation](#new-and-updated-documentation)
+  - [Fixed issues last release](#fixed-issues-last-release)
+  - [Known Issues \& Limitations](#known-issues--limitations)
 
 ## Release Description
-This release expands the capabilities of Voyager SDK with new features, platform support and AI use cases. It is a public release which follows the same installation and upgrade principles as v1.3, as well as the same licensing model. It adds the following capabilities:
 
-* Support for new models including YOLO10, FastSAM, FaceNet, OSNet and Deep-OC-Sort
-* Support for new AI use cases such as face recognition and person re-identification
-* Python API for invoking the compiler
-* Performance improvements on Windows platforms
-* Command-line tool to query the SDK version
-* Stability fixes
-* Simplified installer with the requirement for a token removed
 
 ### Release Qualification
+
 This is a production-ready release of Voyager SDK. Software components and features that are in development are marked “\[Beta\]” indicating tested functionality that will continue to grow in future releases or “\[Experimental\]” indicating early-stage feature with limited testing.
 
 ### Host Environment
+
 For model compiling purposes, these are the host requirements:
 
 | Requirement               | Detail                                                                 |
@@ -49,116 +50,136 @@ For model compiling purposes, these are the host requirements:
 | Minimum System Memory     | 16GB (large models may require swap partition)                         |
 | Recommended System Memory | 32 GB                                                                  |
 
-Compiled models are expected to run on Intel Core-i 12th and 13th generations (x86), AMD Ryzen (x86)
-and ARM64 host CPUs. Please find the list of platforms Axelera AI has tested with Metis M.2 Card [here](https://support.axelera.ai/hc/en-us/articles/25437844422418-Metis-M-2-Tested-Host-PCs)
-and Metis PCIe Card [here](https://support.axelera.ai/hc/en-us/articles/25437554693138-Metis-PCIe-Tested-Host-PCs).
-
 ## New Features / Support
 
 ### New Axelera AI Cards and Systems
-- Support for Metis Compute Board (AI SBC) AIPU, 4GB of RAM
+
 
 ### New Platforms
-- NVIDIA Jetson Orin NX (Arm Cortex-A78AE)
+
 
 ### New Networks Supported
-
-The Voyager Model Zoo includes models for Computer Vision and Large Language Models. For a full list of supported models and data about their performance and accuracy see [here](/docs/reference/model_zoo.md).
-
-Models that are supported but not included in the model zoo are documented [here](/docs/reference/additional_models.md).
-
-> [!NOTE]
-> The `download_prebuilt.py` utility for downloading pre-compiled models has been deprecated in favor of `axdownloadmodel`.
+For a full list of supported models and data about their performance and accuracy see [here](/docs/reference/model_zoo.md)
 
 #### Object Detection
 
+| Model Name                                                                  | Resolution | Format                          |
+| :-------------------------------------------------------------------------- | :--------- | :------------------------------ |
+e.g...
+| [Model name](/ax_models/zoo/yolo/object_detection/yolov7-tiny-coco.yaml) | e.g. 640x640    | e.g. PyTorch *(ONNX already exists)* |
+
+#### Instance Segmentation
+
+| Model Name                                                                         | Resolution | Format        |
+| :--------------------------------------------------------------------------------- | :--------- | :------------ |
+|                                                                                    |            |               |
+#### Keypoint Detection
+
+| Model Name                                                                        | Resolution | Format                          |
+| :-------------------------------------------------------------------------------- | :--------- | :------------------------------ |
+|                                                                                   |            |                                 |
+
+#### Monocular Depth Estimation
+
+| Model Name                                                       | Resolution | Format |
+| :--------------------------------------------------------------- | :--------- | :----- |
+|                                                                  |            |        |
+
+#### Image Enhancement / Super Resolution
+
 | Model Name                                                              | Resolution | Format |
 | :---------------------------------------------------------------------- | :--------- | :----- |
-| [YOLO10n](/ax_models/zoo/yolo/object_detection/yolov10n-coco-onnx.yaml) | 640x640    | ONNX   |
-| [YOLO10s](/ax_models/zoo/yolo/object_detection/yolov10s-coco-onnx.yaml) | 640x640    | ONNX   |
-| [YOLO10b](/ax_models/zoo/yolo/object_detection/yolov10b-coco-onnx.yaml) | 640x640    | ONNX   |
+|                                                                         |            |        |
 
-#### Semantic Segmentation
+#### License Plate Recognition
 
-| Model Name                                                              | Resolution | Format |
-| :---------------------------------------------------------------------- | :--------- | :----- |
-| [FastSAM](/ax_models/reference/apps/fastsam/fastsams-rn50x4-onnx.yaml)   | 640x640    | ONNX   |
+| Model Name                                 | Resolution | Format        |
+| :----------------------------------------- | :--------- | :------------ |
+|                                            |            |               |
 
-#### Face Recognition
-| Model Name                                                           | Resolution | Format          |
-| :------------------------------------------------------------------- | :--------- | :-------------- |
-| [FaceNet - InceptionResnetV1](/ax_models/zoo/torch/facenet-lfw.yaml) | 160x160    | Pytorch, ONNX   |
+#### Large Language Models
 
-#### Re-identification
-| Model Name                                                           | Resolution | Format |
-| :------------------------------------------------------------------- | :--------- | :----- |
-| [OSNet x1_0](/ax_models/zoo/torch/osnet-x1-0-market1501-onnx.yaml)   | 256x128    |  ONNX  |
-| [Deep-OC-Sort](/ax_models/reference/cascade/with_tracker/yolox-deep-oc-sort-osnet.yaml) (combined with YOLOX but can be adapted to other object detectors) | 384x128    |  ONNX  |
+For support for running pre-compiled LLMs and provides a chatbot application ([inference_llm.py](/docs/tutorials/llm.md)) to try them. This application will also output performance metrics.
 
-### End-to-End Pipelines
-- End-to-end application for _segment anything_ using FastSAM
-- New YAML files for all new models offered in our model zoo in this release (see tables above)
+| Model Name                                                            | Context Window    | Format      |
+| :-------------------------------------------------------------------- | :---------------- | :---------- |
+|                                                                       | e.g. Up to 512 tokens  | e.g. Precompiled |
 
-## New Features
+## Supported models (not offered in Model Zoo)
 
-### Installation
-- The installer has been updated to remove the requirement of token-based authentication. The
-SDK can now be installed without providing a user identity (username/token)
+The following classification models can be compiled and their accuracy has been verified. While they don't have dedicated YAML configurations in our model zoo yet, you can easily use them by adapting the existing [mobilenetv4_small-imagenet.yaml](/ax_models/zoo/timm/mobilenetv4_small-imagenet.yaml) template - simply update the timm_model_args.name field to your desired model and adjust the preprocessing configuration as needed.
+
+| Model Name                            | Accuracy Drop (vs. FP32 model) |
+| :------------------------------------ | :----------------------------- |
+| dla34.in1k                            | 0.59                           |
+| dla60.in1k                            | 0.55                           |
+| dla60_res2net.in1k                    | 0.15                           |
+| dla102.in1k                           | 0.03                           |
+| dla169.in1k                           | 0.27                           |
+| efficientnet_es.ra_in1k               | 0.02                           |
+| efficientnet_es_pruned.in1k           | 0.13                           |
+| efficientnet_lite0.ra_in1k            | 0.22                           |
+| dla46_c.in1k                          | 1.54                           |
+| fbnetc_100.rmsp_in1k                  | 0.24                           |
+| gernet_m.idstcv_in1k                  | 0.05                           |
+| gernet_s.idstcv_in1k                  | 0.18                           |
+| mnasnet_100.rmsp_in1k                 | 0.28                           |
+| mobilenetv2_050.lamb_in1k             | 0.92                           |
+| mobilenetv2_120d.ra_in1k              | 0.44                           |
+| mobilenetv2_140.ra_in1k               | 0.89                           |
+| res2net50_14w_8s.in1k                 | 0.17                           |
+| res2net50_26w_4s.in1k                 | 0.17                           |
+| res2net50_26w_6s.in1k                 | 0.06                           |
+| res2net50_48w_2s.in1k                 | 0.09                           |
+| res2net50d.in1k                       | 0.00                           |
+| res2net101_26w_4s.in1k                | 0.19                           |
+| res2net101d.in1k                      | 0.08                           |
+| resnet10t.c3_in1k                     | 1.61                           |
+| resnet14t.c3_in1k                     | 0.85                           |
+| resnet50c.gluon_in1k                  | 0.03                           |
+| resnet50s.gluon_in1k                  | 0.19                           |
+| resnet101c.gluon_in1k                 | 0.08                           |
+| resnet101d.gluon_in1k                 | 0.1                            |
+| resnet101s.gluon_in1k                 | 0.18                           |
+| resnet152d.gluon_in1k                 | 0.15                           |
+| selecsls42b.in1k                      | 0.25                           |
+| selecsls60.in1k                       | 0.05                           |
+| selecsls60b.in1k                      | 0.2                            |
+| spnasnet_100.rmsp_in1k                | 0.25                           |
+| tf_efficientnet_es.in1k               | 0.26                           |
+| tf_efficientnet_lite0.in1k            | 0.33                           |
+| tf_mobilenetv3_large_minimal_100.in1k | 1.68                           |
+| wide_resnet101_2.tv2_in1k             | 0.26                           |
+
+Additionally, we support **OSNet x1_0** for model compilation.
+
+## NN Operator Support
+Our operator coverage and documentation have expanded to support 7 ONNX opsets (opset11-opset17). To ensure optimal performance and stability, we specifically encourage using the following 4 opsets.
+- [onnx-opset14](/docs/reference/onnx-opset14-support.md)
+- [onnx-opset15](/docs/reference/onnx-opset15-support.md)
+- [onnx-opset16](/docs/reference/onnx-opset16-support.md)
+- [onnx-opset17](/docs/reference/onnx-opset17-support.md)
+
+## End-to-end Pipelines
+
+## General Features
 
 ### AI Pipeline Builder
-- An InferenceStream can be created on multiple different pipelines, and pipelines can be
-added dynamically using `add_pipeline()`
-- AxInferenceNet supports Top-k Region-Of-Interest (ROI) filtering based on area, size and classes
-- Classification metadata has been simplified to make classification metadata objects easier to use (see
-the [classification example](/examples/classification_example.py) for further details)
 
-### [Beta] Model Compiler
-- Support for a simplified [compilation API in Python](/docs/reference/compiler_api.md) based on two API calls:
-`quantize()` and `compile()`. Compiled models can be run using the [AxRunModel tool](docs/reference/axrunmodel.md)
-or [AxRuntime inference API](/docs/reference/axelera.runtime.md)
-- Support for concat along any non-batch axis of a 4d tensor, and grouped convolutions for symmetric kernels (kernel width equals kernel height)
-- The list of [supported operators](/docs/reference/onnx-opset17-support.md) will grow in future releases.
-For technical assistance on compiling your own model please turn to the [Axelera Community](https://community.axelera.ai/)
+### Inference Visualization
+
+### Compiler
 
 ### Runtime
-- Significant performance improvement for several models using AxRuntime inference API on Windows platforms
-- Support for multiple Axelera cards on Windows platforms
-
-### Tools
-- New `axversion` command-line utility to query the version of the SDK running
-- Improvements to `axmonitor`
-  * New metrics - power usage for cards that feature on-board power sensors, kernels per second
-  * Added multi-device support
-  * Included configuration and threshold settings information
-  * Added monitoring messages for hardware throttling, software throttling and version
-- Improvements to `axdevice`
-  * Improved multi-device handling and PCIe bridge management 
-  * Added reboot and thermal commands
 
 ### Firmware
-- Improved version checking commands for board controller
-- Improved resiliency and stability across different host platforms
-- [Updated firmware upgrade script](/docs/tutorials/firmware_flash_update.md)
 
-## Fixed Issues Since Last Release
-- Incorrect Board Controller Firmware version returned (SDK-6710)
-- Loading a model to DDR may fail (SDK-6708)
-- Fixed unresponsive board controller shell issues (SDK-6803)
+### Monitoring
 
-## Known Issues and Limitations
-- Compiling the model Real-ESRGAN-x4plus requires a machine with at least 128GB of system RAM
-- Device monitoring with `AxMonitor` is not supported on single-MSI hosts (SDK-6581): For some systems
-with single-MSI, host device monitoring with `AxMonitor` does not display any data. An example of
-a host with this issue is Arduino Portena X8 Mini.
-- Built operators are not retained in a docker environment (SDK-5228): As a workaround, on entering
-a docker container you must run `make operators`.
-- Firmware update script misbehaves on multi-device systems (SDK-7682).
-  * Affects systems with multiple Metis cards as well as systems with one or multiple PCIe cards with 4 Metis AIPU cores.
-  * **Workaround**: On affected systems, perform the following actions to update the firmware:
-    * `cd $HOME && wget https://media.axelera.ai/artifacts/firmware/scripts/v1.4/interactive_flash_update_multi_device.sh`
-    * `chmod +x $HOME/interactive_flash_update_multi_device.sh`
-    * Then follow [the official firmware update guide](/docs/tutorials/firmware_flash_update.md) but run `$HOME/interactive_flash_update_multi_device.sh` instead of `$AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh` when asked to do so by the update guide.
+## Removed Features
 
-## Further Support
-For blog posts, projects and technical support please visit [Axelera AI Customer Portal](https://support.axelera.ai)
-For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).
+## New and Updated Documentation
+
+## Fixed issues last release
+
+## Known Issues & Limitations

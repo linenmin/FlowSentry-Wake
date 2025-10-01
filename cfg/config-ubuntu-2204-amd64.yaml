@@ -8,13 +8,14 @@ os:
 
 vars:
   AX_RELEASE_URL: https://media.axelera.ai
-  AX_DEBIAN_URL: https://software.axelera.ai/artifactory/axelera-apt-source/
-  AX_PYPI_RUNTIME_URL: https://software.axelera.ai/artifactory/axelera-runtime-pypi/
-  AX_PYPI_DEVELOPMENT_URL: https://software.axelera.ai/artifactory/axelera-dev-pypi/
+  AX_REPO_BASE_URL: ${AX_RELEASE_URL}/releases/v1.4.1/build-packages-ubuntu-22.04
+  AX_DEBIAN_URL: ${AX_REPO_BASE_URL}/apt-repo
+  AX_PYPI_RUNTIME_URL: ${AX_REPO_BASE_URL}/python
+  AX_PYPI_DEVELOPMENT_URL: ${AX_REPO_BASE_URL}/python
   AX_PIP_EXTRA_ARGS: ""
   AX_CFG_DIR: cfg
-  AX_VERSION: 1.4.0
-  AX_DKMS_VERSION: 1.2.2
+  AX_VERSION: 1.4.1
+  AX_DKMS_VERSION: 1.2.3
 
 installer_dependencies:
   - git
@@ -28,7 +29,7 @@ common:
   description: Common
   libs:
     - libgstreamer-plugins-base1.0-dev
-    - axelera-runtime-1.4.0
+    - axelera-runtime-1.4.1
     - systemd
 
 penv:
@@ -252,9 +253,9 @@ runtime:
 
   envs:
     - name: AXELERA_RUNTIME_DIR
-      value: "/opt/axelera/runtime-1.4.0-1"
+      value: "/opt/axelera/runtime-1.4.1-1"
     - name: AXELERA_DEVICE_DIR
-      value: "/opt/axelera/device-1.4.0-1/omega"
+      value: "/opt/axelera/device-1.4.1-1/omega"
     - name: AXELERA_RISCV_TOOLCHAIN_DIR
       value: "/opt/axelera/riscv-gnu-newlib-toolchain-409b951ba662-7"
     - name: PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION
@@ -282,7 +283,7 @@ runtime:
 driver:
   description: PCIe driver
   libs:
-    - metis-dkms == 1.2.2
+    - metis-dkms == 1.2.3
 
 repositories:
   - list: /etc/apt/sources.list.d/docker.list
@@ -314,13 +315,13 @@ repositories:
       - https://packages.microsoft.com/repos/code stable main
   - list: /etc/apt/sources.list.d/axelera.list
     packages:
-      - axelera-device-1.4.0
-      - axelera-runtime-1.4.0
+      - axelera-device-1.4.1
+      - axelera-runtime-1.4.1
       - axelera-riscv-gnu-newlib-toolchain-409b951ba662-7
       - axelera-riscv-openocd
       - metis-dkms
       # platform specific
-    gpg-url: https://software.axelera.ai/artifactory/api/security/keypair/axelera/public
+    gpg-url: ${AX_DEBIAN_URL}/axelera.gpg
     gpg-key: /etc/apt/keyrings/axelera.gpg
     sources:
       - ${AX_DEBIAN_URL} stable main

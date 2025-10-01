@@ -5,7 +5,7 @@ import itertools
 import logging
 import os
 from pathlib import Path
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import ANY, Mock, call, patch
 
 import cv2
 import numpy as np
@@ -628,6 +628,26 @@ def test_output_save_video_valid_input():
             mock_cvwriter.write.call_args_list[0][0][0], bgr_img.asarray('BGR')
         )
         mock_cvwriter.release.assert_called_once()
+
+
+def test_output_save_video_valid_input_multistream():
+    pipein = create_pipein(30)
+    pipein = Mock()
+    pipein.stream_count.return_value = 2
+    pipein.inputs = {0: create_pipein(25), 1: create_pipein(30)}
+
+    pipeout = pipe.PipeOutput('somefile_%d.mp4', pipein)
+    with patch.object(cv2, 'VideoWriter') as mock_writer:
+        mock_cvwriter = mock_writer.return_value
+        do_writes(pipeout, (bgr_img, 'unused'))
+        assert mock_writer.call_args_list[:2] == [
+            call('somefile_0.mp4', MP4V, 25, (6, 4)),
+            call('somefile_1.mp4', MP4V, 30, (6, 4)),
+        ]
+        np.testing.assert_array_equal(
+            mock_cvwriter.write.call_args_list[0][0][0], bgr_img.asarray('BGR')
+        )
+        mock_cvwriter.release.assert_has_calls([call() for _ in range(2)])
 
 
 @pytest.mark.parametrize(

@@ -2,23 +2,6 @@
 
 # Voyager model zoo
 
-- [Voyager model zoo](#voyager-model-zoo)
-  - [Querying the supported models and pipelines](#querying-the-supported-models-and-pipelines)
-  - [Working with models trained on non-redistributable datasets](#working-with-models-trained-on-non-redistributable-datasets)
-  - [Supported models and performance characteristics](#supported-models-and-performance-characteristics)
-    - [Image Classification](#image-classification)
-    - [Object Detection](#object-detection)
-    - [Semantic Segmentation](#semantic-segmentation)
-    - [Instance Segmentation](#instance-segmentation)
-    - [Keypoint Detection](#keypoint-detection)
-    - [Depth Estimation](#depth-estimation)
-    - [License Plate Recognition](#license-plate-recognition)
-    - [Image Enhancement Super Resolution](#image-enhancement-super-resolution)
-    - [Face Recognition](#face-recognition)
-    - [Re-identification](#re-identification)
-    - [Large Language Model (LLM)](#large-language-model-llm)
-  - [Next Steps](#next-steps)
-  - [Further support](#further-support)
 
 The Voyager model zoo provides a comprehensive set of industry-standard models for common tasks
 such as classification, object detection, segmentation and keypoint detection. It also provides
@@ -152,7 +135,6 @@ Additionally, you can modify the accuracy measurement command with the flag --pi
 
 The [benchmarking and performance evaluation guide](/docs/tutorials/benchmarking.md) explains how
 to verify these results and how to perform many other evaluation tasks on all supported platforms.
-
 
 ### Image Classification
 | Model                                                                                      | ONNX                                                                                      | Repo                                                             | Resolution | Dataset     | Ref FP32 Top1 | Accuracy loss | Ref PCIe FPS | Ref M.2 FPS | Model license |
