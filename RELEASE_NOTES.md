@@ -1,7 +1,7 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-# Voyager SDK release notes vx.x.x
+# Voyager SDK release notes v1.4.1
 
-- [Voyager SDK release notes vx.x.x](#voyager-sdk-release-notes-vxxx)
+- [Voyager SDK release notes v1.4.1](#voyager-sdk-release-notes-v141)
   - [Release Description](#release-description)
     - [Release Qualification](#release-qualification)
     - [Host Environment](#host-environment)
