@@ -8,10 +8,9 @@ os:
 
 vars:
   AX_RELEASE_URL: https://media.axelera.ai
-  AX_REPO_BASE_URL: ${AX_RELEASE_URL}/releases/v1.4.1/build-packages-ubuntu-22.04
-  AX_DEBIAN_URL: ${AX_REPO_BASE_URL}/apt-repo
-  AX_PYPI_RUNTIME_URL: ${AX_REPO_BASE_URL}/python
-  AX_PYPI_DEVELOPMENT_URL: ${AX_REPO_BASE_URL}/python
+  AX_DEBIAN_URL: https://software.axelera.ai/artifactory/axelera-apt-source/
+  AX_PYPI_RUNTIME_URL: https://software.axelera.ai/artifactory/axelera-runtime-pypi/
+  AX_PYPI_DEVELOPMENT_URL: https://software.axelera.ai/artifactory/axelera-dev-pypi/
   AX_PIP_EXTRA_ARGS: ""
   AX_CFG_DIR: cfg
   AX_VERSION: 1.4.1
@@ -321,7 +320,7 @@ repositories:
       - axelera-riscv-openocd
       - metis-dkms
       # platform specific
-    gpg-url: ${AX_DEBIAN_URL}/axelera.gpg
+    gpg-url: https://software.axelera.ai/artifactory/api/security/keypair/axelera/public
     gpg-key: /etc/apt/keyrings/axelera.gpg
     sources:
       - ${AX_DEBIAN_URL} stable main
