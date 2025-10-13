@@ -2,6 +2,10 @@
 
 # Voyager SDK v1.4 Release Notes
 
+- [Voyager SDK Release Notes 1.4.2](#voyager-sdk-release-notes-142)
+  - [Fixed issues (since v1.4.1)](#fixed-issues-since-v141)
+  - [New Features / Support](#new-features--support)
+  - [Document Updates](#document-updates)
 - [Voyager SDK Release Notes 1.4.1](#voyager-sdk-release-notes-141)
   - [Fixed issues (since v1.4.0)](#fixed-issues-since-v140)
   - [New Features / Support](#new-features--support)
@@ -31,6 +35,20 @@
     - [Runtime Environment](#runtime-environment)
   - [Fixed Issues](#fixed-issues)
   - [Known Issues & Limitations](#known-issues--limitations)
+
+# Voyager SDK Release Notes 1.4.2
+
+This release addresses some of the issues found in v1.4.1.
+
+## Fixed issues (since v1.4.1)
+- Installer changing permissions of system directories (CST-803)
+- Error when saving output from multiple streams (SDK-7862)
+
+## New Features / Support
+
+## Document Updates
+- ONNX opset docs updated to reflect expanded support on concat and grouped convs (SDK-7957)
+- Updated performance values for the Image Enhancement (Super Resolution) model [Real-ESRGAN-x4plus](docs/reference/model_zoo.md) based on the latest evaluation results
 
 # Voyager SDK Release Notes 1.4.1
 

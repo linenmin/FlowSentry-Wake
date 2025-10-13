@@ -1,7 +1,6 @@
 ![image](/docs/images/Ax_Voyager_SDK_Repo_Banner_1600x457_01.png)
 
 # Voyager SDK repository
-v1.4.1 : [Release notes](./RELEASE_NOTES.md)
 
 - [Voyager SDK repository](#voyager-sdk-repository)
   - [Install SDK and get started](#install-sdk-and-get-started)

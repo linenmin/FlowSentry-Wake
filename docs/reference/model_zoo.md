@@ -231,7 +231,7 @@ to verify these results and how to perform many other evaluation tasks on all su
 ### Image Enhancement Super Resolution
 | Model              | ONNX                                                           | Repo                                                | Resolution | Dataset                         | Ref FP32 PSNR | Accuracy loss | Ref PCIe FPS | Ref M.2 FPS | Model license |
 | :----------------- | :------------------------------------------------------------- | :-------------------------------------------------- | :--------- | :------------------------------ | ------------: | ------------: | -----------: | ----------: | ------------: |
-| Real-ESRGAN-x4plus | [&#x1F517;](/ax_models/zoo/torch/real-esrgan-x4plus-onnx.yaml) | [&#x1F517;](https://github.com/xinntao/Real-ESRGAN) | 128x128    | SuperResolutionCustomSet128x128 | 24.77         |               | -            | -           | BSD-3-Clause  |
+| Real-ESRGAN-x4plus | [&#x1F517;](/ax_models/zoo/torch/real-esrgan-x4plus-onnx.yaml) | [&#x1F517;](https://github.com/xinntao/Real-ESRGAN) | 128x128    | SuperResolutionCustomSet128x128 | 24.77         |               | 10.7            | 8.2        | BSD-3-Clause  |
 
 ### Face Recognition
 | Model                                                                | ONNX                                                    | Repo                                                     | Resolution | Dataset            | Ref FP32 top1_avg | Accuracy loss | Ref PCIe FPS | Ref M.2 FPS | Model license |
