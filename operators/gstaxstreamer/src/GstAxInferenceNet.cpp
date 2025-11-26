@@ -1,3 +1,4 @@
+// Copyright Axelera AI, 2025
 #include <cstdlib>
 #include <cstring>
 #include <gst/gst.h>
@@ -11,6 +12,7 @@
 #include "AxMeta.hpp"
 #include "AxMetaStreamId.hpp"
 #include "AxStreamerUtils.hpp"
+#include "GstAxBufferPool.hpp"
 #include "GstAxDataUtils.hpp"
 #include "GstAxInPlace.hpp"
 #include "GstAxInferenceNet.hpp"
@@ -55,6 +57,7 @@ enum {
   PROP_POSTPROC_END = PROP_POSTPROC0_SHARED_LIB_PATH + Ax::MAX_OPERATORS * PROPERTY_STRIDE,
   PROP_STREAM_SELECT,
   PROP_MAX_POOL_BUFFERS,
+  PROP_LOOP,
 };
 
 class GstAxStreamSelect
@@ -182,6 +185,12 @@ gst_axinferencenet_set_property(
     }
     return;
   }
+
+  if (property_id == PROP_LOOP) {
+    inf->loop = g_value_get_boolean(value);
+    return;
+  }
+
   G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
 }
 
@@ -211,12 +220,18 @@ gst_axinferencenet_get_property(
     return;
   }
 
+  if (property_id == PROP_LOOP) {
+    g_value_set_boolean(value, inf->loop);
+    return;
+  }
+
   G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
 }
 
 struct GstBufferHandle {
   explicit GstBufferHandle(GstBuffer *buffer) : buffer(buffer)
   {
+    map_info.memory = nullptr;
   }
   GstBufferHandle(const GstBufferHandle &) = delete;
   GstBufferHandle(GstBufferHandle &&) = delete;
@@ -224,7 +239,7 @@ struct GstBufferHandle {
   GstBufferHandle &operator=(GstBufferHandle &&) = delete;
   ~GstBufferHandle()
   {
-    if (buffer) {
+    if (buffer && map_info.memory) {
       gst_buffer_unmap(buffer, &map_info);
     }
   }
@@ -308,13 +323,25 @@ gst_axinferencenet_sink_chain(GstPad *sinkpad, GstObject *parent, GstBuffer *buf
       throw std::runtime_error("Buffer must have exactly one memory (for now)");
     }
     auto handle = std::make_shared<GstBufferHandle>(buf);
-    if (FALSE == gst_buffer_map(buf, &handle->map_info, GST_MAP_READ)) {
-      throw std::runtime_error("Unable to map GstBuffer");
-    }
-    video.data = handle->map_info.data;
-    insert_event_end_marker(inf);
 
-    net(inf).push_new_frame(std::move(handle), video, axmetamap, stream_id);
+    auto &infnet = net(inf);
+    //  If the first element supports opencl buffers, we just use the buffer as is
+    if (infnet.supports_opencl_buffers(video)
+        && gst_is_opencl_memory(gst_buffer_peek_memory(buf, 0))) {
+      video.ocl_buffer
+          = gst_opencl_mem_get_opencl_buffer(gst_buffer_peek_memory(buf, 0));
+      video.data = nullptr;
+      video.vaapi = nullptr;
+      video.fd = -1;
+      //  Here we assign
+    } else {
+      if (FALSE == gst_buffer_map(buf, &handle->map_info, GST_MAP_READ)) {
+        throw std::runtime_error("Unable to map GstBuffer");
+      }
+      video.data = handle->map_info.data;
+    }
+    insert_event_end_marker(inf);
+    infnet.push_new_frame(std::move(handle), video, axmetamap, stream_id);
   }
   return GST_FLOW_OK;
 }
@@ -349,21 +376,99 @@ as_handle(GstEvent *event)
       event, [](auto *event) { gst_event_unref(event); });
 }
 
+static GstElement *
+find_pipeline(GstElement *element)
+{
+  GstElement *parent = nullptr;
+  GstObject *obj = GST_OBJECT_PARENT(element);
+  while (obj != nullptr) {
+    if (GST_IS_PIPELINE(obj)) {
+      parent = GST_ELEMENT(obj);
+      break;
+    }
+    obj = GST_OBJECT_PARENT(obj);
+  }
+  return parent;
+}
+
+static int
+set_flushing(GstAxInferenceNet *inf, GstPad *pad, bool flushing)
+{
+  std::lock_guard<std::mutex> lock(*inf->flushing_mutex);
+  if (flushing) {
+    inf->flushing_pads->insert(pad);
+  } else {
+    inf->flushing_pads->erase(pad);
+  }
+  return inf->flushing_pads->size();
+}
+
+bool
+initiate_flush(GstAxInferenceNet *inf, GstPad *pad)
+{
+  std::lock_guard<std::mutex> lock(*inf->flushing_mutex);
+  if (!inf->flushing_pads->empty()) {
+    // Pad is already flushing
+    return false;
+  }
+  inf->flushing_pads->insert(pad);
+  return true;
+}
+
+static bool
+is_flushing(GstAxInferenceNet *inf, GstPad *pad)
+{
+  std::lock_guard<std::mutex> lock(*inf->flushing_mutex);
+  return inf->flushing_pads->count(pad) > 0;
+}
+
 static gboolean
 gst_axinferencenet_sink_event(GstPad *pad, GstObject *parent, GstEvent *event)
 {
   auto *inf = GST_AXINFERENCENET(parent);
-  GST_DEBUG_OBJECT(inf, "sink_event");
-
-  if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
-    inf->at_eos = true;
-    net(inf).end_of_input();
+  if (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START
+      || GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP) {
+    set_flushing(inf, pad, GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START);
     gst_event_unref(event);
     return true;
   }
+  if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
+    if (inf->loop) {
+      if (initiate_flush(inf, pad)) {
+        //  If we're the first pad to receive EOS, rewind
+        if (GstElement *pipeline = find_pipeline(GST_ELEMENT(parent))) {
+          auto seek_flags = static_cast<GstSeekFlags>(
+              GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_ACCURATE);
+          GstEvent *seek_event = gst_event_new_seek(1.0, GST_FORMAT_TIME,
+              seek_flags, GST_SEEK_TYPE_SET, 0, GST_SEEK_TYPE_NONE, -1);
+          if (gst_element_send_event(pipeline, seek_event)) {
+            // Clear the event queue since we're flushing
+            std::lock_guard<std::mutex> lock(inf->event_queue->mutex);
+            while (!inf->event_queue->queue.empty()) {
+              inf->event_queue->queue.pop();
+            }
+          } else {
+            GST_WARNING_OBJECT(inf, "looping - failed to send seek event to pipeline");
+          }
+        } else {
+          GST_WARNING_OBJECT(inf, "looping - could not find pipeline element");
+        }
+      }
+      set_flushing(inf, pad, true);
+    } else {
+      inf->at_eos = true;
+      net(inf).end_of_input();
+    }
+    gst_event_unref(event);
+    return TRUE;
+  }
+  if (is_flushing(inf, pad)) {
+    gst_event_unref(event);
+    return TRUE;
+  }
   if (GST_EVENT_IS_SERIALIZED(event)) {
     //  Serialized events should only be handled *after* the previous buffer has been processed
-    //  ad before the next. So we put thme in a queue and han§dle them in the chain function
+    //  and before the next. So we put them in a queue and handle them in the chain function
     std::lock_guard<std::mutex> lock(inf->event_queue->mutex);
     inf->event_queue->queue.push({ pad, as_handle(event) });
     return TRUE;
@@ -415,8 +520,8 @@ determine_max_pool_buffers(GstAxInferenceNet *sink)
       GST_WARNING_OBJECT(sink, "Max buffers %d is less than min required %d, using default",
           max_buffers, min_buffers);
     }
-    //  This assumes 4 pre and 4 post processing operators with double buffering
-    //  and 50 buffers for the last layer
+    //  This assumes 4 pre and 4 post processing operators with double
+    //  buffering and 50 buffers for the last layer
     auto other_buffers = 8 * 2 + 50;
     max_buffers = pre_fill + output_drop + other_buffers;
   }
@@ -439,8 +544,8 @@ add_allocation_proposal(GstAxInferenceNet *sink, GstQuery *query)
     GST_ERROR_OBJECT(self, "Allocation query without caps");
     return TRUE;
   }
-
-  self->allocator = Ax::as_handle(gst_aligned_allocator_get());
+  self->allocator = Ax::as_handle(gst_opencl_allocator_get(
+      sink->properties->which_cl.c_str(), self->logger.get()));
   if (!self->allocator) {
     GST_ERROR_OBJECT(self, "Unable to get aligned allocator");
     return TRUE;
@@ -449,7 +554,7 @@ add_allocation_proposal(GstAxInferenceNet *sink, GstQuery *query)
   if (need_pool) {
     const auto min_buffers = 4;
     const auto max_buffers = determine_max_pool_buffers(self);
-    self->pool = Ax::as_handle(gst_buffer_pool_new());
+    self->pool = Ax::as_handle(gst_ax_buffer_pool_new());
     GstStructure *config = gst_buffer_pool_get_config(self->pool.get());
     guint size = size_from_interface(interface_from_caps_and_meta(caps, nullptr));
 
@@ -480,6 +585,7 @@ gst_axinferencenet_sink_query(GstPad *pad, GstObject *parent, GstQuery *query)
              add_allocation_proposal(inf, query) :
              gst_pad_query_default(pad, parent, query);
 }
+
 
 static GstPad *
 gst_axinferencenet_request_new_pad(GstElement *element, GstPadTemplate *templ,
@@ -616,7 +722,10 @@ net(_GstAxInferenceNet *inf)
     };
     auto frame_done
         = [inf](auto &frame) { gst_axinferencenet_push_done(inf, frame); };
-    inf->net = Ax::create_inference_net(*inf->properties, *inf->logger, frame_done, log_latency);
+    auto context = AxAllocationContextHandle(gst_opencl_allocator_get_context(
+        inf->properties->which_cl.c_str(), inf->logger.get()));
+    inf->net = Ax::create_inference_net(
+        *inf->properties, *inf->logger, frame_done, log_latency, context.get());
   }
   return *inf->net;
 }
@@ -625,6 +734,11 @@ static void
 gst_axinferencenet_init(GstAxInferenceNet *inf)
 {
   GST_DEBUG_OBJECT(inf, "init\n");
+
+  inf->loop = false;
+
+  inf->flushing_mutex = std::make_unique<std::mutex>();
+  inf->flushing_pads = std::make_unique<std::unordered_set<GstPad *>>();
 
   inf->element_latency = gst_tracer_record_new("element-latency.class",
       "element", GST_TYPE_STRUCTURE,
@@ -659,13 +773,18 @@ static void
 gst_axinferencenet_finalize(GObject *object)
 {
   auto *inf = GST_AXINFERENCENET(object);
-  GST_INFO_OBJECT(object, "finalizing");
+  GST_DEBUG_OBJECT(object, "finalizing");
   net(inf).stop();
   inf->net.reset();
   inf->properties.reset();
   gst_object_unref(inf->element_latency);
   inf->event_queue.reset();
+  inf->allocator.reset();
+  inf->pool.reset();
+  inf->stream_select.reset();
+  inf->logger.reset();
   G_OBJECT_CLASS(gst_axinferencenet_parent_class)->dispose(object);
+  GST_DEBUG_OBJECT(object, "disposed");
 }
 
 static void
@@ -706,12 +825,17 @@ gst_axinferencenet_class_init(GstAxInferenceNetClass *klass)
   }
   Ax::add_string_property(object_klass, Ax::AXINFERENCE_PROP_META_STRING,
       "meta", "String with key to metadata");
+  Ax::add_string_property(object_klass, Ax::AXINFERENCE_PROP_WHICH_CL,
+      "cl_platform", "String with key to OpenCL platform");
 
   Ax::add_inference_properties(object_klass, true, true);
 
   Ax::add_string_property(object_klass, PROP_STREAM_SELECT, "stream_select",
       "Select stream to output");
 
-  Ax::add_string_property(object_klass, PROP_MAX_POOL_BUFFERS, "max_pool_buffers",
-      "Maximum number of buffers in the pool. 0 means application decides (default).");
+  Ax::add_uint_property(object_klass, PROP_MAX_POOL_BUFFERS, "max_pool_buffers",
+      "Maximum number of buffers in the pool. 0 means application decides (default).",
+      0, 1024, 0);
+  Ax::add_boolean_property(object_klass, PROP_LOOP, "loop",
+      "Whether to loop video input when EOS is received");
 }

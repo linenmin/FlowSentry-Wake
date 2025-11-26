@@ -19,6 +19,7 @@
 #endif
 
 #include "AxDataInterface.h"
+//#include "AxOpenCl.hpp"
 
 #include <memory>
 #include <span>
@@ -54,6 +55,7 @@ using clEnqueueReleaseVA_fn = cl_int (*)(cl_command_queue command_queue,
 struct cl_extensions {
   clImportMemoryARM_fn clImportMemoryARM_host;
   clImportMemoryARM_fn clImportMemoryARM_dmabuf;
+  bool unified_memory{ false };
 };
 #elif defined(__x86_64__)
 struct cl_extensions {
@@ -66,6 +68,7 @@ struct cl_extensions {
 #else
   void *display;
 #endif
+  bool unified_memory{ false };
 };
 #elif
 #error "Unsupported architecture"
@@ -75,7 +78,8 @@ cl_extensions init_extensions(cl_platform_id platform, void *display);
 
 std::vector<cl_mem> create_optimal_buffer(cl_context ctx,
     const cl_extensions extensions, int elem_size, int num_elems, int flags,
-    const std::variant<void *, int, VASurfaceID_proxy *> &ptr, int plane, cl_int &error);
+    const std::variant<void *, int, VASurfaceID_proxy *, opencl_buffer *> &ptr,
+    int plane, cl_int &error);
 
 cl_context create_context(cl_platform_id platform, cl_device_id device,
     const cl_extensions &extensions);
@@ -92,3 +96,14 @@ cl_int acquire_va(cl_command_queue commands, const cl_extensions &extensions,
 
 cl_int release_va(cl_command_queue commands, const cl_extensions &extensions,
     std::span<cl_mem> buffers);
+
+struct opencl_buffer {
+  cl_mem buffer{ nullptr };
+  cl_event event{ nullptr };
+  std::span<uint8_t> data{};
+  //  This is all of the GstMemory that the buffer depends on. i.e they
+  //  must be around until the kernel that creates this buffer has finished
+  //  executing.
+  void *mapped{ nullptr };
+  std::vector<void *> gst_memories{};
+};

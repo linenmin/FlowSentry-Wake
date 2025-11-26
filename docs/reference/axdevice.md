@@ -2,7 +2,7 @@
 # AxDevice
 
 - [AxDevice](#axdevice)
-  - [Configuration & Advanced Usage](#configuration--advanced-usage)
+  - [Configuration \& Advanced Usage](#configuration--advanced-usage)
     - [--device `<device>`, -d `<device>`](#--device-device--d-device)
     - [--set-clock `<clock>`](#--set-clock-clock)
     - [--set-core-clock `<core-clock>`](#--set-core-clock-core-clock)

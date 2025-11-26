@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #pragma once
 
 #include "../axtracker/include/trackers.hpp"
@@ -90,3 +90,15 @@ class OCSortWrapper : public ax::MultiObjTracker
   ocsort::OCSort tracker_;
 };
 #endif
+
+// Helper function to get a parameter value or a default value if not found
+template <typename T>
+T
+GetParamOrDefault(const TrackerParams &params, const std::string &key, T defaultValue)
+{
+  auto it = params.find(key);
+  if (it != params.end() && std::holds_alternative<T>(it->second)) {
+    return std::get<T>(it->second);
+  }
+  return defaultValue;
+}

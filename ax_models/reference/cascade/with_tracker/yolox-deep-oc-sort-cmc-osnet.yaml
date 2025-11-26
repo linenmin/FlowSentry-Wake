@@ -17,6 +17,9 @@ pipeline:
             nms_top_k: 300
             eval:
               conf_threshold: 0.6
+      render:
+        show_annotations: False
+        show_labels: False
   - reid:
       model_name: osnet-x1-0-onnx
       input:

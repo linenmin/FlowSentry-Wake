@@ -643,10 +643,10 @@ def test_center_crop():
     got = op.exec_torch(img.fromany(data))
     np.testing.assert_equal(got.asarray(), data[1:9, 1:7, :])
     assert _gen_gst(op) == [
-        {'instance': 'videobox', 'autocrop': True},
         {
-            'instance': 'capsfilter',
-            'caps': f'video/x-raw,width=6,height=8',
+            'instance': 'axtransform',
+            'lib': 'transform_centrecropextra.so',
+            'options': 'crop_width:6,crop_height:8',
         },
     ]
 

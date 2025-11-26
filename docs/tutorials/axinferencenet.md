@@ -4,7 +4,13 @@ _Last updated: 2025-04-15_
 
 # AxInferenceNet C++ Integration Tutorial
 
+## Contents
+
 - [AxInferenceNet C++ Integration Tutorial](#axinferencenet-c-integration-tutorial)
+  - [Contents](#contents)
+  - [Prerequisites](#prerequisites)
+  - [Level](#level)
+  - [Overview](#overview)
   - [Preparing the example](#preparing-the-example)
   - [Reading frames from the video source](#reading-frames-from-the-video-source)
   - [Rendering the results of inference](#rendering-the-results-of-inference)
@@ -12,6 +18,27 @@ _Last updated: 2025-04-15_
   - [The main inference loop](#the-main-inference-loop)
   - [Cleanup](#cleanup)
   - [Using AxInferenceNet for Raw Tensor Output and Custom Postprocessing](#using-axinferencenet-for-raw-tensor-output-and-custom-postprocessing)
+    - [How to use raw tensor output (user workflow)](#how-to-use-raw-tensor-output-user-workflow)
+    - [Why and When to Use Raw Tensor Output?](#why-and-when-to-use-raw-tensor-output)
+    - [Pipeline Configuration: Standard vs. Raw Tensor Output](#pipeline-configuration-standard-vs-raw-tensor-output)
+    - [When to use raw tensor output](#when-to-use-raw-tensor-output)
+    - [Performance note](#performance-note)
+  - [Next Steps](#next-steps)
+  - [Related Documentation](#related-documentation)
+  - [Further support](#further-support)
+
+## Prerequisites
+- Complete [Quick Start Guide](quick_start_guide.md) and [Application Integration](application.md) - understand Python API first
+- C++ programming experience (C++11 or later)
+- CMake 3.10+ installed
+- C++ compiler (gcc/g++ 9.0+)
+- OpenCV installed (for example code)
+- Understanding of object detection and pipeline concepts
+
+## Level
+**Intermediate** - Requires C++ programming and understanding of inference pipelines
+
+## Overview
 
 **Note:** This interface is still under development, and so this example is subject to change. The core functionality will remain the same, but interfaces and type names may change.
 
@@ -110,23 +137,21 @@ We will now look at the key parts of [axinferencenet_example.cpp](/examples/axin
 
 ## Reading frames from the video source
 
-First, we define a `Frame` object that we use to store information about the current frame. OpenCV always returns frames in BGR format, which is a bit inconvenient as we will need to convert it to RGBA (see the comment below).
+First, we define a `Frame` object that we use to store information about the current frame. If OpenCV is used to read the frame then be aware that OpenCV always returns frames in BGR format, which is a bit inconvenient as we will need to convert it to RGB (see the comment below).  In this example however we will use an ffmpeg decoder (`Ax::FFMpegVideoDecoder`)
+which we can request the frame in RGB format.
 
-But we will need the same BGR image to perform rendering, so we add it to the `Frame` object to avoid another color conversion later in the application. We also keep the RGBA image as we need to make sure that during the pipeline execution the image data is not deallocated.
-
-We also add an `Ax::MetaMap` class to receive the decoded inference results. This class is documented in [AxMetaMap](/docs/reference/pipeline_operators.md#axmetamap).
+We also add an instance of `Ax::MetaMap` to receive the decoded inference results. This class is documented in [AxMetaMap](/docs/reference/pipeline_operators.md#axmetamap).
 
 ```cpp
 struct Frame {
-  cv::Mat bgr;
-  cv::Mat rgba;
+  cv::Mat rgb;
   Ax::MetaMap meta;
 };
 ```
 
-Next, we define a function that we will start in another thread to read image data and check for end of stream. The function `Ax::video_from_cvmat` creates an `AxVideoInterface` object which contains the frame meta data such as width/height, pixel stride, and color format that notifies `AxInferenceNet` how the image data is formatted, including resolution, color format, and strides between the beginning of each row of pixel data.
+If we were to use OpenCV to read the video frames, we would here start another thread to read image data and check for end of stream. The function `Ax::video_from_cvmat` creates an `AxVideoInterface` object which contains the frame meta data such as width/height, pixel stride, and color format that notifies `AxInferenceNet` how the image data is formatted, including resolution, color format, and strides between the beginning of each row of pixel data.
 
-Finally, we push our `Frame` object, along with the `video` information structure, and a reference to the `meta`. If using multiple stream we would also include a stream_id here.
+This function would then push our `Frame` object, along with the `video` information structure, and a reference to the `meta`. If using multiple streams we would also include a stream_id here.
 
 Our `std::shared_ptr<Frame>` object is implicitly converted to the opaque `std::shared_ptr<void>` which allows us to pass ownership of the `Frame` to `AxInferenceNet` without `AxInferenceNet` needing to be aware of the type.
 
@@ -147,6 +172,8 @@ reader_thread(cv::VideoCapture &input, Ax::InferenceNet &net)
   }
 }
 ```
+
+However in this example we will instead use an FFMpeg based decoder, which accepts a callback for when a frame is ready. We will define this callback later in main.
 
 ## Rendering the results of inference
 
@@ -171,27 +198,25 @@ render(AxMetaObjDetection &detections, cv::Mat &buffer, const std::vector<std::s
 }
 ```
 
+In the file `AxOpenCVRender.hpp` there are functions provided to render most types of Axelera Meta data, as well as an interface to display the result on the window system or terminal.
+
 ## Setting up the inference loop
 
-Here we parse the command line arguments and open the video file using `cv:VideoCapture`.
+Here we parse the command line arguments:
 
 ```cpp
 int
 main(int argc, char **argv)
 {
   const auto [model_properties, labels, input] = parse_args(argc, argv);
-  cv::VideoCapture cap(input);
-  if (!cap.isOpened()) {
-    std::cerr << "Error: Could not open video source: " << input << std::endl;
-    return 1;
-  }
+
 ```
 
 Next, we use a utility from `AxStreamerUtils.hpp` called `Ax::BlockingQueue`. This is similar to the Python `queue.Queue` class and provides an easy way to communicate from one thread to another. In this case, we will use it to pass back the inference result from the `frame_completed` callback to the main loop.
 
 We need to pass a `frame_completed` callback to AxInferenceNet. This callback can inspect the result and handle it in any way desired, but in most cases the callback needs to check for the `end_of_input` signal and stop the inference or pass the result on to another AxInferenceNet or push it to a queue.
 
-Here we use the `forward_to` adapter to create a callback that pushes the result onto the `ready` queue.
+We use the `forward_to` adapter to create a callback that pushes the result onto the `ready` queue.
 
 We are now ready to create the `AxInferenceNet` object. We convert the `.axnet` file into an
 `Ax::InferenceNetProperties` object and call `Ax::create_inference_net`, passing it the properties,
@@ -206,17 +231,29 @@ a logger, and the `frame_completed` callback.
 
 ```
 
-We then start the reader_thread and initialize the OpenCV window.
+We then create a callback for the decoder to call whenever a new frame is ready.  We take the input frame, and construct our own `Frame` object, and push it to the axinferencenet work queue.  We show here how you can use the FFMpeg or OpenCV decoded classes.
 
 ```cpp
-  // Start the reader thread which reads frames from the video source and pushes
-  // them to the inference network
-  std::thread reader(reader_thread, std::ref(cap), std::ref(*net));
+  auto frame_callback = [&net](cv::Mat frame) {
+    if (frame.empty()) {
+      net->end_of_input();
+      return;
+    }
+    auto frame_data = std::make_shared<Frame>();
+    frame_data->rgb = std::move(frame);
+    auto video = Ax::video_from_cvmat(frame_data->rgb, AxVideoFormat::RGB);
+    net->push_new_frame(frame_data, video, frame_data->meta);
+  };
+  auto video_decoder = Ax::FFMpegVideoDecoder(input, frame_callback, AxVideoFormat::RGB);
+  // auto video_decoder = Ax::OpenCVVideoDecoder(input, frame_callback, AxVideoFormat::RGB);
+  video_decoder.start_decoding();
+```
 
-  // Use OpenCV window to display the results
-  const std::string wndname = "AxInferenceNet Demo";
-  cv::namedWindow(wndname, cv::WINDOW_AUTOSIZE);
-  cv::setWindowProperty(wndname, cv::WND_PROP_ASPECT_RATIO, cv::WINDOW_KEEPRATIO);
+Now, create a display to show the results. 
+
+```cpp
+  auto display = Ax::OpenCV::create_display("AxInferenceNet Demo");
+  Ax::OpenCV::RenderOptions render_options;
 ```
 
 ## The main inference loop
@@ -225,36 +262,33 @@ We handle the results of the inference in the main thread. This is not a require
 
 To obtain a frame, we call `wait_one` on the `ready` queue. This will return an empty `std::shared_ptr` if we called `stop` as a result of an `end_of_input` signal. If so, then we are all done, and we exit the inference loop.
 
-Otherwise, we have a valid frame result. We can access our BGR image to render the results. OpenCV rendering is easy to use, which makes it a good API for this example. But it is relatively slow, so we only render every 10 frames and show that in the OpenCV window.
+Otherwise, we have a valid frame result. We can access the image and inference results to render the results. OpenCV rendering is easy to use, which makes it a good API for this example. But it is relatively slow so it only displays frames at 10fps. This can be configured in RenderOptions.
+
+Note that the Display class accepts a meta map, and if we pass `frame->meta` then built-in rendering of the inference results (such as bounding boxes, keypoints, labels, and segmentations) will be performed.
 
 ```cpp
-  int num_frames = 0;
   while (1) {
     auto frame = ready.wait_one();
     if (!frame) {
       break;
     }
-    if ((num_frames % 10) == 0) {
-      // OpenCV is quite slow at rendering results, so we only render every 10th frame
-      auto &detections = dynamic_cast<AxMetaObjDetection &>(*frame->meta["detections"]);
-      render(detections, frame->bgr, labels);
-      cv::imshow(wndname, frame->bgr);
-      cv::waitKey(1);
-    }
-    ++num_frames;
+    // Ax::OpenCV::Display will render all meta, but to demonstrate how the detections can be
+    // accessed we render them here manually, and disable the default renderer.
+    auto &detections = dynamic_cast<AxMetaObjDetection &>(*frame->meta["detections"]);
+    render(detections, frame->rgb, labels);
+    const Ax::MetaMap empty_meta;
+    display->show(frame->rgb, empty_meta, AxVideoFormat::RGB, render_options, 0);
   }
 ```
 
 ## Cleanup
 
-In order to perform a well-behaved shutdown, we first stop `AxInferenceNet`, then join our reader thread. And finally, destroy the OpenCV window.
+In order to perform a well-behaved shutdown, we first stop `AxInferenceNet`, then join our reader thread.
 
 ```cpp
   // Wait for AxInferenceNet to complete and join its threads, before joining the reader thread
   net->stop();
   reader.join();
-
-  cv::destroyWindow(wndname);
 ```
 
 ## Using AxInferenceNet for Raw Tensor Output and Custom Postprocessing
@@ -374,3 +408,29 @@ For maximum performance in production applications, consider building a standard
 The raw tensor output path is intended for flexibility, experimentation, and integration - not for maximum speed. This path is not as optimized as the default pipeline, especially for large batch sizes or high-throughput. If you want maximum performance, we encourage you to build a standard decoder (as done for models in the Axelera model zoo), which allows the pipeline to use fully optimized postprocessing. We plan to improve this path by optimizing how we perform postprocessing before providing the tensor output in future releases.
 
 See the full source in [`axinferencenet_tensor.cpp`](/examples/axinferencenet/axinferencenet_tensor.cpp).
+
+## Next Steps
+- **Build the example**: Run `make examples` to compile
+- **Implement cascaded models**: [axinferencenet_cascaded.cpp](../../examples/axinferencenet/axinferencenet_cascaded.cpp)
+- **Access raw tensors**: [axinferencenet_tensor.cpp](../../examples/axinferencenet/axinferencenet_tensor.cpp)
+- **Deploy in production**: Use C++ API for performance-critical applications
+
+
+## Related Documentation
+**Tutorials:**
+- [Application Integration](application.md) - Python equivalent (start here if new to SDK)
+- [Cascaded Models](cascaded_model.md) - Multi-model pipeline concepts
+- [Video Sources](video_sources.md) - Input source configuration applies to C++ too
+
+**References:**
+- [AxInferenceNet C++ API](../reference/axinferencenet.md) - Complete class reference and method signatures
+- [Pipeline Operators](../reference/pipeline_operators.md) - Understanding YAML pipelines for C++
+
+**Examples:**
+- [axinferencenet_example.cpp](../../examples/axinferencenet/axinferencenet_example.cpp) - This tutorial's example
+- [axinferencenet_cascaded.cpp](../../examples/axinferencenet/axinferencenet_cascaded.cpp) - Multi-model C++ pipeline
+- [axinferencenet_tensor.cpp](../../examples/axinferencenet/axinferencenet_tensor.cpp) - Raw tensor access in C++
+
+## Further support
+- For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+- For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

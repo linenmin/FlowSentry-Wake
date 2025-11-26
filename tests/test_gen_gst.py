@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 import contextlib
 import dataclasses
 import io
@@ -21,12 +21,7 @@ from yaml_clean import yaml_clean
 
 from axelera import types
 from axelera.app import config, network, operators, pipe
-from axelera.app.pipe import gst_helper, manager
-
-# isort: off
-from gi.repository import Gst
-
-# isort: on
+from axelera.app.pipe import manager
 
 
 def _ncore(manifest: types.Manifest, ncores: int) -> types.Manifest:
@@ -238,7 +233,7 @@ def mock_temp(*args, **kwargs):
     return c
 
 
-def _generate_pipeline(nn, input, hardware_caps, tiling=None):
+def _generate_pipeline(nn, input, hardware_caps, tiling=None, low_latency=False, jetson=False):
     '''Construct gst E2E pipeline'''
 
     manager.compile_pipelines(nn, input.sources, hardware_caps, tiling=tiling)
@@ -251,12 +246,14 @@ def _generate_pipeline(nn, input, hardware_caps, tiling=None):
     dm = _mock_device_manager()
     assert ['metis-0:1:0'] == [d.name for d in dm.devices]
     task_graph = pipe.graph.DependencyGraph(nn.tasks)
-    pipeline_config = config.PipelineConfig(pipe_type='gst')
+    pipeline_config = config.PipelineConfig(pipe_type='gst', low_latency=low_latency)
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(tempfile, 'NamedTemporaryFile', mock_temp))
         # prevent ./gst_pipeline.yaml being written by tests
         stack.enter_context(patch.object(Path, 'write_text', return_value=None))
         stack.enter_context(patch.object(Path, 'exists', return_value=True))
+        env = {'JETSON_MODEL': 'nanoultraplusplus'} if jetson else {}
+        stack.enter_context(patch.dict(os.environ, env, clear=True))
 
         manager._propagate_model_and_context_info(nn, task_graph)
         p = pipe.create_pipe(
@@ -300,8 +297,9 @@ def _create_pipein(srcs, system_config, pipeline_config):
     with patch.object(Path, 'exists', return_value=True):
         with patch.object(Path, 'is_file', return_value=True):
             with patch.object(os, 'access', return_value=True):
-                srcs = [config.Source(p) for p in paths]
-                return pipe.io.MultiplexPipeInput(srcs, system_config, pipeline_config, alloc)
+                with patch.object(cv2, 'VideoCapture', new=MockCapture):
+                    srcs = [config.Source(p) for p in paths]
+                    return pipe.io.MultiplexPipeInput(srcs, system_config, pipeline_config, alloc)
 
 
 def _video_path(out_name: str) -> Path:
@@ -397,11 +395,14 @@ def _create_output_info_from_manifest(manifest, task_info):
     return output_infos
 
 
-def _load_highlevel(requested_cores: int, path: str, *manifests):
+def _load_highlevel(requested_cores: int, path: str, *manifests, low_latency=False):
     if len(manifests) == 1 and isinstance(manifests[0], (list, tuple)):
         manifests = manifests[0]
     nn = network.parse_network_from_path(path)
-    network.restrict_cores(nn, 'gst', requested_cores, config.Metis.pcie)
+    pconfig = config.PipelineConfig(
+        pipe_type='gst', aipu_cores=requested_cores, low_latency=low_latency
+    )
+    network.restrict_cores(nn, pconfig, config.Metis.pcie)
     device_man = _mock_device_manager()
     for manifest, task in itertools.zip_longest(manifests, nn.tasks):
         task.model_info.manifest = manifest
@@ -441,6 +442,7 @@ def _load_highlevel(requested_cores: int, path: str, *manifests):
                         model=manifest,
                         model_info=task.model_info,
                         inference_op_config=task.inference_op_config,
+                        low_latency=low_latency,
                     )
                     # Only patch for the focus preprocess_graph test asset
                     if (
@@ -602,7 +604,7 @@ gen_gst_marker = pytest.mark.parametrize(
             1,
             YOLOV5S_V5_IN_YAML,
             YOLOV5S_V5_MANIFEST,
-            'yolov5s-axelera-coco-1stream.yaml',
+            'yolov5s-axelera-coco-1stream-arm.yaml',
             1,
             'arm',
             0,
@@ -655,7 +657,7 @@ gen_gst_marker = pytest.mark.parametrize(
             YOLOV5S_V5_MANIFEST,
             'opencl/yolov5s-v7-perspective-barrel-4streams.yaml',
             [
-                'perspective[[1.019,-0.697,412.602,0.918,1.361,-610.083,0.0,0.0,1.0]]:/path/to/src0.mp4',
+                'perspective[[0.6715333509316848,0.34390796884598407,-67.26359830365045,-0.4529519589678815,0.5027865426887486,493.6304064972456,0.0,0.0,1.0]]:/path/to/src0.mp4',
                 'camera_undistort[0.614,1.091,0.488,0.482,[-0.37793616, 0.11966818, -0.00067655, 0, -0.00115868]]:/path/to/src1.mp4',
                 '/path/to/src2.mp4',
                 '/path/to/src3.mp4',
@@ -758,21 +760,52 @@ def test_tiling(caps, cores, src, manifest, golden_template, sources, proc, limi
     ],
 )
 def test_low_latency(caps, cores, src, manifest, golden_template, sources, proc, limit_fps):
-    with patch.dict(os.environ, AXELERA_LOW_LATENCY='1'):
-        nn = _load_highlevel(
-            cores, src, *([manifest] if not isinstance(manifest, list) else manifest)
+    manifests = [[manifest] if not isinstance(manifest, list) else manifest]
+    nn = _load_highlevel(cores, src, *manifests, low_latency=True)
+    pipein = _create_pipein(
+        sources,
+        config.SystemConfig(hardware_caps=caps, allow_hardware_codec=False),
+        config.PipelineConfig(specified_frame_rate=limit_fps, pipe_type='gst', low_latency=True),
+    )
+    with patch.object(platform, 'processor', return_value=proc):
+        pipeline = _generate_pipeline(nn, pipein, hardware_caps=caps, low_latency=True)
+    actual = yaml.dump([{'pipeline': pipeline}], sort_keys=False)
+    manifests = manifest if isinstance(manifest, list) else [manifest]
+    exp = _prepare_expected(golden_template, manifests, nn.tasks, hardware_caps=caps)
+    _compare_yaml(exp, actual, golden_template)
+
+
+@pytest.mark.parametrize(
+    'caps, cores, src, manifest, golden_template, sources, proc, limit_fps',
+    [
+        (
+            NONE,
+            1,
+            YOLOV5S_V5_IN_YAML,
+            YOLOV5S_V5_MANIFEST,
+            'yolov5s-axelera-coco-jetson.yaml',
+            1,
+            'x86_64',
+            0,
+        ),
+    ],
+)
+def test_jetson(caps, cores, src, manifest, golden_template, sources, proc, limit_fps):
+    manifests = [[manifest] if not isinstance(manifest, list) else manifest]
+    nn = _load_highlevel(cores, src, *manifests, low_latency=True)
+    pipein = _create_pipein(
+        sources,
+        config.SystemConfig(hardware_caps=caps, allow_hardware_codec=False),
+        config.PipelineConfig(specified_frame_rate=limit_fps, pipe_type='gst', low_latency=True),
+    )
+    with patch.object(platform, 'processor', return_value=proc):
+        pipeline = _generate_pipeline(
+            nn, pipein, hardware_caps=caps, low_latency=True, jetson=True
         )
-        pipein = _create_pipein(
-            sources,
-            config.SystemConfig(hardware_caps=caps, allow_hardware_codec=False),
-            config.PipelineConfig(specified_frame_rate=limit_fps, pipe_type='gst'),
-        )
-        with patch.object(platform, 'processor', return_value=proc):
-            pipeline = _generate_pipeline(nn, pipein, hardware_caps=caps, tiling=None)
-        actual = yaml.dump([{'pipeline': pipeline}], sort_keys=False)
-        manifests = manifest if isinstance(manifest, list) else [manifest]
-        exp = _prepare_expected(golden_template, manifests, nn.tasks, hardware_caps=caps)
-        _compare_yaml(exp, actual, golden_template)
+    actual = yaml.dump([{'pipeline': pipeline}], sort_keys=False)
+    manifests = manifest if isinstance(manifest, list) else [manifest]
+    exp = _prepare_expected(golden_template, manifests, nn.tasks, hardware_caps=caps)
+    _compare_yaml(exp, actual, golden_template)
 
 
 @gen_gst_marker

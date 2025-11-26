@@ -1,9 +1,10 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # General functions for handling boxes with different coordinate representations
 
 import sys
 from typing import List
 
+import cv2
 import numpy as np
 
 from axelera import types
@@ -125,6 +126,81 @@ def ltwh2xywh(ltwh):
     return xywh
 
 
+def xywhr2xyxyxyxy(x):
+    """
+    Convert OBBs from [cx, cy, w, h, theta] -> [xy1, xy2, xy3, xy4] (counterclockwise order)
+
+    Args:
+        x (array-like): shape (N, 5) or (B, N, 5) or (5,)
+            [cx, cy, w, h, theta], where theta is in radians (uses minAreaRect angles converted to radians, ~(-pi/2, 0]).
+
+    Returns:
+        np.ndarray: shape (N, 4, 2) or (B, N, 4, 2) (same leading dims as input).
+    """
+    arr = np.asarray(x, dtype=np.float32)
+    if arr.ndim == 1:
+        if arr.size != 5:
+            raise ValueError(f"Flat input must have 5 numbers, got {arr.size}.")
+        arr = arr.reshape(1, 5)
+
+    if arr.shape[-1] != 5:
+        raise ValueError(f"Expected last dim=5, got shape {arr.shape}.")
+
+    ctr = arr[..., :2]  # (..., 2)
+    w = arr[..., 2:3]  # (..., 1)
+    h = arr[..., 3:4]  # (..., 1)
+    ang = arr[..., 4:5]  # (..., 1)
+
+    cos_a = np.cos(ang)  # (..., 1)
+    sin_a = np.sin(ang)  # (..., 1)
+
+    # Basis vectors along width (theta) and height (theta + 90°)
+    vec1 = np.concatenate([(w * 0.5) * cos_a, (w * 0.5) * sin_a], axis=-1)  # (..., 2)
+    vec2 = np.concatenate([-(h * 0.5) * sin_a, (h * 0.5) * cos_a], axis=-1)  # (..., 2)
+
+    pt1 = ctr + vec1 + vec2
+    pt2 = ctr + vec1 - vec2
+    pt3 = ctr - vec1 - vec2
+    pt4 = ctr - vec1 + vec2
+
+    corners = np.stack([pt1, pt2, pt3, pt4], axis=-2)  # (..., 4, 2)
+    return corners
+
+
+def xyxyxyxy2xywhr(x):
+    """
+    Convert OBB corners [x1,y1,x2,y2,x3,y3,x4,y4] -> [cx, cy, w, h, theta] using cv2.minAreaRect.
+
+    Args:
+        x (array-like): shape (N, 8) or (8,), corners in any order.
+
+    Returns:
+        np.ndarray: shape (N, 5), dtype float32. Theta is radians converted from
+        minAreaRect's angle (typically in (-pi/2, 0]).
+    """
+    arr = np.asarray(x)
+    if arr.ndim == 1:
+        if arr.size != 8:
+            raise ValueError(f"Flat input must have 8 numbers, got {arr.size}.")
+        arr = arr.reshape(1, 8)
+    if arr.ndim != 2 or arr.shape[1] != 8:
+        raise ValueError(f"Expected shape (N, 8), got {arr.shape}.")
+
+    # (N, 4, 2) float32 for OpenCV
+    pts = arr.reshape(-1, 4, 2).astype(np.float32, copy=False)
+
+    out = np.empty((pts.shape[0], 5), dtype=np.float32)
+    for i, p in enumerate(pts):
+        (cx, cy), (w, h), angle_deg = cv2.minAreaRect(p)  # angle in degrees (-90, 0]
+        out[i, 0] = cx
+        out[i, 1] = cy
+        out[i, 2] = w
+        out[i, 3] = h
+        out[i, 4] = angle_deg * np.pi / 180.0  # radians
+
+    return out
+
+
 def box_iou_1_to_many(box1: np.array, bboxes2: np.array, c: int = 1):
     """Calculate the intersected surface from bboxes over box1
 
@@ -147,3 +223,49 @@ def box_iou_1_to_many(box1: np.array, bboxes2: np.array, c: int = 1):
     box1_area = (x12 - x11 + c) * (y12 - y11 + c)
     box2_area = (x22 - x21 + c) * (y22 - y21 + c)
     return inter_area / (box1_area + box2_area.T - inter_area)
+
+
+def get_covariance_matrix(boxes_xywhr: np.ndarray):
+    boxes = boxes_xywhr.astype(np.float64)
+    w = boxes[:, 2]
+    h = boxes[:, 3]
+    r = boxes[:, 4]
+    a = (w * w) / 12.0
+    b = (h * h) / 12.0
+    cos = np.cos(r)
+    sin = np.sin(r)
+    cos2 = cos * cos
+    sin2 = sin * sin
+    A = a * cos2 + b * sin2
+    B = a * sin2 + b * cos2
+    C = (a - b) * cos * sin
+    return A, B, C
+
+
+# Probabilistic IoU
+def batch_probiou(obb1: np.ndarray, obb2: np.ndarray, eps: float = 1e-7) -> np.ndarray:
+    obb1 = obb1.astype(np.float64)
+    obb2 = obb2.astype(np.float64)
+    x1 = obb1[:, 0:1]
+    y1 = obb1[:, 1:2]
+    x2 = obb2[None, :, 0]
+    y2 = obb2[None, :, 1]
+    a1, b1, c1 = get_covariance_matrix(obb1)
+    a2, b2, c2 = get_covariance_matrix(obb2)
+    a1 = a1[:, None]
+    b1 = b1[:, None]
+    c1 = c1[:, None]
+    a2 = a2[None, :]
+    b2 = b2[None, :]
+    c2 = c2[None, :]
+    denom = (a1 + a2) * (b1 + b2) - (c1 + c2) ** 2 + eps
+    t1 = (((a1 + a2) * (y1 - y2) ** 2 + (b1 + b2) * (x1 - x2) ** 2) / denom) * 0.25
+    t2 = (((c1 + c2) * (x2 - x1) * (y1 - y2)) / denom) * 0.5
+    num3 = (a1 + a2) * (b1 + b2) - (c1 + c2) ** 2
+    term1 = np.maximum(0.0, a1 * b1 - c1 * c1)
+    term2 = np.maximum(0.0, a2 * b2 - c2 * c2)
+    den3 = 4.0 * np.sqrt(term1 * term2) + eps
+    t3 = 0.5 * np.log(num3 / den3 + eps)
+    bd = np.clip(t1 + t2 + t3, eps, 100.0)
+    hd = np.sqrt(1.0 - np.exp(-bd) + eps)
+    return 1.0 - hd

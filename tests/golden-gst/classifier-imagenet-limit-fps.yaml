@@ -18,9 +18,9 @@
     name: axinplace-addstreamid0
     mode: meta
     options: stream_id:0
-  - instance: videoconvert
-  - instance: capsfilter
-    caps: video/x-raw,format=RGBA
+  - instance: axtransform
+    lib: libtransform_colorconvert.so
+    options: format:rgba
   - instance: queue
     connections:
       src: inference-task0.sink_%u
@@ -43,7 +43,7 @@
     preprocess2_options: mean:0.485,0.456,0.406;std:0.229,0.224,0.225;simd:avx2;quant_scale:{{quant_scale}};quant_zeropoint:{{quant_zeropoint}}
     preprocess2_mode: write
     preprocess3_lib: libtransform_padding.so
-    preprocess3_options: padding:{{pads}};fill:0
+    preprocess3_options: padding:{{pads}};fill:-14
     preprocess3_batch: 4
     postprocess0_lib: libtransform_dequantize.so
     postprocess0_options: dequant_scale:{{dequant_scale}};dequant_zeropoint:{{dequant_zeropoint}};transpose:0;dequant_lut:1

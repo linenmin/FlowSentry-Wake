@@ -1,4 +1,4 @@
-# Copyright 2024 Axelera AI, Inc.
+# Copyright Axelera AI, 2025
 # Contextual information for the pipeline operations
 
 import dataclasses

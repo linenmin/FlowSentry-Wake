@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-from axelera.app import config, display
-from axelera.app.stream import create_inference_stream
+# Copyright Axelera AI, 2025
+from axelera.app import config, create_inference_stream, display
 
 stream = create_inference_stream(
     network="yolov5m-v7-coco-tracker",
@@ -23,8 +23,11 @@ def main(window, stream):
                 f"{veh.label.name} {veh.track_id}: {center(veh.history[0])} → {center(veh.history[-1])} @ stream {frame_result.stream_id}"
             )
 
+        if window.is_closed:
+            break
 
-with display.App(visible=True) as app:
+
+with display.App(renderer=True) as app:
     wnd = app.create_window("Business logic demo", (900, 600))
     app.start_thread(main, (wnd, stream), name='InferenceThread')
     app.run()

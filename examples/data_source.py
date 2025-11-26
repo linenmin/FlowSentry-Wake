@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# Copyright Axelera AI, 2025
 import os
 import time
 
@@ -9,7 +10,10 @@ from axelera.app import config, display
 from axelera.app.stream import create_inference_stream
 
 NETWORK = "yolov8s-coco"
-SOURCE = config.env.framework / "media/traffic1_1080p.mp4"
+SOURCES = [
+    config.env.framework / "media/traffic1_720p.mp4",
+    config.env.framework / "media/traffic2_720p.mp4",
+]
 
 TITLE = "Axelera Python Data Reader Example"
 TITLE_FONT = 39
@@ -39,7 +43,7 @@ def frame_reader(src):
         cap.release()
 
 
-stream = create_inference_stream(network=NETWORK, sources=[frame_reader(SOURCE)])
+stream = create_inference_stream(network=NETWORK, sources=[frame_reader(s) for s in SOURCES])
 
 
 def main(window, stream):
@@ -57,23 +61,31 @@ def main(window, stream):
         '52%, 88%', LOGO2, anchor_x='left', anchor_y='center', scale=0.4, fadeout_from=0.0
     )
     supported = logo0 and logo1 and logo2
-    start = time.time()
+    start = last_logo_switch = time.time()
     period = 10.0
 
     for frame_result in stream:
         now = time.time()
-        if supported and ((now - start) > period):
+        if supported and ((now - last_logo_switch) > period):
             logo1.hide(now, 1.0)
             logo2.show(now, 1.0)
             logo1, logo2 = logo2, logo1
-            start = now
+            last_logo_switch = now
 
         window.show(frame_result.image, frame_result.meta, frame_result.stream_id)
         count = sum(x.is_car for x in frame_result.detections)
         print(f"Detected {count} cars\r", end="")
 
+        if window.is_closed:
+            break
 
-with display.App(visible=True) as app:
+    duration = time.time() - start
+    fps = stream.frames_executed / duration
+    print(' ' * 80)
+    print(f"{stream.frames_executed} frames in {duration:.1f} seconds (FPS: {fps:.1f})")
+
+
+with display.App(renderer=True) as app:
     wnd = app.create_window(TITLE, (900, 600))
     app.start_thread(main, (wnd, stream), name='InferenceThread')
     app.run()

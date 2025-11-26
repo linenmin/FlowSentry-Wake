@@ -1,4 +1,5 @@
-#include "unittest_transform_common.h"
+// Copyright Axelera AI, 2025
+#include "unittest_ax_common.h"
 
 #define CL_TARGET_OPENCL_VERSION 210
 #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
@@ -34,7 +35,7 @@ TEST(resize_cl, two2one)
     { "height", "16" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   std::vector<uint8_t> in_buf(32 * 32 * 4);
   std::iota(in_buf.begin(), in_buf.end(), 0);
   std::vector<uint8_t> out_buf(16 * 16 * 4);
@@ -129,8 +130,8 @@ TEST(resize_cl, two2one)
   auto out = AxVideoInterface{ { 16, 16, 64, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 64 }, { 0 } };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_EQ(out_buf, expected);
 }
@@ -145,7 +146,7 @@ TEST(resize_cl, four2one)
     { "height", "4" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   std::vector<uint8_t> in_buf = {
     // clang-format off
     0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x20, 0x20, 0x20, 0x20,
@@ -163,8 +164,8 @@ TEST(resize_cl, four2one)
   auto out = AxVideoInterface{ { 1, 1, 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 4 }, { 0 } };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_EQ(out_buf, expected);
 }
@@ -179,7 +180,7 @@ TEST(resize_cl, four2one_rgb)
     { "height", "4" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   std::vector<uint8_t> in_buf = {
     // clang-format off
     0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x20, 0x20, 0x20, 0x30, 0x30, 0x30,
@@ -196,8 +197,8 @@ TEST(resize_cl, four2one_rgb)
   auto out = AxVideoInterface{ { 1, 1, 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 4 }, { 0 } };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_EQ(out_buf, expected);
 }
@@ -214,7 +215,7 @@ TEST(resize_cl, scale_up)
     { "scale_up", "1" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   std::vector<uint8_t> in_buf(2 * 2 * 4, 255);
   std::vector<uint8_t> out_buf(4 * 4 * 4, 128);
 
@@ -224,8 +225,8 @@ TEST(resize_cl, scale_up)
   auto out = AxVideoInterface{ { 4, 4, 16, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 16 }, { 0 } };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_EQ(out_buf, expected);
 }
@@ -241,7 +242,7 @@ TEST(resize_cl, no_scale_up)
     { "scale_up", "0" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   std::vector<uint8_t> in_buf(2 * 2 * 4, 255);
   std::vector<uint8_t> out_buf(4 * 4 * 4, 128);
 
@@ -258,8 +259,8 @@ TEST(resize_cl, no_scale_up)
   auto out = AxVideoInterface{ { 4, 4, 16, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 16 }, { 0 } };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_EQ(out_buf, expected);
 }
@@ -274,7 +275,7 @@ TEST(resize_cl, halfpixel_centres_upscale)
     { "height", "2" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   std::vector<uint8_t> in_buf = {
     // clang-format off
     0x00, 0x00, 0x00, 0x00, 0x10, 0x10, 0x10, 0x10, 0x20, 0x20, 0x20, 0x20,
@@ -303,8 +304,8 @@ TEST(resize_cl, halfpixel_centres_upscale)
   auto out = AxVideoInterface{ { 12, 2, 48, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 48 }, { 0 } };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_EQ(out_buf, expected);
 }
@@ -323,7 +324,7 @@ TEST(resize_cl, no_resize_with_normalize)
     { "quant_zeropoint", "-128.0" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   std::vector<uint8_t> in_buf = {
     // clang-format off
     0x80, 0x90, 0x70, 0x00, 0x80, 0xFF, 0x00, 0x00, 0x80, 0x90, 0x70, 0x00,
@@ -335,10 +336,10 @@ TEST(resize_cl, no_resize_with_normalize)
   std::vector<uint8_t> out_buf(6 * 2 * 4, 0xaa);
   std::vector<uint8_t> expected = {
     // clang-format off
-    0x00, 0x10, 0xF0, 0x00, 0x00, 0x7F, 0x80, 0x00, 0x00, 0x10, 0xF0, 0x00,
-    0x00, 0x10, 0xF0, 0x00, 0x00, 0x7F, 0x80, 0x00, 0x00, 0x10, 0xF0, 0x00,
-    0x00, 0x10, 0xF0, 0x00, 0x00, 0x7F, 0x80, 0x00, 0x00, 0x10, 0xF0, 0x00,
-    0x00, 0x10, 0xF0, 0x00, 0x00, 0x7F, 0x80, 0x00, 0x00, 0x10, 0xF0, 0x00,
+    0x00, 0x0F, 0xF1, 0x00, 0x00, 0x7E, 0x81, 0x00, 0x00, 0x0F, 0xF1, 0x00,
+    0x00, 0x0F, 0xF1, 0x00, 0x00, 0x7E, 0x81, 0x00, 0x00, 0x0F, 0xF1, 0x00,
+    0x00, 0x0F, 0xF1, 0x00, 0x00, 0x7E, 0x81, 0x00, 0x00, 0x0F, 0xF1, 0x00,
+    0x00, 0x0F, 0xF1, 0x00, 0x00, 0x7E, 0x81, 0x00, 0x00, 0x0F, 0xF1, 0x00,
     // clang-format on
   };
   auto in = AxVideoInterface{ { 6, 2, 24, 0, AxVideoFormat::RGBA },
@@ -346,8 +347,8 @@ TEST(resize_cl, no_resize_with_normalize)
   auto out = AxVideoInterface{ { 6, 2, 24, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 24 }, { 0 } };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_EQ(out_buf, expected);
 }
@@ -366,7 +367,7 @@ TEST(resize_cl, yuyvrgb)
     { "quant_zeropoint", "-128.0" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format on
     0x98, 0x3a, 0x98, 0xc9, 0x98, 0x3a, 0x98, 0xc9, 0x98, 0x3a, 0x98, 0xc9,
@@ -376,12 +377,11 @@ TEST(resize_cl, yuyvrgb)
 
   auto out_buf = std::vector<uint8_t>(in_buf.size() * 2);
   auto expected = std::vector<uint8_t>{
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
     };
-
   std::vector<size_t> strides{ 12};
   std::vector<size_t> offsets{ 0 };
 
@@ -390,8 +390,8 @@ TEST(resize_cl, yuyvrgb)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -409,38 +409,36 @@ TEST(resize_cl, i4202rgb)
     { "quant_zeropoint", "-128.0" },
   };
 
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
     0x3A, 0x3A, 0x3A,
-    0x3A, 0x3A, 0x3A,
-    0xC9, 0xC9, 0xC9,
     0xC9, 0xC9, 0xC9,
     // clang-format on
   };
 
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2);
+  auto out_buf = std::vector<uint8_t>(4 * in_buf.size() * 2 / 3);
   auto expected = std::vector<uint8_t>{
     // clang-format off
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
     // clang-format on
   };
 
   std::vector<size_t> strides{ 6, 3, 3 };
-  std::vector<size_t> offsets{ 0, 12, 18 };
+  std::vector<size_t> offsets{ 0, 12, 15 };
 
   auto in = AxVideoInterface{ { 6, 2, int(strides[0]), 0, AxVideoFormat::I420 },
     in_buf.data(), strides, offsets, -1 };
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -457,23 +455,22 @@ TEST(resize_cl, nv12torgb)
     { "quant_scale", "0.003921568859368563" },
     { "quant_zeropoint", "-128.0" },
   };
-  Transformer resize("libtransform_resize_cl.so", input);
+  auto xform = Ax::LoadTransform("resize_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
     0x3A, 0xc9, 0x3A, 0xc9, 0x3A, 0xc9,
-    0x3A, 0xc9, 0x3A, 0xc9, 0x3A, 0xc9,
     // clang-format on
   };
 
-  auto out_buf = std::vector<uint8_t>(in_buf.size() * 2);
+  auto out_buf = std::vector<uint8_t>(4 * in_buf.size() * 2 / 3);
   auto expected = std::vector<uint8_t>{
     // clang-format off
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
-    0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F, 0x7F, 0xFE, 0x91, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
+    0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F, 0x7E, 0xFF, 0x92, 0x7F,
     // clang-format on
   };
 
@@ -485,8 +482,8 @@ TEST(resize_cl, nv12torgb)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  resize.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 

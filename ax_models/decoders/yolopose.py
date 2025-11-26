@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Operators that convert YOLO-POSE-specific tensor output to
 # generalized metadata representation
 from __future__ import annotations
@@ -33,18 +33,6 @@ class DecodeYoloPose(AxOperator):
     nms_iou_threshold: float = 0.65
     nms_top_k: int = 300
 
-    @classmethod
-    def handles_dequantization_and_depadding(cls):
-        return True
-
-    @classmethod
-    def handles_transpose(cls):
-        return True
-
-    @classmethod
-    def handles_postamble(cls):
-        return True
-
     def _post_init(self):
         self._tmp_labels: Optional[Path] = None
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
@@ -62,7 +50,7 @@ class DecodeYoloPose(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -91,7 +79,8 @@ class DecodeYoloPose(AxOperator):
         kpt_shape = ','.join(str(s) for s in self._kpts_shape)
         master_key = f'master_meta:{self._where};' if self._where else str()
         association_key = f'association_meta:{self._association};' if self._association else str()
-
+        if gst.tiling:
+            master_key = f'master_meta:axelera-tiles-internal;'
         gst.decode_muxer(
             name=f'decoder_task{self._taskn}{stream_idx}',
             lib='libdecode_yolov8.so',
@@ -110,6 +99,8 @@ class DecodeYoloPose(AxOperator):
             f'scale_up:{int(self.scaled==types.ResizeMode.LETTERBOX_FIT)};'
             f'decoder_name:{self.meta_type_name};',
         )
+        if gst.tiling:
+            master_key = 'flatten_meta:1;master_meta:axelera-tiles-internal;'
         gst.axinplace(
             lib='libinplace_nms.so',
             options=f'meta_key:{str(self.task_name)};'
@@ -119,6 +110,10 @@ class DecodeYoloPose(AxOperator):
             f'class_agnostic:{int(self._nms_class_agnostic)};'
             f'location:CPU;',
         )
+        if gst.tiling.size and not gst.tiling.show:
+            gst.axinplace(
+                lib='libinplace_hidemeta.so', options=f'meta_key:axelera-tiles-internal;'
+            )
 
     def exec_torch(self, image, predict, meta):
         if type(predict) == torch.Tensor:  # torch.Size([1, 56, 8400])

@@ -5,7 +5,14 @@ project(axstreamer LANGUAGES C CXX VERSION 0.8)
 find_package(PkgConfig)
 pkg_check_modules(opencv4 REQUIRED opencv4)
 pkg_check_modules(OpenCL OpenCL)
-pkg_check_modules(axruntime axruntime)
+pkg_check_modules(axruntime REQUIRED axruntime)
+
+pkg_check_modules(FFMPEG REQUIRED
+    libavcodec
+    libavformat
+    libswscale
+    libavutil
+)
 
 set(SOURCE_FILES
     src/AxFilterDetections.cpp
@@ -17,8 +24,11 @@ set(SOURCE_FILES
     src/AxOpenCl.cpp
     src/AxOpenClExtensions.cpp
     src/AxOpenCVRender.cpp
+    src/AxOpenCVVideoDecoder.cpp
+    src/AxFFMpegVideoDecoder.cpp
     src/AxOpUtils.cpp
     src/AxStreamerUtils.cpp
+    src/AxOpenCLAllocator.cpp
 )
 add_library(axstreamer SHARED ${SOURCE_FILES})
 
@@ -32,6 +42,7 @@ target_link_libraries(axstreamer PUBLIC
     ${opencv4_LIBRARIES}
     ${OpenCL_LIBRARIES}
     ${axruntime_LIBRARIES}
+    ${FFMPEG_LIBRARIES}
 )
 
 target_link_directories(axstreamer PUBLIC

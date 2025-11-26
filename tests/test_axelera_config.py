@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 import argparse
 import builtins
 import contextlib
@@ -654,9 +654,15 @@ def test_task_render_config_from_dict():
     [
         ('path with spaces.mp4', Source.VIDEO_FILE('path with spaces.mp4')),
         ('cwd/cwd-based.mp4', Source.VIDEO_FILE('cwd/cwd-based.mp4')),
+        ('cwd/cwd-based.mp4@30', Source.VIDEO_FILE('cwd/cwd-based.mp4', fps=30)),
+        ('cwd/cwd-based.mp4@auto', Source.VIDEO_FILE('cwd/cwd-based.mp4', fps=-1)),
         (
             '~/videos/special_chars-123!@#$.mp4',
             Source.VIDEO_FILE('/homer/videos/special_chars-123!@#$.mp4'),
+        ),
+        (
+            '~/videos/special_chars-123!@#$.mp4@24',
+            Source.VIDEO_FILE('/homer/videos/special_chars-123!@#$.mp4', fps=24),
         ),
         (
             'http://example.com/video.mp4?param=value',
@@ -721,6 +727,14 @@ def test_source_from_str(source_str, exp):
         assert Source(source_str) == exp
 
 
+def test_source_allows_string_with_kwargs():
+    with patch.object(Path, 'is_file', return_value=True):
+        source = Source('video1.mp4', preprocessing=config.rotate90())
+        assert source == Source(
+            config.SourceType.VIDEO_FILE, location='video1.mp4', preprocessing=config.rotate90()
+        )
+
+
 def test_source_ctor_from_source():
     source = Source('usb:/dev/video0:640x480@30')
     assert source == Source(source)
@@ -731,7 +745,9 @@ def test_source_ctor_from_source():
 
 
 def test_source_ctor_invalid():
-    with pytest.raises(TypeError, match=r'Source\(\) takes 1 string'):
+    with pytest.raises(
+        TypeError, match=r'When using a string parameter you must use kwargs, not args'
+    ):
         Source('invalid_source', 'invalid_type')
     with pytest.raises(TypeError, match=r'Source\(\) takes 1 string'):
         Source(0, 'invalid_type')
@@ -743,6 +759,13 @@ def test_source_ctor_invalid():
         stack.enter_context(patch.object(Path, 'rglob', return_value=[Path('a.txt')]))
         with pytest.raises(RuntimeError, match=r'Failed to locate any images in /dir'):
             Source('/dir/')
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(Path, 'is_file', return_value=False))
+        stack.enter_context(patch.object(Path, 'is_dir', return_value=False))
+        with pytest.raises(
+            FileNotFoundError, match=r'No such file or directory: /doesnotexist.mp4'
+        ):
+            Source('/doesnotexist.mp4')
 
     with pytest.raises(ValueError, match=r'Unrecognized source:'):
         Source('notavalid:type')
@@ -939,10 +962,8 @@ def test_source_data_source_in_pipeline_config():
 
 def test_source_data_source_multiple_sources():
     source = Source(image_generator())
-    with pytest.raises(
-        ValueError, match=r"Data Source source cannot be used with multiple sources"
-    ):
-        config.PipelineConfig("yolo.yaml", [source, "rtsp://example.com/stream"])
+    cfg = config.PipelineConfig("yolo.yaml", [source, "rtsp://example.com/stream"])
+    assert len(cfg.sources) == 2
 
 
 def test_source_data_source_with_types_image():

@@ -1,16 +1,22 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
+#include <iostream>
+#include <unordered_set>
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
+#include "AxStreamerUtils.hpp"
 #include "AxUtils.hpp"
 
-#include <iostream>
-#include <unordered_set>
-
+#include <opencv2/core/ocl.hpp>
 
 struct crop_properties {
   int scale_size = 0;
   int crop_size = 0;
+  int crop_width = 0;
+  int crop_height = 0;
+  int scale_width = 0;
+  int scale_height = 0;
+  bool downstream_supports_opencl{ false };
 };
 
 struct crop_box {
@@ -26,6 +32,10 @@ allowed_properties()
   static const std::unordered_set<std::string> allowed_properties{
     "scalesize",
     "cropsize",
+    "crop_width",
+    "crop_height",
+    "scale_width",
+    "scale_height",
   };
   return allowed_properties;
 }
@@ -39,69 +49,117 @@ init_and_set_static_properties(
       input, "scalesize", "centercropextra_static_properties", prop->scale_size);
   prop->crop_size = Ax::get_property(
       input, "cropsize", "centercropextra_static_properties", prop->crop_size);
+  prop->crop_width = Ax::get_property(input, "crop_width",
+      "centercropextra_static_properties", prop->crop_width);
+  prop->crop_height = Ax::get_property(input, "crop_height",
+      "centercropextra_static_properties", prop->crop_height);
+  prop->scale_width = Ax::get_property(input, "scale_width",
+      "centercropextra_static_properties", prop->scale_width);
+  prop->scale_height = Ax::get_property(input, "scale_height",
+      "centercropextra_static_properties", prop->scale_height);
+
   return prop;
 }
 
 extern "C" void
 set_dynamic_properties(const std::unordered_map<std::string, std::string> &input,
-    crop_properties *prop, Ax::Logger &logger)
+    crop_properties *prop, Ax::Logger & /*logger*/)
 {
+  prop->downstream_supports_opencl = Ax::get_property(input, "downstream_supports_opencl",
+      "centercropextra_static_properties", prop->downstream_supports_opencl);
 }
 
-crop_box
-determine_crop_box(int img_width, int img_height, int scale_size, int crop_size)
+struct width_height {
+  int width;
+  int height;
+};
+
+/// @brief  This determines the crop region in the input image that would correspond the specified
+///         crop region in the image after it has been resized.
+/// @param in_width - The width of the input rectangle
+/// @param in_height - The height of the input rectangle
+/// @param size - If size is provided, it is the size that the shorter side of the input rectangle
+///               will be scaled to, the longer side will be scaled proportionally to maintain aspect ratio.
+/// @param width - If width and height are provided the input image would be scaled
+///                 to these sizes
+/// @param height - If width and height are provided the input image would be scaled to these sizes
+/// @param crop_w - crop_w is the width of the cropped region in the resized image
+/// @param crop_h - crop_h is the height of the cropped region in the resized image
+///
+/// @return - Width and height of the cropped region in the input image that would
+///           correspond to the width and height of the cropped region after resize
+width_height
+determine_scaled_crop(int in_width, int in_height, int size, int width,
+    int height, int crop_w, int crop_h)
 {
-  //  First we determine the parts to crop to make square
-  auto shortest = std::min(img_width, img_height);
-  auto crop_left = (img_width - shortest) / 2;
-  auto crop_top = (img_height - shortest) / 2;
-
-  // Compute cropping region's size
-  auto cropped_size = static_cast<int>(std::round((shortest * crop_size) / scale_size));
-
-  // Compute the cropping coordinates; always cropping from the center
-  auto x1 = crop_left + (shortest - cropped_size) / 2;
-  auto y1 = crop_top + (shortest - cropped_size) / 2;
-  auto x2 = x1 + cropped_size;
-  auto y2 = y1 + cropped_size;
-
-  return { x1, y1, x2, y2 };
+  if (size != 0) {
+    auto shortest = std::min(in_width, in_height);
+    auto scale = static_cast<double>(shortest) / size;
+    return {
+      static_cast<int>(std::round(crop_w * scale)),
+      static_cast<int>(std::round(crop_h * scale)),
+    };
+  } else if (width != 0) {
+    auto scale_x = in_width / width;
+    auto scale_y = in_height / height;
+    return {
+      static_cast<int>(std::round(crop_w * scale_x)),
+      static_cast<int>(std::round(crop_h * scale_y)),
+    };
+  }
+  //  If no scale size or width is specified, do not resize
+  return { crop_w, crop_h };
 }
 
 extern "C" AxDataInterface
 set_output_interface(const AxDataInterface &interface,
     const crop_properties *prop, Ax::Logger &logger)
 {
-  if (prop->scale_size == 0 || prop->crop_size == 0) {
-    logger(AX_ERROR) << "both scalesize and cropsize must be specified\n";
-    throw std::runtime_error("both scalesize and cropsize must be specified in centercropextra "
-                             + std::to_string(prop->crop_size));
-  }
-
-  if (prop->scale_size < prop->crop_size) {
-    logger(AX_ERROR) << "scalesize must be larger than cropsize\n";
-    throw std::runtime_error("scalesize must be larger than cropsize in centercropextra");
-  }
-
   if (!std::holds_alternative<AxVideoInterface>(interface)) {
     logger(AX_ERROR) << "centercropextra works on video only\n";
     throw std::runtime_error("centercropextra works on video only");
   }
+  if ((prop->crop_size != 0 && (prop->crop_width != 0 || prop->crop_height != 0))
+      || (prop->crop_size == 0 && (prop->crop_width == 0 || prop->crop_height == 0))) {
+    throw std::runtime_error(
+        "centercropextra: you must specify either cropsize or crop_width/crop_height");
+  }
+  if (prop->scale_size != 0 && (prop->scale_width != 0 || prop->scale_height != 0)) {
+    throw std::runtime_error(
+        "centercropextra: you cannot pecify scale_width/scale_height with scalesize");
+  }
+  if (prop->scale_size == 0) {
+    if ((prop->scale_width != 0 && prop->scale_height == 0)
+        || (prop->scale_width == 0 && prop->scale_height != 0)) {
+      throw std::runtime_error(
+          "centercropextra: you must specify both scale_width and scale_height or scalesize or none of them");
+    }
+  }
 
   auto &input_video = std::get<AxVideoInterface>(interface);
-  crop_box box = determine_crop_box(input_video.info.width,
-      input_video.info.height, prop->scale_size, prop->crop_size);
+  auto crop_w = prop->crop_size != 0 ? prop->crop_size : prop->crop_width;
+  auto crop_h = prop->crop_size != 0 ? prop->crop_size : prop->crop_height;
+
+  auto [cropped_width, cropped_height]
+      = determine_scaled_crop(input_video.info.width, input_video.info.height,
+          prop->scale_size, prop->scale_width, prop->scale_height, crop_w, crop_h);
+
+  if (input_video.info.width < cropped_width) {
+    logger(AX_ERROR) << "centercropextra: input width is smaller than cropped width, using input width"
+                     << std::endl;
+    cropped_width = input_video.info.width;
+  }
+  if (input_video.info.height < cropped_height) {
+    logger(AX_ERROR) << "centercropextra: input height is smaller than cropped height, using input height"
+                     << std::endl;
+    cropped_height = input_video.info.height;
+  }
+  auto crop_x = (input_video.info.width - cropped_width) / 2;
+  auto crop_y = (input_video.info.height - cropped_height) / 2;
 
   AxDataInterface output_data = input_video;
   AxVideoInterface &output_video = std::get<AxVideoInterface>(output_data);
-  auto &info = output_video.info;
-
-  info.width = box.x2 - box.x1;
-  info.height = box.y2 - box.y1;
-  info.x_offset = box.x1 + input_video.info.x_offset;
-  info.y_offset = box.y1 + input_video.info.y_offset;
-  info.cropped = true;
-  return output_data;
+  return Ax::create_roi(input_video, crop_x, crop_y, cropped_width, cropped_height);
 }
 
 extern "C" void
@@ -123,7 +181,7 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     logger(AX_ERROR) << "centre crop only works on RGBA or BGRA\n";
     throw std::runtime_error("centre crop only works on RGBA or BGRA");
   }
-
+  cv::ocl::setUseOpenCL(false);
   cv::Mat in_mat(cv::Size(input_video.info.width + input_video.info.x_offset,
                      input_video.info.height + input_video.info.y_offset),
       Ax::opencv_type_u8(input_video.info.format), input_video.data,
@@ -140,16 +198,23 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
       output_video.strides[0]);
 
   auto out = set_output_interface(input, prop, logger);
+
   auto &out_cropped = std::get<AxVideoInterface>(out).info;
   cv::Rect crop_rect(out_cropped.x_offset, out_cropped.y_offset,
       out_cropped.width, out_cropped.height);
-
   cv::Mat cropped_mat = input_mat(crop_rect);
   cropped_mat.copyTo(output_mat);
 }
 
-extern "C" int
-handles_crop_meta()
+extern "C" bool
+query_supports(Ax::PluginFeature feature,
+    const crop_properties *crop_properties, Ax::Logger &logger)
 {
-  return 1;
+  if (feature == Ax::PluginFeature::opencl_buffers) {
+    return crop_properties && crop_properties->downstream_supports_opencl;
+  }
+  if (feature == Ax::PluginFeature::crop_meta) {
+    return true;
+  }
+  return false;
 }

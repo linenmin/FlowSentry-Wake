@@ -59,6 +59,9 @@ DEFAULT_MAX_EXECUTION_CORES = 4
 DEFAULT_CORE_CLOCK = 800
 '''The default core clock frequency to use for the AIPU.'''
 
+DEFAULT_WINDOW_SIZE = (900, 600)
+'''The default window size for display windows.'''
+
 
 class _HardwareEnableAction(argparse.Action):
     def __init__(
@@ -319,7 +322,6 @@ def add_nn_and_network_arguments(
     network_yaml_info: yaml_parser.NetworkYamlInfo,
     default_network: str | None = None,
 ) -> None:
-    example_yaml = next(iter(network_yaml_info.get_all_info())).yaml_path
     # Format the list of available networks without breaking names across lines
     all_yaml_names = sorted(network_yaml_info.get_all_yaml_names())
     all_yaml_names = [x for x in all_yaml_names if not x.startswith(('ax-', 'mc-'))]
@@ -412,7 +414,7 @@ def add_metis_arg(parser: argparse.ArgumentParser) -> None:
         default=Metis.none,
         action=_MetisAction,
         choices=_MetisAction.CHOICES,
-        help=f'specify metis target for deployment (default: detect)',
+        help='specify metis target for deployment (default: detect)',
     )
 
 
@@ -580,11 +582,12 @@ def add_display_arguments(
 ):
     parser.add_argument(
         '--display',
-        choices=['none', 'opengl', 'opencv', 'console', 'auto'],
+        choices=['none', 'opengl', 'opencv', 'console', 'iterm2', 'auto'],
         default='auto',
         help='display the results of the inference in a window. The window can be opengl, opencv,\n'
         'console (using ANSI control codes) or none. If auto then if DISPLAY is set then OpenGL\n'
-        'is preferred over OpenCV, and if DISPLAY is not set then a console display is used.',
+        'is preferred over OpenCV, and if DISPLAY is not set then a console display is used.'
+        '(iterm2 is experimental, using the iTerm2 terminal and some other terminals to render images).\n',
     )
     parser.add_argument(
         '--no-display',
@@ -593,16 +596,23 @@ def add_display_arguments(
         const='none',
         help='This is an alias for --display=none',
     )
-    default_window_size = (900, 600)
-    parser.add_argument(
+    wsize = parser.add_mutually_exclusive_group()
+    wsize.add_argument(
         '--window-size',
         type=_window_size,
         metavar='WxH | W | fullscreen',
-        default=default_window_size,
+        default=DEFAULT_WINDOW_SIZE,
         help=(
             'If --display sets the size of the window. Default is {}x{}.\n'
             'Size can be given as 800x600, just a width or fullscreen.'
-        ).format(*default_window_size),
+        ).format(*DEFAULT_WINDOW_SIZE),
+    )
+    wsize.add_argument(
+        '--fullscreen',
+        action='store_const',
+        const=_window_size('fullscreen'),
+        dest='window_size',
+        help='Alias for --window-size=fullscreen.',
     )
 
 
@@ -638,6 +648,10 @@ def create_inference_argparser(
     preproc_help = '\n'.join(f'  - {f.help()}' for f in _image_preproc_ops.values())
     source_help = f'''{_source_help()}
 
+For fakevideo and video file source, you can specify the frame rate using @N where N
+is the desired frame rate in frames per second. For video file, you can use 'auto' to
+use the source's native frame rate.
+
 Sources can also be prefixed with one or more image preprocessing steps, separated by colons:
     rotate90:horizontalflip:input.mp4
 '''
@@ -645,7 +659,7 @@ Sources can also be prefixed with one or more image preprocessing steps, separat
         'sources',
         default=[],
         nargs='*',
-        help=f"source input(s); for example input.mp4, rotate90:usb, or rtsp:://host/path.",
+        help="source input(s); for example input.mp4, rotate90:usb, or rtsp:://host/path.",
         extended_help=f'''Each source can be one of the following:
 {source_help}
 
@@ -812,6 +826,21 @@ real-time metric responses. (default {on_off(default_speedometer_smoothing)})
         help="specify latency for rtsp input in milliseconds",
     )
     parser.add_argument(
+        '--low-latency',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='''enable optimisations for lower latency.
+
+        Enabling this option causes the application framework and inference to favor low latency
+        over throughput.
+
+         * disables double buffering in Metis.
+         * disables batch mode in Metis.
+         * reduces the size of all queues in the pipeline to 1.
+         * disables all render buffering.
+        ''',
+    )
+    parser.add_argument(
         '--frame-rate',
         default=0,
         type=int,
@@ -857,6 +886,13 @@ is set to 0, the pipeline will use the frame rate of each individual input sourc
         # "Specify whether tiles should be shouwn. Default is False.",
     )
 
+    parser.add_argument(
+        '--cl-platform',
+        type=str,
+        choices=['auto', 'intel', 'nvidia', 'arm', 'gpu', 'cpu'],
+        default='auto',
+        help="specify OpenCL platform to use (default: auto)",
+    )
     add_metis_arg(parser)
 
     if port is not None:
@@ -965,10 +1001,11 @@ class _InferenceArgumentParser(_ExtendedHelpParser):
                 f'--save-output requires a pattern for multistream input e.g. "output_%02d.mp4" (got: {ns.save_output})'
             )
         if len(ns.sources) > 1 and any(_is_dataset(x) for x in ns.sources):
-            self.error(f"Dataset sources cannot be used with multistream")
+            self.error("Dataset sources cannot be used with multistream")
         if _is_dataset(ns.sources[0]) or ns.pipe in ('torch', 'torch-aipu', 'quantized'):
             try:
-                import torch  # noqa: just ensure torch is available
+                import torch  # noqa: F401 just ensure torch is available
+
             except ImportError as e:
                 if _is_dataset(ns.sources[0]) and ns.pipe.startswith('torch'):
                     msg = f'Dataset source and {ns.pipe} pipeline require torch to be installed'
@@ -1117,7 +1154,7 @@ class TaskRenderConfig:
     show_labels: bool = True
 
     @classmethod
-    def from_dict(cls, settings_dict: Dict[str, Any]) -> TaskRenderConfig:
+    def from_dict(cls, settings_dict: dict[str, Any]) -> TaskRenderConfig:
         """Create TaskRenderConfig from a dictionary with strict validation.
 
         Args:
@@ -1158,7 +1195,7 @@ class RenderConfig:
                 tracker=TaskRenderConfig(show_annotations=True, show_labels=False),
             )
         """
-        self._config: Dict[str, TaskRenderConfig] = {}
+        self._config: dict[str, TaskRenderConfig] = {}
 
         # Validate that all values are TaskRenderConfig instances
         for task_name, settings in kwargs.items():
@@ -1170,7 +1207,7 @@ class RenderConfig:
             self._config[task_name] = settings
 
     @classmethod
-    def from_tasks(cls, tasks: Optional[List[str]] = None):
+    def from_tasks(cls, tasks: list[str] | None = None):
         """Initialize render configuration with a list of task names using default settings.
 
         Args:
@@ -1441,6 +1478,17 @@ def _update_dataclass_from_args(datacls, *args, **kwargs):
         setattr(datacls, f.name, v)
 
 
+def _setattr_dataclass_from_args(datacls, **kwargs):
+    sentinel = object()
+
+    for f in dataclasses.fields(datacls):
+        val = kwargs.pop(f.name, sentinel)
+        if val is not sentinel:
+            setattr(datacls, f.name, val)
+    if kwargs:
+        raise TypeError(f"Unknown arguments: {', '.join(kwargs.keys())}")
+
+
 _source_types = []
 
 
@@ -1528,15 +1576,18 @@ def _is_image(p: Path):
     return p.suffix.lower() in utils.IMAGE_EXTENSIONS
 
 
-@_source_match(SourceType.VIDEO_FILE)
-def _video_file(src: Source, s: str) -> bool:
-    '''Video file (filename.mp4)'''
-    path = Path(s)
-    if m := (path.suffix.lower() in utils.VIDEO_EXTENSIONS):
+@_source_match(SourceType.VIDEO_FILE, r'(loop:)?(.*?)(?:@(\d+|auto))?$')
+def _video_file(src: Source, m: re.Match) -> bool:
+    '''Video file (filename.mp4)(@fps|auto)'''
+    path = Path(m.group(2))
+    if m2 := (path.suffix.lower() in utils.VIDEO_EXTENSIONS):
         if not path.is_file():
-            raise FileNotFoundError(f"No such file or directory: {s}")
+            raise FileNotFoundError(f"No such file or directory: {m.group(0)}")
         src.location = str(path.expanduser())
-    return m
+        src.loop = bool(m.group(1))
+        fps = m.group(3)
+        src.fps = -1 if fps == 'auto' else int(fps or '0')
+    return m2
 
 
 @_source_match(SourceType.IMAGE_FILES)
@@ -1816,12 +1867,22 @@ class Source:
     '''For SourceType.DATA_SOURCE, a generator of numpy arrays or axelera.types.Image to use.'''
     preprocessing: list[ImagePreproc] | None = None
     '''Preprocessing steps to apply to the input.'''
+    loop: bool = False
+    '''For SourceType.VIDEO_FILE, whether to loop the video file.'''
 
     def __init__(self, source_or_type: str | Path | SourceType, *args, **kwargs):
         """Create a Source from a string, n existing Source, or from (keyword) arguments.
 
         Overload 1
             Construct from a string or Path, e.g. "usb:0", "video.mp4", "rtsp://...", etc.
+            You can also provide kwargs to override the fields of the source, e.g.
+                Source("usb:0", preprocessing=config.rotate90())
+            Note that preprocessing constructors return a list of ImagePreproc, so you can add them
+            together:
+                Source("usb:0", preprocessing=config.rotate90()+config.horizontalflip())
+
+            Note that kwargs take precedence over options specified in the string, e.g.
+                Source("usb:0:640x480@30", fps=15)  # will use fps=15, not 30
 
         Overload 2
             Construct from an existing Source, e.g. Source(src). This is used to ensure all
@@ -1829,8 +1890,8 @@ class Source:
             the fields of the existing source.
 
         Overload 3
-            Construct from all the parts of a Source. Normally this is not used from one of the
-            class method constructors, e.g. Source.USB('/dev/video1')
+            Construct from all the parts of a Source. Normally this is not used directly, but
+            instead from one of the class method constructors, e.g. Source.USB('/dev/video1')
         """
         takes = 'Source() takes 1 string argument, or a Source or SourceType'
         if isinstance(source_or_type, Source):
@@ -1856,16 +1917,20 @@ class Source:
                 self, SourceType.DATA_SOURCE, *args, **kwargs, reader=source_or_type
             )
             return self.__post_init__()
-        if (args or kwargs) or not isinstance(source_or_type, str):
-            raise TypeError(f"{takes} and other arguments for the fields")
+        if not isinstance(source_or_type, str):
+            raise TypeError(
+                f"{takes}, but you cannot use args and kwargs arguments for the fields)"
+            )
+        if args:
+            raise TypeError("When using a string parameter you must use kwargs, not args")
         super().__init__()
-        _update_dataclass_from_args(self, None)
-        source_or_type, self.preprocessing = _parse_image_preprocs(source_or_type)
+        source, self.preprocessing = _parse_image_preprocs(source_or_type)
         for type, handler, _ in _source_types:
-            if handler(self, source_or_type):
+            if handler(self, source):
+                _setattr_dataclass_from_args(self, **kwargs)
                 return self.__post_init__()
         helps = _source_help()
-        raise ValueError(f"Unrecognized source: {source_or_type}. Valid formats are:\n{helps}")
+        raise ValueError(f"Unrecognized source: {source}. Valid formats are:\n{helps}")
 
     def __post_init__(self):
         self.images = self.images or []
@@ -1921,10 +1986,15 @@ class PipelineConfig(BaseConfig):
     ax_precompiled_gst: str | Path = ''
     save_compiled_gst: Path | None = None
     specified_frame_rate: int = 0
+    low_latency: bool = False
+    """If True then use low latency settings for the pipeline."""
     rtsp_latency: int = 500
     save_output: str = ''
     tiling: TilingConfig = dataclasses.field(default_factory=TilingConfig)
+    which_cl: str = 'auto'
     """Configuration for tiled inference."""
+    render_config: RenderConfig | None = None
+    """Initial render configuration for the pipeline."""
 
     @property
     def eval_mode(self) -> bool:
@@ -1938,7 +2008,7 @@ class PipelineConfig(BaseConfig):
             return  # raise ValueError("No sources provided")
 
         self.sources = [s if isinstance(s, Source) else Source(s) for s in self.sources]
-        single_source_types = (SourceType.DATASET, SourceType.DATA_SOURCE)
+        single_source_types = (SourceType.DATASET,)
         if len(self.sources) > 1 and any(s.type in single_source_types for s in self.sources):
             which = [s.type for s in self.sources if s.type in single_source_types][0]
             raise ValueError(
@@ -1964,6 +2034,8 @@ class PipelineConfig(BaseConfig):
             save_compiled_gst=Path(args.save_compiled_gst) if args.save_compiled_gst else None,
             specified_frame_rate=args.frame_rate,
             rtsp_latency=args.rtsp_latency,
+            low_latency=args.low_latency,
             save_output=args.save_output,
             tiling=TilingConfig.from_parsed_args(args),
+            which_cl=args.cl_platform,
         )

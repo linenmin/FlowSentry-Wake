@@ -1,8 +1,8 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <memory>
 #include <stdexcept>
@@ -83,7 +83,7 @@ TEST(yolov8seg_errors, no_zero_points_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolov8seg.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolov8seg", properties), std::runtime_error);
 }
 
 
@@ -92,7 +92,7 @@ TEST(yolov8seg_errors, no_scales_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "zero_points", "0" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolov8seg.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolov8seg", properties), std::runtime_error);
 }
 
 TEST(yolov8seg_errors, different_scale_and_zero_point_sizes_throws)
@@ -101,7 +101,7 @@ TEST(yolov8seg_errors, different_scale_and_zero_point_sizes_throws)
     { "zero_points", "0, 0" },
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolov8seg.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolov8seg", properties), std::runtime_error);
 }
 
 TEST(yolov8seg_decode_scores, all_filtered_at_max_confidence)
@@ -125,7 +125,7 @@ TEST(yolov8seg_decode_scores, all_filtered_at_max_confidence)
     { "model_width", "640" },
     { "model_height", "640" },
   };
-  Decoder decoder("libdecode_yolov8seg.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8seg", properties);
 
   AxVideoInterface video_info{ { 64, 64, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -137,7 +137,7 @@ TEST(yolov8seg_decode_scores, all_filtered_at_max_confidence)
   score_tensors.push_back(masks_tensors[0]);
   score_tensors.push_back(prototype_tensor[0]);
 
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   // auto [actual_boxes, actual_scores, actual_classes] = get_segment_meta(map, meta_identifier);
   auto [actual_boxes, actual_scores, actual_classes, actual_mask_shape, actual_mask]
@@ -164,7 +164,7 @@ TEST(yolov8seg_decode_scores, none_filtered_at_min_confidence_with_multiclass)
     { "model_width", "640" },
     { "model_height", "640" },
   };
-  Decoder decoder("libdecode_yolov8seg.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8seg", properties);
 
   AxVideoInterface video_info{ { 64, 64, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -176,7 +176,7 @@ TEST(yolov8seg_decode_scores, none_filtered_at_min_confidence_with_multiclass)
   score_tensors.push_back(masks_tensors[0]);
   score_tensors.push_back(prototype_tensor[0]);
 
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes, actual_mask_shape, actual_mask]
       = get_segment_meta(map, meta_identifier);
@@ -210,7 +210,7 @@ TEST(yolov8seg_decode_scores, all_but_first_highest_filtered_at_min_confidence_w
     { "model_width", "640" },
     { "model_height", "640" },
   };
-  Decoder decoder("libdecode_yolov8seg.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8seg", properties);
 
   AxVideoInterface video_info{ { 64, 64, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -221,7 +221,7 @@ TEST(yolov8seg_decode_scores, all_but_first_highest_filtered_at_min_confidence_w
   score_tensors.push_back(box_tensors[0]);
   score_tensors.push_back(masks_tensors[0]);
   score_tensors.push_back(prototype_tensor[0]);
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes, actual_mask_shape, actual_mask]
       = get_segment_meta(map, meta_identifier);
@@ -258,7 +258,7 @@ TEST(yolov8seg_decode_scores, with_multiclass_all_below_threshold_are_filtered)
     { "model_width", "640" },
     { "model_height", "640" },
   };
-  Decoder decoder("libdecode_yolov8seg.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8seg", properties);
 
   AxVideoInterface video_info{ { 64, 64, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -269,7 +269,7 @@ TEST(yolov8seg_decode_scores, with_multiclass_all_below_threshold_are_filtered)
   prototype_tensor.push_back(masks_tensors[0]);
   prototype_tensor.push_back(score_tensors[0]);
   prototype_tensor.push_back(box_tensors[0]);
-  decoder.decode_to_meta(prototype_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(prototype_tensor, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes, actual_mask_shape, actual_mask]
       = get_segment_meta(map, meta_identifier);
@@ -304,7 +304,7 @@ TEST(yolov8seg_decode_scores, without_scaling_segments)
     { "model_width", "640" },
     { "model_height", "640" },
   };
-  Decoder decoder("libdecode_yolov8seg.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8seg", properties);
 
   AxVideoInterface video_info{ { 64, 64, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -315,7 +315,7 @@ TEST(yolov8seg_decode_scores, without_scaling_segments)
   prototype_tensor.push_back(masks_tensors[0]);
   prototype_tensor.push_back(score_tensors[0]);
   prototype_tensor.push_back(box_tensors[0]);
-  decoder.decode_to_meta(prototype_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(prototype_tensor, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes, actual_mask_shape, actual_mask]
       = get_segment_meta(map, meta_identifier);
@@ -351,7 +351,7 @@ TEST(yolov8seg_decode_scores, with_heatmap)
     { "model_width", "640" },
     { "model_height", "640" },
   };
-  Decoder decoder("libdecode_yolov8seg.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8seg", properties);
 
   AxVideoInterface video_info{ { 64, 64, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -362,7 +362,7 @@ TEST(yolov8seg_decode_scores, with_heatmap)
   prototype_tensor.push_back(masks_tensors[0]);
   prototype_tensor.push_back(score_tensors[0]);
   prototype_tensor.push_back(box_tensors[0]);
-  decoder.decode_to_meta(prototype_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(prototype_tensor, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes, actual_mask_shape, actual_mask]
       = get_segment_meta(map, meta_identifier);

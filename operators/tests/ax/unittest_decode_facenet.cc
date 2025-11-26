@@ -9,7 +9,7 @@
 #include "AxMetaClassification.hpp"
 #include "AxUtils.hpp"
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 std::vector<std::vector<float>>
 get_embeddings_meta(const std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
@@ -77,12 +77,12 @@ TEST(FacenetDecoder, PairValidationMode)
   auto tmp_file = tempfile("[]"); // Empty embeddings file
   input["embeddings_file"] = tmp_file.filename();
 
-  Decoder decoder("libdecode_facenet.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("facenet", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(embeddings);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
 
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto actual_embeddings = get_embeddings_meta(metadata, meta_identifier);
 
@@ -119,12 +119,12 @@ TEST(FacenetDecoder, ClassificationModeEuclidean)
     { "top_k", "1" }, { "distance_threshold", "0.5" },
     { "embeddings_file", tmp_file.filename() } };
 
-  Decoder decoder("libdecode_facenet.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("facenet", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(input_embedding);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
 
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [labels, scores] = get_classification_meta(metadata, meta_identifier);
 
@@ -152,12 +152,12 @@ TEST(FacenetDecoder, ClassificationModeCosine)
     { "top_k", "2" }, { "distance_threshold", "0.7" },
     { "embeddings_file", tmp_file.filename() } };
 
-  Decoder decoder("libdecode_facenet.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("facenet", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(input_embedding);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
 
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [labels, scores] = get_classification_meta(metadata, meta_identifier);
 
@@ -187,8 +187,8 @@ TEST(FacenetDecoder, InvalidInput)
       = { { "meta_key", meta_identifier }, { "pair_validation", "1" },
           { "decoder_name", "facenet" }, { "embeddings_file", tmp_file.filename() } };
 
-  Decoder decoder("libdecode_facenet.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("facenet", input);
+  Ax::MetaMap metadata;
 
   // Create a tensor with multiple tensors (which is invalid)
   AxTensorsInterface invalid_tensors = { { { 5 }, sizeof(float), embeddings.data() },
@@ -196,7 +196,7 @@ TEST(FacenetDecoder, InvalidInput)
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
 
-  EXPECT_THROW(decoder.decode_to_meta(invalid_tensors, 0, 1, metadata, video_info),
+  EXPECT_THROW(decoder->decode_to_meta(invalid_tensors, 0, 1, metadata, video_info),
       std::runtime_error);
 }
 
@@ -217,12 +217,12 @@ TEST(FacenetDecoder, ThresholdMatching)
     { "top_k", "2" }, { "distance_threshold", "0.1" }, // Very strict threshold
     { "embeddings_file", tmp_file.filename() } };
 
-  Decoder decoder("libdecode_facenet.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("facenet", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(input_embedding);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
 
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [labels, scores] = get_classification_meta(metadata, meta_identifier);
 
@@ -253,13 +253,13 @@ TEST(FacenetDecoder, UpdateEmbeddings)
           { "update_embeddings", "1" }, { "labels_for_update", labels_str },
           { "embeddings_file", tmp_file.filename() } };
 
-  Decoder decoder("libdecode_facenet.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("facenet", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(new_embedding);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
 
   // This should add the new embedding
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   // Read the updated embeddings file to verify
   nlohmann::json updated_json;
@@ -305,4 +305,48 @@ TEST(FacenetDecoder, UpdateEmbeddings)
   for (size_t i = 0; i < stored_embedding.size(); ++i) {
     EXPECT_NEAR(stored_embedding[i], normalized_embedding[i], 1e-5);
   }
+}
+
+TEST(FacenetDecoder, DeduplicateExactOnLoad)
+{
+  // Two labels with identical vectors
+  nlohmann::json embeddings_json
+      = { { "A", { 0.1f, 0.2f, 0.3f } }, { "B", { 0.1f, 0.2f, 0.3f } } };
+  auto tmp_file = tempfile(embeddings_json.dump());
+
+  std::unordered_map<std::string, std::string> input = { { "meta_key", "classification" },
+    { "pair_validation", "0" }, { "metric_type", "4" }, // COSINE_SIMILARITY
+    { "top_k", "1" }, { "distance_threshold", "0.5" },
+    { "embeddings_file", tmp_file.filename() } };
+
+  // Recognition mode: should deduplicate and proceed
+  auto decoder = Ax::LoadDecode("facenet", input);
+  Ax::MetaMap metadata;
+  std::vector<float> v = { 1.f, 0.f, 0.f };
+  auto tensors = tensors_from_vector(v);
+  AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
+  EXPECT_NO_THROW(decoder->decode_to_meta(tensors, 0, 1, metadata, video_info));
+}
+
+TEST(FacenetDecoder, UpdateModeAlertsNearDuplicates)
+{
+  // Two very similar embeddings but different labels
+  // We just build a file and enable update_embeddings; decoder should start fresh
+  // if exact dups exist; otherwise it should log alerts (not asserted here).
+  nlohmann::json embeddings_json = { { "C", { 0.1f, 0.2f, 0.3f } },
+    { "D", { 0.1000001f, 0.2000001f, 0.3000001f } } };
+  auto tmp_file = tempfile(embeddings_json.dump());
+
+  std::unordered_map<std::string, std::string> input = { { "meta_key", "classification" },
+    { "pair_validation", "0" }, { "metric_type", "4" }, // COSINE_SIMILARITY
+    { "top_k", "1" }, { "distance_threshold", "0.5" },
+    { "embeddings_file", tmp_file.filename() }, { "update_embeddings", "1" } };
+
+  auto decoder = Ax::LoadDecode("facenet", input);
+  Ax::MetaMap metadata;
+  std::vector<float> v2 = { 0.1f, 0.2f, 0.3f };
+  auto tensors = tensors_from_vector(v2);
+  AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
+  // Should not throw; alerts go to logger
+  EXPECT_NO_THROW(decoder->decode_to_meta(tensors, 0, 1, metadata, video_info));
 }

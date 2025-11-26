@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+import functools
 import logging
 import re
 import sys
@@ -88,6 +88,16 @@ class LogWithTrace(logging.Logger):
         if self.isEnabledFor(TRACE):
             self._log(TRACE, msg, args, **kwargs)
 
+    @functools.cache
+    def info_once(self, s):
+        """Log an info message only once."""
+        self.info(s)
+
+    @functools.cache
+    def warning_once(self, s):
+        """Log a warning message only once."""
+        self.warning(s)
+
     def trace_exception(self):
         """Send a traceback of the current exception to the logger at ERROR level,
         but only if DEBUG is enabled."""
@@ -158,7 +168,7 @@ class _Formatter(logging.Formatter):
         time_string = self._format_time(record) if self._show_timestamp else ""
         hide = not (self._show_module and record.name not in ("root", "__main__"))
         name = "" if hide else f"{record.name}:"
-        return "\n".join(f"{time_string}{levelname}:{name} {l}" for l in msg.splitlines())
+        return "\n".join(f"{time_string}{levelname}:{name} {x}" for x in msg.splitlines())
 
     def _format_category(self, record):
         if self._ansi_colors:

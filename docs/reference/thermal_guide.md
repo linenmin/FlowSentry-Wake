@@ -1,27 +1,25 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-
 # 1. Temperature Monitoring and Thermal Management Guide
 
+- [1. Temperature Monitoring and Thermal Management Guide](#1-temperature-monitoring-and-thermal-management-guide)
+  - [1. Temperature Monitoring Tools](#1-temperature-monitoring-tools)
+    - [1.1. During Inference Execution](#11-during-inference-execution)
+    - [1.2. Using triton\_trace from Command Line Interface](#12-using-triton_trace-from-command-line-interface)
+    - [1.3. In Your Application Code](#13-in-your-application-code)
+    - [1.4. Using axmonitor](#14-using-axmonitor)
+  - [2. Temperature Settings](#2-temperature-settings)
+    - [2.1. Considerations and Throttling](#21-considerations-and-throttling)
+    - [2.2. Default Temperature Settings](#22-default-temperature-settings)
+  - [3. Configuring Temperature Throttling](#3-configuring-temperature-throttling)
+    - [3.1. Setting Software Throttling](#31-setting-software-throttling)
+  - [4. Safety Mechanisms](#4-safety-mechanisms)
+    - [4.1. Warning Temperature](#41-warning-temperature)
+    - [4.2. Shutdown Temperature](#42-shutdown-temperature)
+    - [4.3. Frequency Downscaling](#43-frequency-downscaling)
+  - [5. Temperature Specifications](#5-temperature-specifications)
+    - [5.1. Operating Range](#51-operating-range)
+
 This guide explains how to monitor and manage temperatures on Metis-based products.
-
-## Table of Contents
-
-- [1. Temperature Monitoring Tools](#1-temperature-monitoring-tools)
-  - [1.1. During Inference Execution](#11-during-inference-execution)
-  - [1.2. Using triton_trace from Command Line Interface](#12-using-triton_trace-from-command-line-interface)
-  - [1.3. In Your Application Code](#13-in-your-application-code)
-  - [1.4. Using axmonitor](#14-using-axmonitor)
-- [2. Temperature Settings](#2-temperature-settings)
-  - [2.1. Considerations and Throttling](#21-considerations-and-throttling)
-  - [2.2. Default Temperature Settings](#22-default-temperature-settings)
-- [3. Configuring Temperature Throttling](#3-configuring-temperature-throttling)
-  - [3.1. Setting Software Throttling](#31-setting-software-throttling)
-- [4. Safety Mechanisms](#4-safety-mechanisms)
-  - [4.1. Warning Temperature](#41-warning-temperature)
-  - [4.2. Shutdown Temperature](#42-shutdown-temperature)
-  - [4.3. Frequency Downscaling](#43-frequency-downscaling)
-- [5. Temperature Specifications](#5-temperature-specifications)
-  - [5.1. Operating Range](#51-operating-range)
 
 ## 1. Temperature Monitoring Tools
 
@@ -91,7 +89,7 @@ The following table shows all default temperature settings in Metis:
 
 | Type | Parameter | Default Value | User Configurable | Notes |
 |------|-----------|---------------|-------------------|-------|
-| Software Throttling | T<sub>s</sub> | 85°C | Yes | Software-based thermal throttling threshold for temperature-constrained environments |
+| Software Throttling | T<sub>s</sub> | 200°C (Effectively Disabled) | Yes | Software-based thermal throttling threshold for temperature-constrained environments |
 | | H<sub>s</sub> | 10°C | Yes | |
 | | L<sub>s</sub> | 10% | Yes | |
 | Hardware Throttling | T<sub>h</sub> | 105°C | No | Backup mechanism if warning signal is unused |
@@ -144,21 +142,19 @@ $ axdevice -v
 ```bash
 $ axdevice --set-pvt-warning-threshold 85
 ```
-- Default: 80°C
 - Does not persist across reboots
 
 ### 4.2. Shutdown Temperature
 
 > [!WARNING]
-> - Fixed at 120°C (non-configurable)
+> - Fixed at default value, as in the table above (non-configurable)
 > - Triggers board controller to disable all regulators
 > - Requires full power cycle to recover
 
 ### 4.3. Frequency Downscaling
 
-- Activates above Warning threshold
-- Reduces chip frequency by 100 MHz every 5°C (minimum 200 MHz)
-- Increases chip frequency by 100 MHz when temperature drops by 5°C (e.g., 110°C results in 700 MHz, but reaching 105°C returns frequency to 800 MHz)
+- Reduces chip frequency by 100 MHz every second while temperature remains above default threshold (minimum 200 MHz)
+- Increases chip frequency by 100 MHz when temperature drops 5°C below the default threshold (e.g., 110°C results in 700 MHz, but reaching 105°C returns frequency to 800 MHz)
 - Checks every second if temperature is within 5°C of Shutdown threshold
 - Operates independently of MVM-based throttling
 

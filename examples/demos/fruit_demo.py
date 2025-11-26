@@ -20,9 +20,6 @@ import time
 from axelera.app import config, display, inf_tracers, logging_utils
 from axelera.app.stream import create_inference_stream
 
-# Set environment variable to lower the latency at the cost of throughput
-os.environ["AXELERA_LOW_LATENCY"] = "1"
-
 NETWORK = 'fruit-demo'
 
 LOGO1 = os.path.join(config.env.framework, "axelera/app/voyager-sdk-logo-white.png")
@@ -33,7 +30,7 @@ def main(window, stream):
     for n, source in stream.sources.items():
         window.options(
             n,
-            title=f"Video {n} {source}",
+            title=f"Video {n} {source}" if len(stream.sources) > 1 else "Fruit Demo",
             title_size=24,
             grayscale=0.0,  # 0.9 works well for gray scale
             bbox_class_colors={
@@ -42,8 +39,8 @@ def main(window, stream):
                 'orange': (255, 0, 0, 125),
             },
         )
-    logo1 = wnd.image('98%, 98%', LOGO1, anchor_x='right', anchor_y='bottom', scale=0.45)
-    logo2 = wnd.image(
+    logo1 = window.image('98%, 98%', LOGO1, anchor_x='right', anchor_y='bottom', scale=0.45)
+    logo2 = window.image(
         '98%, 98%', LOGO2, anchor_x='right', anchor_y='bottom', scale=0.4, fadeout_from=0.0
     )
     start = time.time()
@@ -59,6 +56,9 @@ def main(window, stream):
 
         window.show(frame_result.image, frame_result.meta, frame_result.stream_id)
 
+        if window.is_closed:
+            break
+
 
 if __name__ == '__main__':
     # Reuse the inference.py command line parameters
@@ -66,7 +66,9 @@ if __name__ == '__main__':
         default_network=NETWORK, description='Perform inference on an Axelera platform'
     )
     args = parser.parse_args()
-    tracers = inf_tracers.create_tracers('core_temp', 'end_to_end_fps', 'end_to_end_infs')
+    tracers = inf_tracers.create_tracers(
+        'latency', 'end_to_end_fps', 'end_to_end_infs', pipe_type='gst'
+    )
     stream = create_inference_stream(
         network=NETWORK,
         sources=args.sources,
@@ -79,10 +81,11 @@ if __name__ == '__main__':
         specified_frame_rate=args.frame_rate,
         aipu_cores=args.aipu_cores,
         device_selector=args.devices,
+        low_latency=True,
     )
 
     with display.App(
-        visible=args.display,
+        renderer=args.display,
         opengl=stream.hardware_caps.opengl,
         buffering=not stream.is_single_image(),
     ) as app:

@@ -1,3 +1,4 @@
+# Copyright Axelera AI, 2025
 import os
 
 import yaml
@@ -113,6 +114,10 @@ model_name_to_card_name_dict = {
 'unet_fcn_512-cityscapes'                 : 'U-Net FCN 512',
 'vgg16-imagenet'                          : 'VGG16',
 'vgg16-imagenet-onnx'                     : 'VGG16',
+'vit-b-16-imagenet'                       : 'ViT-B-16',
+'vit-b-16-imagenet-onnx'                  : 'ViT-B-16',
+'vit-b-32-imagenet'                       : 'ViT-B-32',
+'vit-b-32-imagenet-onnx'                  : 'ViT-B-32',
 'wide_resnet50-imagenet'                  : 'Wide ResNet-50',
 'wide_resnet50-imagenet-onnx'             : 'Wide ResNet-50',
 'yolonas-l-coco-onnx'                     : 'YOLO-NAS L',
@@ -167,6 +172,8 @@ model_name_to_card_name_dict = {
 'yolov8mseg-coco'                         : 'YOLOv8m-seg',
 'yolov8n-coco-onnx'                       : 'YOLOv8n',
 'yolov8n-coco'                            : 'YOLOv8n',
+'yolov8l-obb-dotav1-onnx'                 : 'YOLOv8l-obb',
+'yolov8n-obb-dotav1-onnx'                 : 'YOLOv8n-obb',
 'yolov8n-license-plate'                   : 'NO CARD NAME',
 'yolov8n-weapons-and-knives'              : 'NO CARD NAME',
 'yolov8n-yolov8s'                         : 'NO CARD NAME',
@@ -207,6 +214,14 @@ model_name_to_card_name_dict = {
 'yolo11nseg-coco'                         : 'YOLO11n-seg',
 'yolo11lseg-coco-onnx'                    : 'YOLO11l-seg',
 'yolo11lseg-coco'                         : 'YOLO11l-seg',
+'yolo11l-obb-dotav1-onnx'                 : 'YOLO11l-obb',
+'yolo11n-obb-dotav1-onnx'                 : 'YOLO11n-obb',
+'yolo26x-coco-onnx'                       : 'YOLO26x',
+'yolo26l-coco-onnx'                       : 'YOLO26l',
+'yolo26m-coco-onnx'                       : 'YOLO26m',
+'yolo26s-coco-onnx'                       : 'YOLO26s',
+'yolo26n-coco-onnx'                       : 'YOLO26n',
+'yolox-x-crowdhuman-onnx'                 : 'YOLOX-x Human',
 'yolox-m-coco-onnx'                       : 'YOLOX-m',
 'yolox-s-coco-onnx'                       : 'YOLOX-s',
 'ces2025-ls'                              : 'NO CARD NAME',
@@ -257,7 +272,7 @@ def _is_expected_value(model_name, card_name, expected_card_name, full_path):
 
 def test_card_names():
     file_dir_path = os.path.dirname(os.path.realpath(__file__))
-    network_yaml_info = yaml_parser.get_network_yaml_info(
+    network_yaml_info = yaml_parser.network_yaml_info(
         model_cards_only=True, llm_in_model_cards=False
     )
     release_models_path = os.path.join(

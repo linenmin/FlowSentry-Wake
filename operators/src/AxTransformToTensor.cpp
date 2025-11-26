@@ -1,10 +1,12 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <unordered_map>
 #include <unordered_set>
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
 #include "AxUtils.hpp"
+
+#include <opencv2/core/ocl.hpp>
 
 struct totensor_properties {
   std::string type{};
@@ -54,6 +56,8 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     const totensor_properties *, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)
 {
+  cv::ocl::setUseOpenCL(false);
+
   auto &input_video = std::get<AxVideoInterface>(input);
   cv::Mat input_mat(cv::Size(input_video.info.width, input_video.info.height),
       Ax::opencv_type_u8(input_video.info.format), input_video.data,

@@ -42,7 +42,6 @@
       - [Implementing a Custom DataAdapter](#implementing-a-custom-dataadapter)
       - [types.BaseEvalSample](#typesbaseevalsample)
     - [The other built-in DataAdapter](#the-other-built-in-dataadapter)
-    - [Deploying with Existing Calibration Data](#deploying-with-existing-calibration-data)
     - [Takeaways](#takeaways-3)
     - [Appendix](#appendix-1)
   - [Tutorial-5: Building End-to-End GStreamer Pipelines](#tutorial-5-building-end-to-end-gstreamer-pipelines)
@@ -258,7 +257,11 @@ The `AXELERA_FRAMEWORK` environment variable points to the root of the Voyager S
 
 ## Tutorial-1: Getting Started with Model Deployment
 
-This tutorial introduces the fundamental structure of Axelera YAML files, which are essential for defining and deploying models on the Axelera platform. We will then walk through an example of deploying a single model.
+This tutorial introduces the fundamental structure of Axelera YAML files, which are essential for defining and deploying models on the Axelera platform. We will then walk through an example of deploying a single model. 
+
+Before starting this tutorial ensure you have completed Tutorial 0.
+- If your model is a **PyTorch model**, start with [t0-prepare-your-torch.md](/ax_models/tutorials/torch/t0-prepare-your-torch.md).
+- If your model is an **ONNX model** or can be converted to ONNX, begin with [t0-prepare-your-onnx.md](/ax_models/tutorials/onnx/t0-prepare-your-onnx.md). This tutorial also covers how to convert models from various frameworks to ONNX.
 
 ### YAML File Structure
 A valid Axelera YAML file must include the following six sections + an optional section:
@@ -704,7 +707,7 @@ class TopKDecoderOutputMeta(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(

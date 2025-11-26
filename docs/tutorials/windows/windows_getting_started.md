@@ -1,6 +1,56 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 # Voyager SDK Installation Guide for Windows
 
+## Contents
+- [Voyager SDK Installation Guide for Windows](#voyager-sdk-installation-guide-for-windows)
+  - [Contents](#contents)
+  - [Prerequisites](#prerequisites)
+  - [Level](#level)
+  - [IMPORTANT NOTICE](#important-notice)
+  - [Supported Features Comparison](#supported-features-comparison)
+  - [Contents](#contents-1)
+  - [Overview](#overview)
+  - [Step 1: Install the Axelera Windows Driver](#step-1-install-the-axelera-windows-driver)
+  - [Step 2: Install the Axelera Voyager SDK using Windows Subsystem for Linux](#step-2-install-the-axelera-voyager-sdk-using-windows-subsystem-for-linux)
+    - [Setting up the voyager-sdk repository on Windows:](#setting-up-the-voyager-sdk-repository-on-windows)
+  - [Step 3: Install Python](#step-3-install-python)
+  - [Step 4: Install Windows Axelera Components](#step-4-install-windows-axelera-components)
+    - [Installing the Executable Installers](#installing-the-executable-installers)
+    - [Installing the Python Packages](#installing-the-python-packages)
+  - [Step 5: Running Examples \[Optional\]](#step-5-running-examples-optional)
+  - [Step 6: Running LLM Models](#step-6-running-llm-models)
+  - [Notes on Using Windows PowerShell](#notes-on-using-windows-powershell)
+  - [Next Steps](#next-steps)
+  - [Related Documentation](#related-documentation)
+  - [Further support](#further-support)
+
+
+## Prerequisites
+- Windows 11 (only tested version)
+- Windows Subsystem for Linux (WSL2) support
+- Administrative privileges
+- Internet connection
+
+## Level
+**Beginner** - Follow step-by-step Windows-specific installation
+
+## IMPORTANT NOTICE
+
+> **Important:** Full development environment is **not available natively on Windows**.
+> - **Recommended:** Use **Ubuntu** or **Windows Subsystem for Linux (WSL)** for development.  
+> - **Windows SDK** currently supports **inference only** (via AxRuntime API).  
+> For details, see Supported Features on Windows vs. Linux.
+
+## Supported Features Comparison
+
+| Feature                | Ubuntu (Linux) | Windows (Native) | Windows (WSL) |
+|------------------------|---------------|-------------------|---------------|
+| Full SDK Development   | ✅            | ❌                | ✅            |
+| Network Deployment     | ✅            | ❌                | ✅            |
+| Inference (AxRuntime)  | ✅            | ✅                | ✅            |
+
+## Contents
+
 - [Voyager SDK Installation Guide for Windows](#voyager-sdk-installation-guide-for-windows)
   - [Overview](#overview)
   - [Step 1: Install the Axelera Windows Driver](#step-1-install-the-axelera-windows-driver)
@@ -11,6 +61,7 @@
     - [Installing the Executable Installers](#installing-the-executable-installers)
     - [Installing the Python Packages](#installing-the-python-packages)
   - [Step 5: Running Examples \[Optional\]](#step-5-running-examples-optional)
+  - [Step 6: Running LLM Models](#step-6-running-llm-models)
   - [Notes on Using Windows PowerShell](#notes-on-using-windows-powershell)
 
 ## Overview
@@ -116,11 +167,14 @@ Create a local windows-packages directory and download the installers:
 rmdir /s /q windows-packages 2>nul
 mkdir windows-packages
 cd windows-packages
-curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-device-installer.exe
-curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-runtime-installer.exe
-curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-syslibs-installer.exe
-curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-toolchain-deps-installer.exe
-curl -O https://media.axelera.ai/releases/v1.4.0/build-Release-Windows-2204-amd64/package_repos/axelera_runtime-1.4.0-py3-none-any.whl
+curl -O https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-device-installer.exe
+curl -O https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-runtime-installer.exe
+curl -O https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-syslibs-installer.exe
+curl -O https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-toolchain-deps-installer.exe
+curl -O https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/axelera-win-services-installer.exe
+curl -O https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/axelera_llm-1.5.0-py3-none-any.whl
+curl -O https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/axelera_runtime-1.5.0-py3-none-any.whl
+curl -O https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/axelera_types-1.5.0-py3-none-any.whl
 cd ..
 ```
 
@@ -133,13 +187,16 @@ Using Windows Explorer, navigate to `C:\Axelera\voyager-sdk\windows-packages` an
 After installation, verify the packages were installed correctly:
 
 1. Open Windows Settings and navigate to "Apps & features" (or "Add or remove programs")
-   ![Add Remove Programs](/docs/images/windows/add_remove_choice.png)
+   
+![Add Remove Programs](/docs/images/windows/add_remove_choice.png)
 
 2. Verify that the following packages are listed:
-   ![First Three Packages](/docs/images/windows/add_remove_first_3_packs.png)
-   ![Last Package](/docs/images/windows/add_remove_last.png)
+ 
+![First Four Packages](/docs/images/windows/add_remove_first_4_packs.png)
+   
+![Last Package](/docs/images/windows/add_remove_last.png)
 
-The exact version numbers may vary depending on what version you're installing, but you must see the following packages listed: **Axelera Cross Compiled Libraries Package**, **Axelera Device Package**, **Axelera Runtime**, and **RISC-V Toolchain and Dependencies for Axelera**.
+The exact version numbers may vary depending on what version you're installing, but you must see the following packages listed: **Axelera Cross Compiled Libraries Package**, **Axelera Device Package**, **Axelera Runtime**, **Axelera Services**, and **RISC-V Toolchain and Dependencies for Axelera**.
 
 > [!IMPORTANT]  
 > After installing all executable installers, restart your Command Prompt window (without administrator privileges) to continue with the remaining steps.
@@ -152,7 +209,9 @@ venv-win\Scripts\activate.bat
 ```
 Install the Python packages:
 ```cmd
-pip install -f "windows-packages\axelera_runtime-1.4.0-py3-none-any.whl"
+pip install windows-packages\axelera_runtime-1.5.0-py3-none-any.whl
+pip install windows-packages\axelera_types-1.5.0-py3-none-any.whl
+pip install windows-packages\axelera_llm-1.5.0-py3-none-any.whl
 ```
 
 ## Step 5: Running Examples [Optional]
@@ -187,6 +246,32 @@ Execute inference using either of these methods:
 > ```
 > You'll know the virtual environment is active when you see `(venv-win)` at the beginning of your command prompt.
 
+## Step 6: Running LLM Models
+It's possible to run a set of precompiled LLM models on Windows.
+For the list of available models, please refer to the **LLM Models** section of the [Voyager Model Zoo](/docs/reference/model_zoo.md#large-language-model-llm),
+or simply run:
+```cmd
+axllm --help-network
+```
+
+For example, to run the `llama-3-2-1b-1024-4core-static` model in single prompt mode, execute:
+```cmd
+axllm llama-3-2-1b-1024-4core-static --prompt "Give me a joke"
+```
+
+To chat interactively with the model in your terminal, run:
+```cmd
+axllm llama-3-2-1b-1024-4core-static
+```
+
+Many other options are available as described in the [LLM Inference Guide](/docs/tutorials/llm.md#usage-modes).
+
+> [!IMPORTANT]  
+> Remember to re-activate the Python virtual environment each time you open a new Command Prompt window. From your installation directory (e.g., `C:\Axelera\voyager-sdk`), run:
+> ```cmd
+> venv-win\Scripts\activate.bat
+> ```
+> You'll know the virtual environment is active when you see `(venv-win)` at the beginning of your command prompt.
 
 ## Notes on Using Windows PowerShell
 After completing all the installation steps above, you can use Windows PowerShell instead of Windows Command Prompt for running examples and working with the SDK. The main difference is in how you activate the Python virtual environment:
@@ -210,3 +295,28 @@ Once activated, you can run all the same commands as described in the [Running E
 > Set-ExecutionPolicy Unrestricted
 > ```
 > After adjusting the execution policy, try activating the environment again using `.\venv-win\Scripts\Activate.ps1`.
+
+## Next Steps
+- **Verify installation**: Run examples to confirm setup
+- **Run first inference**: [Quick Start Guide](../quick_start_guide.md)
+- **Note**: Firmware updates require temporary Linux access (see [Firmware Update Decision Tree](../firmware_update_decision_tree.md))
+
+## Related Documentation
+**Windows Guides:**
+- [Windows Voyager SDK Repository](windows_voyager_sdk_repository.md) - Complete FIRST to clone repository
+- [Installing Driver](installing_driver.md) - Windows driver installation details
+- [Deactivate BitLocker](deactivate_bitlocker.md) - Required before driver installation
+
+**Linux Alternative:**
+- [Installation Guide](../install.md) - Linux installation (recommended for best experience)
+
+**Next Steps:**
+- [Quick Start Guide](../quick_start_guide.md) - Run first inference after Windows setup
+- [Enable Updates](../enable_updates.md) - Enable firmware updates (requires temporary Linux access)
+
+**References:**
+- [AxDevice API](../../reference/axdevice.md) - Verify hardware detection after install
+
+## Further support
+- For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+- For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

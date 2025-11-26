@@ -33,6 +33,7 @@ elif platform.system() == 'Darwin':
 else:
     DEVICE = torch.device("cpu")
 
+
 # Set default device and data type handling
 def to_device(tensor, device=None, dtype=None):
     """Move tensor to the specified device and ensure correct dtype.

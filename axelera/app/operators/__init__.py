@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Pipeline operators
 
 from . import classical_cv, custom_preprocessing, inference, mega, postprocessing, preprocessing
@@ -24,16 +24,28 @@ for _op in builtins_classical_cv.values():
 
 __all__ = (
     [
+        "AxeleraDequantize",
         "AxOperator",
         "BaseClassicalCV",
-        "PreprocessOperator",
-        "EvalMode",
+        "builtins_classical_cv",
+        "builtins",
+        "classical_cv",
         "compose_preprocess_transforms",
+        "custom_preprocessing",
+        "EvalMode",
+        "get_input_operator",
+        "inference",
+        "Inference",
+        "InferenceOpConfig",
         "Input",
         "InputFromROI",
         "InputWithImageProcessing",
-        "get_input_operator",
         "InterpolationMode",
+        "mega",
+        "PipelineContext",
+        "postprocessing",
+        "preprocessing",
+        "PreprocessOperator",
     ]
     + [x.__name__ for x in builtins.values() if not x.__name__.startswith("_")]
     + [x.__name__ for x in builtins_classical_cv.values() if not x.__name__.startswith("_")]

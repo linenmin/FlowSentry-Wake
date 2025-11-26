@@ -1,6 +1,6 @@
 // Copyright Axelera AI, 2025
 #include <gmock/gmock.h>
-#include "unittest_inplace_common.h"
+#include "unittest_ax_common.h"
 
 void
 test_no_mean_or_scale(std::string simd = std::string())
@@ -15,7 +15,7 @@ test_no_mean_or_scale(std::string simd = std::string())
     input["simd"] = simd;
   }
 
-  Inplacer normalizer("libinplace_normalize.so", input);
+  auto normalizer = Ax::LoadInPlace("normalize", input);
   std::vector<uint8_t> in_buf(4 * 4);
   std::iota(in_buf.begin(), in_buf.end(), 0);
 
@@ -26,7 +26,8 @@ test_no_mean_or_scale(std::string simd = std::string())
     // clang-format on
   };
   auto in = AxTensorsInterface{ { { 1, 1, 4, 4 }, 1, in_buf.data() } };
-  normalizer.inplace(in);
+  Ax::MetaMap meta;
+  normalizer->inplace(in, 0, 1, meta);
   EXPECT_EQ(in_buf, expected);
 }
 
@@ -50,7 +51,7 @@ test_no_mean_or_scale_4x4(std::string simd = std::string())
     input["simd"] = simd;
   }
 
-  Inplacer normalizer("libinplace_normalize.so", input);
+  auto normalizer = Ax::LoadInPlace("normalize", input);
   std::vector<uint8_t> in_buf(4 * 4 * 2);
   std::iota(in_buf.begin(), in_buf.end(), 0);
 
@@ -63,7 +64,8 @@ test_no_mean_or_scale_4x4(std::string simd = std::string())
     // clang-format on
   };
   auto in = AxTensorsInterface{ { { 1, 2, 4, 4 }, 1, in_buf.data() } };
-  normalizer.inplace(in);
+  Ax::MetaMap meta;
+  normalizer->inplace(in, 0, 1, meta);
   EXPECT_EQ(in_buf, expected);
 }
 
@@ -87,7 +89,7 @@ test_no_mean_or_scale_4x4_x(std::string simd = std::string())
     input["simd"] = simd;
   }
 
-  Inplacer normalizer("libinplace_normalize.so", input);
+  auto normalizer = Ax::LoadInPlace("normalize", input);
   std::vector<uint8_t> in_buf(4 * 4 * 2);
   std::iota(in_buf.begin(), in_buf.end(), 0);
 
@@ -100,7 +102,8 @@ test_no_mean_or_scale_4x4_x(std::string simd = std::string())
     // clang-format on
   };
   auto in = AxTensorsInterface{ { { 1, 2, 4, 4 }, 1, in_buf.data() } };
-  normalizer.inplace(in);
+  Ax::MetaMap meta;
+  normalizer->inplace(in, 0, 1, meta);
   EXPECT_EQ(in_buf, expected);
 }
 

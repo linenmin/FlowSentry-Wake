@@ -1,3 +1,4 @@
+// Copyright Axelera AI, 2025
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMetaObjectDetection.hpp"
@@ -230,8 +231,8 @@ std::vector<tensor_pair>
 sort_tensors(const AxTensorsInterface &tensors, int num_classes, Ax::Logger &logger)
 {
   if (tensors.size() % 2 != 0) {
-    logger(AX_ERROR) << "The number of tensors must be even" << std::endl;
-    throw std::runtime_error("The number of tensors must be even");
+    logger.throw_error("libdecode_ssd2: The number of tensors must be even, but got "
+                       + std::to_string(tensors.size()));
   }
   std::vector<int> indices(tensors.size());
   std::iota(std::begin(indices), std::end(indices), 0);

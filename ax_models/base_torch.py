@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Helper class for pytorch models
 from __future__ import annotations
 
@@ -66,8 +66,7 @@ class TorchModel(types.Model, torch.nn.Module):
     @abc.abstractmethod
     def init_model_deploy(
         self, model_info: types.ModelInfo, dataset_config: dict, **kwargs
-    ) -> None:
-        ...
+    ) -> None: ...
 
     @property
     def torch_model(self) -> typing.Optional[torch.nn.Module]:

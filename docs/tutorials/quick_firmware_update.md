@@ -2,16 +2,44 @@
 
 # Quick Firmware Update Guide
 
+## Contents
+- [Quick Firmware Update Guide](#quick-firmware-update-guide)
+  - [Contents](#contents)
+  - [Prerequisites (Listed Below)](#prerequisites-listed-below)
+  - [Level](#level)
+  - [Overview](#overview)
+  - [Quick Update Steps](#quick-update-steps)
+    - [1. Activate the Voyager SDK Environment](#1-activate-the-voyager-sdk-environment)
+    - [2. Run the Interactive Firmware Update Tool](#2-run-the-interactive-firmware-update-tool)
+    - [3. Verify the Update](#3-verify-the-update)
+  - [Important Notes](#important-notes)
+    - [Multi-Card Systems](#multi-card-systems)
+    - [New Boards](#new-boards)
+    - [Safety Reminder](#safety-reminder)
+  - [Next Steps](#next-steps)
+  - [Related Documentation](#related-documentation)
+  - [Getting Help](#getting-help)
+
+## Prerequisites (Listed Below)
+- Your board has already been enabled for firmware updates
+- Voyager SDK is installed on your system
+- You have the Voyager SDK Python virtual environment available
+
+## Level
+**Beginner** - Simple update procedure for already-enabled boards
+
+## Overview
+
 > [!WARNING]
 > **This guide is ONLY for boards that have already been enabled for firmware updates.**
 > 
 > If this is a **new board** or you're unsure whether firmware updates have been enabled, you **MUST** first go through the [Enable Card Firmware Update Guide](/docs/tutorials/enable_updates.md) before proceeding.
 
-## Prerequisites
 
-- Your board has already been enabled for firmware updates
-- Voyager SDK is installed on your system
-- You have the Voyager SDK Python virtual environment available
+---
+> ** WHICH FIRMWARE GUIDE DO YOU NEED?**
+> See the [Firmware Update Decision Tree](firmware_update_decision_tree.md) to determine which firmware guide to follow.
+
 
 ## Quick Update Steps
 
@@ -58,6 +86,24 @@ If you're working with a **new board** that hasn't been flashed before, you **MU
 - Never interrupt power during firmware updates
 - Use a UPS if possible to prevent power interruptions
 - Follow all prompts carefully and do not interrupt the process
+
+## Next Steps
+- **After update**: Verify with `axdevice` command
+- **If issues occur**: Use [Full Firmware Update Guide](firmware_flash_update.md) for troubleshooting
+- **Continue development**: Return to [Quick Start Guide](quick_start_guide.md)
+
+## Related Documentation
+**Firmware Guides:**
+- **[Firmware Update Decision Tree](firmware_update_decision_tree.md)** - START HERE to choose the right guide
+- [Enable Updates](enable_updates.md) - Required FIRST if board is new or not yet enabled
+- [Firmware Update Guide (Full)](firmware_flash_update.md) - For multi-device systems or recovery
+
+**Tutorials:**
+- [Installation Guide](install.md) - SDK must be installed
+- [Quick Start Guide](quick_start_guide.md) - Verify functionality after update
+
+**References:**
+- [AxDevice API](../reference/axdevice.md) - Verify firmware version after update
 
 ## Getting Help
 

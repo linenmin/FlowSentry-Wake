@@ -1,16 +1,16 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Metadata for keypoint and landmark detection
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 import numpy as np
 from typing_extensions import Self
 
 from axelera import types
 
-from .. import display, logging_utils, plot_utils
+from .. import display, logging_utils, utils
 from ..model_utils import box
 from .base import AxTaskMeta, MetaObject, draw_bounding_boxes
 from .gst_decode_utils import decode_bbox
@@ -66,7 +66,7 @@ class KeypointDetectionMeta(AxTaskMeta):
         scores: Optional[float] = None,
     ):
         raise NotImplementedError(
-            f"Implement this method if you want to add results object-by-object"
+            "Implement this method if you want to add results object-by-object"
         )
 
     def draw(self, draw: display.Draw):
@@ -144,9 +144,9 @@ class TopDownKeypointDetectionMeta(KeypointDetectionMeta):
         return self._scores
 
     def to_evaluation(self):
-        keypoints = np.stack(self._keypoints, axis=0)
-        boxes = np.stack(self._boxes, axis=0)
-        scores = np.array(self._scores)
+        # keypoints = np.stack(self._keypoints, axis=0)
+        # boxes = np.stack(self._boxes, axis=0)
+        # scores = np.array(self._scores)
         raise NotImplementedError("Evaluation logic for top-down keypoint detection")
 
     def xyxy(self):
@@ -304,6 +304,10 @@ class CocoBodyKeypointsMeta(BottomUpKeypointDetectionMeta):
 
     Object: ClassVar[MetaObject] = KeypointObjectWithBbox
 
+    # COCO body keypoints models only detect people (COCO class_id 0),
+    # this is only used for the label display in the rendering
+    labels: Optional[Union[tuple, utils.FrozenIntEnum]] = ['person']
+
     keypoints_shape = [17, 3]
     _point_bounds = [
         (15, 13, 11, 5, 6, 12, 14, 16),  # both legs + shoulders
@@ -326,9 +330,9 @@ class CocoBodyKeypointsMeta(BottomUpKeypointDetectionMeta):
             return
         lines = []
         for det_pts in self.keypoints:
-            for l in self._point_bounds:
+            for pt_bound in self._point_bounds:
                 # Hardcoded value is visibility score, draw lines only if visibility score is big enough
-                line = [det_pts[kp][:2] for kp in l if det_pts[kp][2] > 0.5]
+                line = [det_pts[kp][:2] for kp in pt_bound if det_pts[kp][2] > 0.5]
                 if len(line) > 1:
                     lines.append(line)
 
@@ -407,26 +411,21 @@ class FaceLandmarkTopDownMeta(TopDownKeypointDetectionMeta):
             kpts_shape = np.frombuffer(kpts_shape, dtype=np.int32)
         else:
             kpts_shape = cls.keypoints_shape
+        kpt = np.dtype([('x', np.int32), ('y', np.int32), ('visibility', np.float32)])
         if kpts := data.get("kpts", b""):
-            kpts = np.frombuffer(
-                kpts,
-                dtype=np.dtype([('x', np.int32), ('y', np.int32), ('visibility', np.float32)]),
-            )
+            kpts = np.frombuffer(kpts, dtype=kpt)
             kpts = (
                 np.vstack([kpts['x'], kpts['y'], kpts['visibility']])
                 .T.astype(float)
                 .reshape(-1, kpts_shape[0], kpts_shape[1])
             )
         else:
-            kpts = np.zeros(
-                kpts_shape[0] * boxes.shape[0],
-                dtype=np.dtype([('x', np.int32), ('y', np.int32), ('visibility', np.float32)]),
-            )
+            kpts = np.zeros((0,), dtype=kpt)
 
         if scores := data.get('scores', b''):
             scores = np.frombuffer(scores, dtype=np.float32)
         else:
-            scores = np.ones(boxes.shape[0], dtype=np.float32)
+            scores = np.ones((0,), dtype=np.float32)
         kpts[0, :, 2] = scores
 
         return cls(_keypoints=[np.array(x) for x in kpts.tolist()], _boxes=[], _scores=scores)

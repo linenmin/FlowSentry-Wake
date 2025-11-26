@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Base operator class
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Type, Union, final
 from axelera import types
 
 from .. import config, gst_builder, logging_utils
-from ..config import TilingConfig  # needed for _compile_fn globals, do mot remove
 from ..torch_utils import torch
 
 if TYPE_CHECKING:
@@ -33,8 +32,9 @@ class EvalMode(enum.Enum):
         return self != EvalMode.NONE
 
 
-def _compile_fn(code, name):
+def _compile_fn(code, name, **globs):
     ns = {}
+    ns = dict(globals(), **globs)
     exec(code, globals(), ns)
     return ns[name]
 
@@ -130,6 +130,7 @@ def as_image_preproc(self) -> config.ImagePreproc:
     return config.ImagePreproc('{cls.__name__.lower()}', (), kwargs)
 ''',
         'as_image_preproc',
+        config=config,
     )
 
 
@@ -180,18 +181,6 @@ class AxOperator(abc.ABC):
     @classmethod
     def name(cls):
         return cls.__name__.replace('-', '').replace('_', '').lower()
-
-    @classmethod
-    def handles_dequantization_and_depadding(cls):
-        return False
-
-    @classmethod
-    def handles_transpose(cls):
-        return False
-
-    @classmethod
-    def handles_postamble(cls):
-        return False
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -303,12 +292,15 @@ class AxOperator(abc.ABC):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         '''Perform any initialisation that requires access to model info or task num,
         and also update model_info properties dynamically. Here we set frequent properties
-        that are used in the exec_torch and build_gst methods.'''
+        that are used in the exec_torch and build_gst methods.
+
+        Note that compiled_model_dir will be None for non-model based operators such as a tracker.
+        '''
         # taskn is the index of the task in the pipeline.
         self._taskn = taskn
         # where is passed from the input operator; for InputFromROI, it is the task name of its parent task. For the other input operators, where is an empty string, indicating it is a master task.
@@ -387,7 +379,7 @@ class PreprocessOperator(AxOperator):
     def stream_check_match(self, stream_id):
         match = self._stream_match
 
-        if match == r'.*' or match == None:
+        if match == r'.*' or match is None:
             return True
 
         if isinstance(match, (int, list)) and stream_id in (
@@ -476,7 +468,8 @@ def compose_preprocess_transforms(
 ) -> ImageToTensorTransform:
     """Compose a list of AxOperator into a callable transform.
     Always include a image conversion transform at the beginning of the list.
-    If input_op is provided, it will be executed first and only the image part of its output will be used."""
+    If input_op is provided, it will be executed first and only the image part of its output will be used.
+    """
 
     def compose_two_funcs(f, g):
         return lambda x: g(f(x))

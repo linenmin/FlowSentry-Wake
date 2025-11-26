@@ -2,7 +2,6 @@
 # classical cv operators
 from __future__ import annotations
 
-import abc
 import json
 from pathlib import Path
 import tempfile
@@ -73,7 +72,7 @@ class Tracker(BaseClassicalCV):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -92,7 +91,6 @@ class Tracker(BaseClassicalCV):
                 'min_hits',
                 'iou_threshold',
                 'delta',
-                'asso_func',
                 'inertia',
                 'w_assoc_emb',
                 'alpha_fixed_emb',
@@ -100,6 +98,14 @@ class Tracker(BaseClassicalCV):
                 'aw_enabled',
                 'aw_param',
                 'cmc_enabled',
+                'enable_id_recovery',
+                'rec_image_rect_margin',
+                'rec_track_min_time_since_update_at_boundary',
+                'rec_track_min_time_since_update_inside',
+                'rec_track_min_age',
+                'rec_track_merge_lap_thresh',
+                'rec_track_memory_capacity',
+                'rec_track_memory_max_age',
             ]
         elif self.algorithm == 'bytetrack':
             supported_params = [
@@ -174,7 +180,7 @@ class Tracker(BaseClassicalCV):
         if (
             self.algo_params
             and 'cmc_enabled' in self.algo_params
-            and self.algo_params['cmc_enabled'] == True
+            and self.algo_params['cmc_enabled']
         ):
             mode = 'read'
 

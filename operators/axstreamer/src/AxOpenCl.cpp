@@ -2,8 +2,9 @@
 #include "AxOpenCl.hpp"
 
 #include <iostream>
+#include <string_view>
 #include <vector>
-
+#include "AxStreamerUtils.hpp"
 
 namespace ax_utils
 {
@@ -11,9 +12,90 @@ struct local_size {
   size_t width;
   size_t height;
 };
-local_size
-determine_local_work_size(size_t width, size_t height, size_t max_work_size)
+
+struct opencl_error {
+  cl_int code;
+  std::string_view message;
+};
+
+constexpr std::array<opencl_error, 59> opencl_error_tab = { {
+    { 0, "Success" },
+    { -1, "Device not found" },
+    { -2, "Device not available" },
+    { -3, "Compiler not available" },
+    { -4, "Memory object allocation failure" },
+    { -5, "Out of resources" },
+    { -6, "Out of host memory" },
+    { -7, "Profiling information not available" },
+    { -8, "Memory copy overlap" },
+    { -9, "Image format mismatch" },
+    { -10, "Image format not supported" },
+    { -11, "Build program failure" },
+    { -12, "Map failure" },
+    { -13, "Misaligned sub buffer offset" },
+    { -14, "Exec status error for events in wait list" },
+    { -15, "Compile program failure" },
+    { -16, "Linker not available" },
+    { -17, "Link program failure" },
+    { -18, "Device partition failed" },
+    { -19, "Kernel arg info not available" },
+    { -30, "Invalid value" },
+    { -31, "Invalid device type" },
+    { -32, "Invalid platform" },
+    { -33, "Invalid device" },
+    { -34, "Invalid context" },
+    { -35, "Invalid queue properties" },
+    { -36, "Invalid command queue" },
+    { -37, "Invalid host pointer" },
+    { -38, "Invalid memory object" },
+    { -39, "Invalid image format descriptor" },
+    { -40, "Invalid image size" },
+    { -41, "Invalid sampler" },
+    { -42, "Invalid binary" },
+    { -43, "Invalid build options" },
+    { -44, "Invalid program" },
+    { -45, "Invalid program executable" },
+    { -46, "Invalid kernel name" },
+    { -47, "Invalid kernel definition" },
+    { -48, "Invalid kernel" },
+    { -49, "Invalid arg index" },
+    { -50, "Invalid arg value" },
+    { -51, "Invalid arg size" },
+    { -52, "Invalid kernel args" },
+    { -53, "Invalid work dimension" },
+    { -54, "Invalid work group size" },
+    { -55, "Invalid work item size" },
+    { -56, "Invalid global offset" },
+    { -57, "Invalid event wait list" },
+    { -58, "Invalid event" },
+    { -59, "Invalid operation" },
+    { -60, "Invalid GL object" },
+    { -61, "Invalid buffer size" },
+    { -62, "Invalid mip level" },
+    { -63, "Invalid global work size" },
+    { -64, "Invalid property" },
+    { -65, "Invalid image descriptor" },
+    { -66, "Invalid compiler options" },
+    { -67, "Invalid linker options" },
+    { -68, "Invalid device partition count" },
+} };
+
+std::string
+cl_error_to_string(cl_int code)
 {
+  auto e = std::find_if(opencl_error_tab.begin(), opencl_error_tab.end(),
+      [code](const opencl_error &err) { return err.code == code; });
+  if (e != opencl_error_tab.end()) {
+    return std::string{ e->message };
+  }
+  return "Unknown OpenCL error";
+}
+
+local_size
+determine_local_work_size(size_t max_work_size)
+{
+  auto width = max_work_size;
+  auto height = max_work_size;
   while (width * height > max_work_size) {
     if (width > height)
       width /= 2;
@@ -22,7 +104,6 @@ determine_local_work_size(size_t width, size_t height, size_t max_work_size)
   }
   return { width, height };
 }
-
 
 output_format
 get_output_format(AxVideoFormat format, bool ignore_alpha)
@@ -46,176 +127,264 @@ get_output_format(AxVideoFormat format, bool ignore_alpha)
 
 std::mutex CLProgram::cl_mutex;
 
-CLProgram::CLProgram(const std::string &source, void *display, Ax::Logger &log)
-    : logger(log)
+// Test platform functionality
+bool
+platform_is_functional(cl_platform_id platform)
 {
-  std::lock_guard<std::mutex> lock(cl_mutex);
+  cl_uint num_devices{};
+  cl_device_id test_device{};
+  cl_int test_error
+      = clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 1, &test_device, &num_devices);
+  if (test_error != CL_SUCCESS || num_devices == 0) {
+    return false;
+  }
 
-  // Get OpenCL preference from environment variable
-  // AX_OPENCL_PREFERENCE can be: "INTEL", "CPU", "GPU", "AUTO" (default)
-  std::string preference = std::getenv("AX_OPENCL_PREFERENCE") ?
-                               std::getenv("AX_OPENCL_PREFERENCE") :
-                               "AUTO";
+  // Try to create a context to verify the platform works
+  cl_context test_context
+      = clCreateContext(nullptr, 1, &test_device, nullptr, nullptr, &test_error);
+  if (test_error != CL_SUCCESS) {
+    return false;
+  }
+  clReleaseContext(test_context);
+  return true;
+}
 
-  // Get all available platforms
+std::vector<cl_platform_id>
+get_platform_ids(Ax::Logger &logger)
+{
   cl_uint numPlatforms;
   auto error = clGetPlatformIDs(0, nullptr, &numPlatforms);
   if (error != CL_SUCCESS) {
-    logger.throw_error("OpenCL not functional: Failed to get platform count! Error = "
-                       + std::to_string(error));
+    logger.throw_error("OpenCL not functional: Failed to get platform count! Error: "
+                       + cl_error_to_string(error));
   }
 
   std::vector<cl_platform_id> platforms(numPlatforms);
   error = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
   if (error != CL_SUCCESS) {
-    logger.throw_error("OpenCL not functional: Failed to get platform IDs! Error = "
-                       + std::to_string(error));
+    logger.throw_error("OpenCL not functional: Failed to get platform IDs! Error: "
+                       + cl_error_to_string(error));
   }
+  return platforms;
+}
 
-  // Test platform functionality
-  auto test_platform_functionality = [this](cl_platform_id platform) -> bool {
-    cl_uint num_devices = 0;
-    cl_device_id test_device;
-    cl_int test_error
-        = clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 1, &test_device, &num_devices);
-    if (test_error != CL_SUCCESS || num_devices == 0) {
-      return false;
-    }
-
-    // Try to create a context to verify the platform works
-    cl_context test_context
-        = clCreateContext(nullptr, 1, &test_device, nullptr, nullptr, &test_error);
-    if (test_error != CL_SUCCESS) {
-      return false;
-    }
-    clReleaseContext(test_context);
-    return true;
+std::vector<std::string>
+get_order_preference(std::string_view preference, Ax::Logger &logger)
+{
+  using namespace std::string_literals;
+  if (preference == "intel") {
+    return { "Intel"s };
+  } else if (preference == "arm") {
+    return { "ARM"s, "rusticl"s };
+  } else if (preference == "cpu") {
+    return { "Portable Computing Language"s };
+  } else if (preference == "gpu") {
+    return { "NVIDIA"s, "Intel"s, "ARM"s };
+  } else if (preference == "nvidia") {
+    return { "NVIDIA"s };
+  } else if (preference != "auto") { // AUTO or any other value
+    logger(AX_WARN) << "Unknown OpenCL preference: " << preference
+                    << ", using auto" << std::endl;
+  }
+  return std::vector<std::string>{
+    "Intel",
+    "ARM",
+    "rusticl",
+    "NVIDIA",
+    "Portable Computing Language",
   };
+}
 
-  cl_platform_id selected_platform = nullptr;
-  std::string selected_platform_name;
+struct platform_info {
+  cl_platform_id id;
+  std::string name;
+};
 
-  // Define preference order for each setting
-  std::vector<std::string> preference_order;
-  if (preference == "INTEL") {
-    preference_order = { "Intel" };
-  } else if (preference == "CPU") {
-    preference_order = { "Intel", "Portable Computing Language" };
-  } else if (preference == "GPU") {
-    preference_order = { "NVIDIA" };
-  } else { // AUTO or any other value
-    preference_order = { "Intel", "Portable Computing Language", "NVIDIA" };
+// Find a preferred platform based on the given preference and available platforms
+// Returns an empty platform_info if no suitable platform is found
+// If preferred is empty, it will return the first functional platform
+platform_info
+find_preferred_platform(std::string_view preferred, const std::vector<cl_platform_id> &platforms)
+{
+  for (cl_platform_id platform : platforms) {
+    char platform_name[256];
+    clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name),
+        platform_name, nullptr);
+    std::string platform_str(platform_name);
+
+    if ((preferred.empty() || platform_str.find(preferred) != std::string::npos)
+        && platform_is_functional(platform)) {
+      return { platform, platform_str };
+    }
   }
+  return {};
+}
 
-  // Try platforms in preference order
-  for (const std::string &preferred_platform : preference_order) {
-    for (cl_platform_id platform : platforms) {
-      char platform_name[256];
-      clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name),
-          platform_name, nullptr);
-      std::string platform_str(platform_name);
+opencl_details
+build_cl_details(Ax::Logger &logger, const char *which_cl, void *display)
+{
+  opencl_details details{};
+  details.version = AX_ALLOCATION_CONTEXT_VERSION;
 
-      logger(AX_DEBUG) << "Checking OpenCL platform: " << platform_str << std::endl;
+  try {
 
-      if (platform_str.find(preferred_platform) != std::string::npos) {
-        logger(AX_DEBUG) << "Testing platform functionality: " << platform_str << std::endl;
+    // Get all available platforms
+    std::vector<cl_platform_id> platforms = get_platform_ids(logger);
+    if (platforms.empty()) {
+      logger.throw_error("OpenCL not functional: No platforms found!");
+    }
 
-        if (test_platform_functionality(platform)) {
-          selected_platform = platform;
-          selected_platform_name = platform_str;
-          logger(AX_INFO) << "Selected OpenCL platform: " << selected_platform_name
+    cl_platform_id selected_platform{};
+
+    // Get OpenCL preference from environment variable
+    // AX_OPENCL_PREFERENCE can be: "INTEL", "CPU", "GPU", "AUTO" (default)
+    std::string preference = which_cl ? which_cl : "auto";
+    // Define preference order for each setting
+    auto preference_order = get_order_preference(preference, logger);
+
+    // Try platforms in preference order
+    for (auto preferred_platform : preference_order) {
+      auto preferred = find_preferred_platform(preferred_platform, platforms);
+      if (preferred.id) {
+        selected_platform = preferred.id;
+        logger(AX_INFO) << "Selected OpenCL platform: " << preferred.name
+                        << " (preference: " << preference << ")" << std::endl;
+        break; // Found a functional platform
+      }
+    }
+
+    // If no preferred platform works, handle based on preference type
+    if (!selected_platform) {
+      if (preference == "auto") {
+        // For AUTO mode, try any functional platform in remaining order
+        logger(AX_DEBUG) << "No preferred platform functional in AUTO mode, trying remaining platforms"
+                         << std::endl;
+        auto preferred = find_preferred_platform("", platforms);
+        if (preferred.id) {
+          selected_platform = preferred.id;
+          logger(AX_INFO) << "Selected OpenCL platform: " << preferred.name
                           << " (preference: " << preference << ")" << std::endl;
-          goto platform_selected; // Break out of nested loops
+
         } else {
-          logger(AX_DEBUG) << "Platform " << platform_str
-                           << " is not functional, skipping" << std::endl;
+          // For explicit preferences (INTEL, GPU, CPU), fail with clear error
+          std::vector<std::string> available_platforms{};
+          for (cl_platform_id platform : platforms) {
+            char platform_name[256];
+            clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name),
+                platform_name, nullptr);
+            available_platforms.push_back(std::string(platform_name));
+          }
+
+          logger.throw_error("Requested OpenCL platform '" + preference
+                             + "' is not available or functional. " + "Available platforms: ["
+                             + Ax::Internal::join(available_platforms, ", ") + "]. "
+                             + "Use '--cl-platform auto' for automatic selection.");
         }
       }
     }
-  }
 
-  // If no preferred platform works, handle based on preference type
-  if (!selected_platform) {
-    if (preference == "AUTO") {
-      // For AUTO mode, try any functional platform in remaining order
-      logger(AX_DEBUG) << "No preferred platform functional in AUTO mode, trying remaining platforms"
-                       << std::endl;
-      for (cl_platform_id platform : platforms) {
-        char platform_name[256];
-        clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name),
-            platform_name, nullptr);
-        std::string platform_str(platform_name);
-
-        if (test_platform_functionality(platform)) {
-          selected_platform = platform;
-          selected_platform_name = platform_str;
-          logger(AX_INFO) << "Selected functional OpenCL platform: " << selected_platform_name
-                          << " (AUTO mode)" << std::endl;
-          break;
-        }
-      }
-    } else {
-      // For explicit preferences (INTEL, GPU, CPU), fail with clear error
-      std::string available_platforms;
-      for (cl_platform_id platform : platforms) {
-        char platform_name[256];
-        clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name),
-            platform_name, nullptr);
-        if (!available_platforms.empty())
-          available_platforms += ", ";
-        available_platforms += platform_name;
-      }
-
-      logger.throw_error("Requested OpenCL platform '" + preference + "' is not available or functional. "
-                         + "Available platforms: [" + available_platforms + "]. "
-                         + "Use AX_OPENCL_PREFERENCE=AUTO for automatic selection.");
+    if (!selected_platform) {
+      logger.throw_error("No functional OpenCL platform of type '" + preference
+                         + "' found. Available platform may be installed but not working correctly.");
     }
+
+    details.extensions = init_extensions(selected_platform, display);
+
+    cl_uint num_devices;
+    auto error = get_device_id(
+        selected_platform, &details.device_id, &num_devices, details.extensions);
+    if (error != CL_SUCCESS) {
+      logger.throw_error("OpenCL not functional: Failed to get device! Error: "
+                         + cl_error_to_string(error));
+    }
+
+    details.context
+        = create_context(selected_platform, details.device_id, details.extensions);
+    if (error != CL_SUCCESS || !details.context) {
+      logger.throw_error("OpenCL not functional: Failed to create OpenCL context, error: "
+                         + cl_error_to_string(error));
+    }
+    details.commands = clCreateCommandQueue(details.context, details.device_id, 0, &error);
+    if (error != CL_SUCCESS) {
+      clReleaseContext(details.context);
+      logger.throw_error("OpenCL not functional: Failed to create OpenCL command queue, error: "
+                         + cl_error_to_string(error));
+    }
+    cl_bool unified{};
+    clGetDeviceInfo(details.device_id, CL_DEVICE_HOST_UNIFIED_MEMORY,
+        sizeof(unified), &unified, NULL);
+    details.extensions.unified_memory = unified;
+
+  } catch (std::exception &e) {
+    logger(AX_ERROR) << "OpenCL initialization failed: " << e.what() << std::endl;
+    details.device_id = nullptr;
+    details.context = nullptr;
+    details.commands = nullptr;
+    details.exception = std::current_exception();
   }
+  return details;
+}
 
-platform_selected:
 
-  if (!selected_platform) {
-    logger.throw_error("No functional OpenCL platform found. Available platforms may be installed but not working properly.");
+AxAllocationContextHandle
+clone_context(AxAllocationContext *context)
+{
+  return context ? AxAllocationContextHandle(new AxAllocationContext{ *context }) :
+                   AxAllocationContextHandle();
+}
+
+opencl_details
+copy_context_and_retain(opencl_details *context)
+{
+  opencl_details details(*context);
+
+  // Retain the context and command queue to avoid premature release
+  if (details.context)
+    clRetainContext(details.context);
+  if (details.commands)
+    clRetainCommandQueue(details.commands);
+  return details;
+}
+
+CLProgram::CLProgram(const std::string &source, opencl_details *context, Ax::Logger &log)
+    : logger(log), cl_details(context ? copy_context_and_retain(context) :
+                                        build_cl_details(logger, nullptr, nullptr))
+{
+  if (cl_details.version != AX_ALLOCATION_CONTEXT_VERSION) {
+    throw std::runtime_error(
+        "Incompatible AxAllocationContext version, expected "
+        + std::to_string(AX_ALLOCATION_CONTEXT_VERSION) + ", got "
+        + std::to_string(cl_details.version)
+        + "\nThis is probably due to an incompatible axstreamer and gstaxstreamer version.");
   }
-
-  extensions = init_extensions(selected_platform, display);
-
-  cl_uint num_devices;
-  error = get_device_id(selected_platform, &device_id, &num_devices, extensions);
-  if (error != CL_SUCCESS) {
-    logger.throw_error("OpenCL not functional: Failed to get device! Error = "
-                       + std::to_string(error));
+  cl_int error = CL_SUCCESS;
+  if (!cl_details.context) {
+    std::rethrow_exception(cl_details.exception);
   }
-
-  context = create_context(selected_platform, device_id, extensions);
-  if (error != CL_SUCCESS) {
-    logger.throw_error("OpenCL not functional: Failed to create OpenCL context, error = "
-                       + std::to_string(error));
-  }
-  commands = clCreateCommandQueue(context, device_id, 0, &error);
-  if (error != CL_SUCCESS) {
-    logger.throw_error("OpenCL not functional: Failed to create OpenCL command queue, error = "
-                       + std::to_string(error));
-  }
-
   const char *sources[] = { source.c_str() };
-  program = error == CL_SUCCESS ?
-                clCreateProgramWithSource(context, 1, sources, NULL, &error) :
-                cl_program{};
-  error = error == CL_SUCCESS ? clBuildProgram(program, 0, NULL, NULL, NULL, NULL) : error;
+  {
+    std::lock_guard<std::mutex> lock(cl_mutex);
+    //  We need to lock here as clCreateProgramWithSource and
+    //  clBuildProgram are not thread safe on some platforms
+    //  (e.g. Intel)
+    //  See https://community.intel.com/t5/Intel-Graphics-Technology/Thread-safety-of-clCreateProgramWithSource/m-p/1247554
+    program = clCreateProgramWithSource(cl_details.context, 1, sources, NULL, &error);
+    error = error == CL_SUCCESS ? clBuildProgram(program, 0, NULL, NULL, NULL, NULL) : error;
+  }
   if (error != CL_SUCCESS) {
     size_t param_value_size_ret;
-    clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, NULL,
-        &param_value_size_ret);
+    clGetProgramBuildInfo(program, cl_details.device_id, CL_PROGRAM_BUILD_LOG,
+        0, NULL, &param_value_size_ret);
     std::vector<char> build_log(param_value_size_ret + 1);
-    clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG,
+    clGetProgramBuildInfo(program, cl_details.device_id, CL_PROGRAM_BUILD_LOG,
         param_value_size_ret, build_log.data(), NULL);
     std::cerr << "Build log:\n" << build_log.data() << std::endl;
     throw std::runtime_error("Failed to create OpenCL program");
   }
-  clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_GROUP_SIZE,
-      sizeof max_work_group_size, &max_work_group_size, NULL);
+  clGetDeviceInfo(cl_details.device_id, CL_DEVICE_MAX_WORK_GROUP_SIZE,
+      sizeof max_work_group_size, &max_work_group_size, nullptr);
 }
+
 
 CLProgram::ax_kernel
 CLProgram::get_kernel(const std::string &kernel_name) const
@@ -224,18 +393,18 @@ CLProgram::get_kernel(const std::string &kernel_name) const
   auto kernel = clCreateKernel(program, kernel_name.c_str(), &error);
   if (error != CL_SUCCESS) {
     throw std::runtime_error("Failed to create OpenCL kernel " + kernel_name
-                             + ", error = " + std::to_string(error));
+                             + ", error: " + cl_error_to_string(error));
   }
   return ax_kernel{ kernel };
 }
 
 std::vector<CLProgram::ax_buffer>
 CLProgram::create_buffers(int elem_size, int num_elems, int flags,
-    const std::variant<void *, int, VASurfaceID_proxy *> &ptr, int num_planes) const
+    const buffer_initializer &ptr, int num_planes) const
 {
   cl_int error = CL_SUCCESS;
-  auto buffers = create_optimal_buffer(
-      context, extensions, elem_size, num_elems, flags, ptr, num_planes, error);
+  auto buffers = create_optimal_buffer(cl_details.context, cl_details.extensions,
+      elem_size, num_elems, flags, ptr, num_planes, error);
   auto wrapped_buffers = std::vector<ax_buffer>{};
   std::transform(buffers.begin(), buffers.end(), std::back_inserter(wrapped_buffers),
       [this](cl_mem buffer) { return ax_buffer{ buffer }; });
@@ -244,7 +413,7 @@ CLProgram::create_buffers(int elem_size, int num_elems, int flags,
 
 CLProgram::ax_buffer
 CLProgram::create_buffer(int elem_size, int num_elems, int flags,
-    const std::variant<void *, int, VASurfaceID_proxy *> &ptr, int num_planes) const
+    const buffer_initializer &ptr, int num_planes) const
 {
   return create_buffers(elem_size, num_elems, flags, ptr, num_planes)[0];
 }
@@ -259,15 +428,15 @@ CLProgram::create_buffer(const buffer_details &details, int flags)
 int
 CLProgram::write_buffer(const ax_buffer &buffer, int elem_size, int num_elems, const void *data)
 {
-  return clEnqueueWriteBuffer(
-      commands, *buffer, CL_TRUE, 0, elem_size * num_elems, data, 0, NULL, NULL);
+  return clEnqueueWriteBuffer(cl_details.commands, *buffer, CL_TRUE, 0,
+      elem_size * num_elems, data, 0, NULL, NULL);
 }
 
 int
 CLProgram::read_buffer(const ax_buffer &buffer, int elem_size, int num_elems, void *data)
 {
-  return clEnqueueReadBuffer(
-      commands, *buffer, CL_TRUE, 0, elem_size * num_elems, data, 0, NULL, NULL);
+  return clEnqueueReadBuffer(cl_details.commands, *buffer, CL_TRUE, 0,
+      elem_size * num_elems, data, 0, NULL, NULL);
 }
 
 CLProgram::flush_details
@@ -275,18 +444,18 @@ CLProgram::flush_output_buffer_async(const ax_buffer &out, int size)
 {
   int ret = CL_SUCCESS;
   auto event = cl_event{};
-  auto mapped = clEnqueueMapBuffer(
-      commands, *out, CL_FALSE, CL_MAP_READ, 0, size, 0, NULL, &event, &ret);
+  auto mapped = clEnqueueMapBuffer(cl_details.commands, *out, CL_FALSE,
+      CL_MAP_READ, 0, size, 0, NULL, &event, &ret);
   return { ret, event, mapped };
 }
 
 int
 CLProgram::unmap_buffer(const ax_buffer &out, void *mapped)
 {
-  auto ret = clEnqueueUnmapMemObject(commands, *out, mapped, 0, NULL, NULL);
+  auto ret = clEnqueueUnmapMemObject(cl_details.commands, *out, mapped, 0, NULL, NULL);
   if (ret != CL_SUCCESS) {
     throw std::runtime_error(
-        "Failed to unmap output buffer, error = " + std::to_string(ret));
+        "Failed to unmap output buffer, error: " + cl_error_to_string(ret));
   }
   return ret;
 }
@@ -296,7 +465,7 @@ CLProgram::unmap_buffer(cl_event event, const ax_buffer &out, void *mapped)
 {
   auto ret = clWaitForEvents(1, &event);
   if (ret != CL_SUCCESS) {
-    throw std::runtime_error("Failed to wait for event, error = " + std::to_string(ret));
+    throw std::runtime_error("Failed to wait for event, error: " + cl_error_to_string(ret));
   }
   clReleaseEvent(event);
   return unmap_buffer(out, mapped);
@@ -308,47 +477,69 @@ CLProgram::flush_output_buffer(const ax_buffer &out, int size)
   auto [result, event, mapped] = flush_output_buffer_async(out, size);
   if (result != CL_SUCCESS) {
     throw std::runtime_error(
-        "Failed to map output buffer, error = " + std::to_string(result));
-    return result;
+        "Failed to map output buffer, error: " + cl_error_to_string(result));
   }
 
   int ret = clWaitForEvents(1, &event);
   return unmap_buffer(out, mapped);
 }
 
+CLProgram::flush_details
+CLProgram::start_flush_output_buffer(const ax_buffer &out, int size)
+{
+  auto details = flush_output_buffer_async(out, size);
+  if (details.result != CL_SUCCESS) {
+    throw std::runtime_error("Failed to map output buffer, error: "
+                             + cl_error_to_string(details.result));
+  }
+  return details;
+}
+
 int
 CLProgram::acquireva(std::span<cl_mem> input_buffers)
 {
-  return acquire_va(commands, extensions, input_buffers);
+  return acquire_va(cl_details.commands, cl_details.extensions, input_buffers);
 }
 
 int
 CLProgram::releaseva(std::span<cl_mem> input_buffers)
 {
-  return release_va(commands, extensions, input_buffers);
+  return release_va(cl_details.commands, cl_details.extensions, input_buffers);
 }
+
 
 int
 CLProgram::execute_kernel(const ax_kernel &kernel, int num_dims, size_t global_work_size[3])
 {
-  //  TODO: determine local work size
-  size_t local[3] = { 16, 16, 1 };
+  auto local_size = determine_local_work_size(max_work_group_size);
+  size_t local[3] = { local_size.width, local_size.height, 1 };
   size_t global[3] = { 0 };
   global[0] = (global_work_size[0] + local[0] - 1) & ~(local[0] - 1);
   global[1] = (global_work_size[1] + local[1] - 1) & ~(local[1] - 1);
   global[2] = global_work_size[2];
-  return clEnqueueNDRangeKernel(
-      commands, *kernel, num_dims, NULL, global, local, 0, NULL, NULL);
+  auto *local_ptr = RPi_Hack ? nullptr : local;
+  auto result = clEnqueueNDRangeKernel(cl_details.commands, *kernel, num_dims,
+      NULL, global, local_ptr, 0, NULL, NULL);
+  if (result != CL_SUCCESS) {
+    RPi_Hack = true;
+    result = clEnqueueNDRangeKernel(cl_details.commands, *kernel, num_dims,
+        NULL, global, nullptr, 0, NULL, NULL);
+    if (result != CL_SUCCESS) {
+      throw std::runtime_error(
+          "Failed to execute kernel, error: " + cl_error_to_string(result));
+    }
+  }
+  return CL_SUCCESS;
 }
 
 CLProgram::~CLProgram()
 {
   if (program)
     clReleaseProgram(program);
-  if (commands)
-    clReleaseCommandQueue(commands);
-  if (context)
-    clReleaseContext(context);
+  if (cl_details.commands)
+    clReleaseCommandQueue(cl_details.commands);
+  if (cl_details.context)
+    clReleaseContext(cl_details.context);
 }
 
 std::string
@@ -362,14 +553,13 @@ get_kernel_utils(int rotate_type)
 #define advance_uchar3_ptr(ptr, offset) ((__global uchar3 *)((__global uchar *)ptr + offset))
 #define advance_uchar4_ptr(ptr, offset) ((__global uchar4 *)((__global uchar *)ptr + offset))
 
-typedef enum : int {
+typedef enum output_format {
       RGBA_OUTPUT = 0,
       BGRA_OUTPUT = 1,
       RGB_OUTPUT = 3,
       BGR_OUTPUT = 4,
       GRAY_OUTPUT = 5
 } output_format;
-
 
 uchar RGB_to_GRAY(uchar3 rgb) {
     // Convert RGB to grayscale using the formula: Y = 0.299*R + 0.587*G + 0.114*B
@@ -383,11 +573,11 @@ uchar3 YUV_to_RGB(uchar Y, uchar U, uchar V) {
     int E = V - 128;
 
     // Integer approximation of YUV to RGB conversion
-    int3 rgb;
+    int4 rgb;
     rgb.x = (C + (26149 * E)) >> 14;            // 1.596 * 16384
     rgb.y = (C - (6406 * D + 13320 * E)) >> 14; // 0.391F * 16384, 0.813 * 16384
     rgb.z = (C + (33063 * D)) >> 14;            // 2.018 * 16384
-    return convert_uchar3_sat_rte(rgb);
+    return convert_uchar4_sat(rgb).xyz;
 }
 
 //  Convert YUV values to RGBA
@@ -399,13 +589,13 @@ uchar4 convert_YUV2RGBA(float3 yuv) {
 
     Y *= 1.164f;
     float4 rgba = (float4)(Y + 1.596F * V, Y - 0.391F * U - 0.813F * V, Y + 2.018F * U, 255.0f);
-    return convert_uchar4_sat_rte(rgba);
+    return convert_uchar4_sat(rgba);
 }
 
 float3 bilinear(float3 p00, float3 p01, float3 p10, float3 p11, float xfrac, float yfrac) {
-    float3 i1 = mad((p01 - p00), xfrac, p00);
-    float3 i2 = mad((p11 - p10), xfrac, p10);
-    return mad((i2 - i1), yfrac, i1);
+    float3 i1 = mix(p00, p01, xfrac);
+    float3 i2 = mix(p10, p11, xfrac);
+    return mix(i1, i2, yfrac);
 }
 
 typedef struct nv12_image {
@@ -611,7 +801,7 @@ uchar gray8_sampler_bl(__global const uchar *image, float fx, float fy, const gr
     float i2 = mix(p10, p11, xfrac);
     float value = mix(i1, i2, yfrac);
 
-    return convert_uchar_sat_rte(value);
+    return convert_uchar_sat(value);
 }
 uchar4 rgba_sampler_bl(__global const uchar4 *image, float fx, float fy, const rgb_image *img ) {
     //  Here we add in the offsets to the pixel from the crop meta
@@ -641,9 +831,9 @@ uchar4 rgba_sampler_bl(__global const uchar4 *image, float fx, float fy, const r
     //  frac is the fraction of the pixel that is color2
     //  color = color1 + (color2 - color1) * frac
 
-    float4 i1 = mad((p01 - p00), xfrac, p00);
-    float4 i2 = mad((p11 - p10), xfrac, p10);
-    uchar4 result = convert_uchar4_sat_rte(mad((i2 - i1), yfrac, i1));
+    float4 i1 = mix(p00, p01, xfrac);
+    float4 i2 = mix(p10, p11, xfrac);
+    uchar4 result = convert_uchar4_sat(mix(i1, i2, yfrac));
     return result;
 }
 
@@ -677,9 +867,9 @@ uchar4 rgb_sampler_bl(__global const uchar *image, float fx, float fy, const rgb
     //  frac is the fraction of the pixel that is color2
     //  color = color1 + (color2 - color1) * frac
 
-    float3 i1 = mad((p01 - p00), xfrac, p00);
-    float3 i2 = mad((p11 - p10), xfrac, p10);
-    uchar4 result = (uchar4)(convert_uchar3_sat_rte(mad((i2 - i1), yfrac, i1)), 255);
+    float3 i1 = mix(p00, p01, xfrac);
+    float3 i2 = mix(p10, p11, xfrac);
+    uchar4 result = convert_uchar4_sat((float4)(mix(i1, i2, yfrac), 255.0f));
     return result;
 }
 

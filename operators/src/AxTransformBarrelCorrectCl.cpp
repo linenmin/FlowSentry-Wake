@@ -1,5 +1,6 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <array>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include "AxDataInterface.h"
@@ -18,7 +19,7 @@ struct barrelcorrect_properties {
   std::vector<cl_float> camera_props;
   std::vector<cl_float> distort_coefs;
   bool normalised{ true };
-  int out_format{ ax_utils::RGB_OUTPUT };
+  std::string out_format{};
   std::unique_ptr<CLBarrelCorrect> barrelcorrect;
 };
 
@@ -215,14 +216,15 @@ __kernel void gray_barrel_correct_bl(__global const uchar *in, __global uchar *o
 
 using ax_utils::buffer_details;
 using ax_utils::CLProgram;
+using ax_utils::opencl_details;
 class CLBarrelCorrect
 {
   using buffer = CLProgram::ax_buffer;
   using kernel = CLProgram::ax_kernel;
 
   public:
-  CLBarrelCorrect(std::string source, Ax::Logger &logger)
-      : program(ax_utils::get_kernel_utils() + source, logger),
+  CLBarrelCorrect(std::string source, opencl_details *context, Ax::Logger &logger)
+      : program(ax_utils::get_kernel_utils() + source, context, logger),
         rgb_barrel_correct{ program.get_kernel("rgb_barrel_correct_bl") },
         nv12_barrel_correct{ program.get_kernel("nv12_barrel_correct_bl") },
         i420_barrel_correct{ program.get_kernel("i420_barrel_correct_bl") },
@@ -232,31 +234,23 @@ class CLBarrelCorrect
   {
   }
 
-  CLProgram::flush_details run_kernel(
-      const kernel &kernel, const buffer_details &out, const buffer &outbuf)
+  int run_kernel(kernel &k, const buffer_details &out, buffer &outbuf)
   {
     size_t global_work_size[3] = { 1, 1, 1 };
+    const int numpix_per_kernel = 1;
     global_work_size[0] = out.width;
     global_work_size[1] = out.height;
-    error = program.execute_kernel(kernel, 2, global_work_size);
-    if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Unable to execute kernel. Error code: " + std::to_string(error));
+    error = program.execute_kernel(k, 2, global_work_size);
+    if (auto *p = std::get_if<opencl_buffer *>(&out.data)) {
+    } else {
+      program.flush_output_buffer(outbuf, out.stride * out.height);
     }
-    return program.flush_output_buffer_async(outbuf, ax_utils::determine_buffer_size(out));
+    return error;
   }
 
-  std::function<void()> run_kernel(
-      kernel &k, const buffer_details &out, buffer &inbuf, buffer &outbuf)
+  int run_kernel(kernel &k, const buffer_details &out, buffer &inbuf, buffer &outbuf)
   {
-    auto [error, event, mapped] = run_kernel(k, out, outbuf);
-    if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Unable to map output buffer, error = " + std::to_string(error));
-    }
-    return [this, event, mapped, inbuf, outbuf]() {
-      program.unmap_buffer(event, outbuf, mapped);
-    };
+    return run_kernel(k, out, outbuf);
   }
 
   cv::Mat determine_optimal_matrix(const std::vector<cl_float> &distort_coefs,
@@ -274,29 +268,27 @@ class CLBarrelCorrect
                                               0.0F,
                                               1.0F,
                                           });
-
-    // [TODO] this breaks parity with OpenCV please see customers/tavolo/test_opencv_barrel_distort.py
+    // [TODO]
     // return cv::getOptimalNewCameraMatrix(input_matrix, distort_coefs,
     //     cv::Size(in.width, in.height), 0, cv::Size(in.width, in.height));
     return input_matrix;
   }
-  std::function<void()> run(const buffer_details &in, const buffer_details &out,
+
+  int run(const buffer_details &in, const buffer_details &out,
       const barrelcorrect_properties &prop)
   {
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
-    // [TODO] this breaks parity with OpenCV please see customers/tavolo/test_opencv_barrel_distort.py
-    // auto x_scale = static_cast<float>(in.width) / out.width;
-    // auto y_scale = static_cast<float>(in.height) / out.height;
-    auto x_scale = static_cast<float>(1.0f);
-    auto y_scale = static_cast<float>(1.0f);
-    auto width = prop.normalised ? in.width : x_scale;
-    auto height = prop.normalised ? in.height : y_scale;
+    auto width = prop.normalised ? in.width : 1.0F;
+    auto height = prop.normalised ? in.height : 1.0F;
     auto original_camera_props = std::array<cl_float, 4>{
       prop.camera_props[0] * width,
       prop.camera_props[1] * height,
       prop.camera_props[2] * width,
       prop.camera_props[3] * height,
     };
+
+    auto x_scale = static_cast<float>(in.width) / out.width;
+    auto y_scale = static_cast<float>(in.height) / out.height;
 
     if (!distort_coeffs) {
       distort_coeffs = program.create_buffer(1,
@@ -406,6 +398,7 @@ allowed_properties()
     "camera_props",
     "distort_coefs",
     "out_format",
+    "format",
     "normalized_properties",
     "width",
     "height",
@@ -415,8 +408,8 @@ allowed_properties()
 }
 
 extern "C" std::shared_ptr<void>
-init_and_set_static_properties(
-    const std::unordered_map<std::string, std::string> &input, Ax::Logger &logger)
+init_and_set_static_properties_with_context(
+    const std::unordered_map<std::string, std::string> &input, void *context, Ax::Logger &logger)
 {
   auto prop = std::make_shared<barrelcorrect_properties>();
 
@@ -426,6 +419,9 @@ init_and_set_static_properties(
       "barrelcorrect_static_properties", prop->distort_coefs);
   prop->out_format = Ax::get_property(
       input, "out_format", "barrelcorrect_dynamic_properties", prop->out_format);
+  prop->out_format = Ax::get_property(
+      input, "format", "barrelcorrect_dynamic_properties", prop->out_format);
+
   prop->normalised = Ax::get_property(input, "normalized_properties",
       "barrelcorrect_static_properties", prop->normalised);
   prop->size = Ax::get_property(input, "size", "barrelcorrect_static_properties", prop->size);
@@ -442,7 +438,8 @@ init_and_set_static_properties(
   if (prop->distort_coefs.size() != distort_coefs_size) {
     throw std::runtime_error("distort_coefs must have 5 values");
   }
-  prop->barrelcorrect = std::make_unique<CLBarrelCorrect>(kernel_cl, logger);
+  prop->barrelcorrect = std::make_unique<CLBarrelCorrect>(
+      kernel_cl, static_cast<opencl_details *>(context), logger);
   if (prop->size > 0 && (prop->width > 0 || prop->height > 0)) {
     throw std::runtime_error("You must provide only one of width/height or size");
   }
@@ -468,6 +465,14 @@ determine_width_height(const AxVideoInterface &in_info, int size)
     static_cast<int>(std::round(height * scale)) };
 }
 
+std::array valid_formats = {
+  AxVideoFormat::RGB,
+  AxVideoFormat::BGR,
+  AxVideoFormat::GRAY8,
+};
+
+const char *name = "Barrel Correction";
+
 extern "C" AxDataInterface
 set_output_interface(const AxDataInterface &interface,
     const barrelcorrect_properties *prop, Ax::Logger &logger)
@@ -487,27 +492,18 @@ set_output_interface(const AxDataInterface &interface,
     out_info.info.width = width;
     out_info.info.height = height;
     out_info.info.actual_height = height;
-    switch (prop->out_format) {
-      case ax_utils::RGB_OUTPUT:
-        out_info.info.format = AxVideoFormat::RGB;
-        break;
-      case ax_utils::BGR_OUTPUT:
-        out_info.info.format = AxVideoFormat::BGR;
-        break;
-      case ax_utils::GRAY_OUTPUT:
-        out_info.info.format = AxVideoFormat::GRAY8;
-        break;
-      default:
-        throw std::runtime_error("Unsupported output format: " + prop->out_format);
-    }
+
+    auto format = prop->out_format.empty() ? out_info.info.format :
+                                             AxVideoFormatFromString(prop->out_format);
+    out_info.info.format = format;
+    Ax::validate_output_format(out_info.info.format, prop->out_format, name, valid_formats);
     output = out_info;
   }
   return output;
 }
 
-
-extern "C" std::function<void()>
-transform_async(const AxDataInterface &input, const AxDataInterface &output,
+extern "C" void
+transform(const AxDataInterface &input, const AxDataInterface &output,
     const barrelcorrect_properties *prop, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)
 {
@@ -525,31 +521,30 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
   if (output_details.size() != 1) {
     throw std::runtime_error("resize works on single video output only");
   }
-  auto valid_formats = std::array{ AxVideoFormat::RGB, AxVideoFormat::BGR,
-    AxVideoFormat::RGBA, AxVideoFormat::BGRA, AxVideoFormat::NV12,
-    AxVideoFormat::I420, AxVideoFormat::YUY2, AxVideoFormat::GRAY8 };
+  auto valid_formats = std::array{
+    AxVideoFormat::RGB,
+    AxVideoFormat::BGR,
+    AxVideoFormat::NV12,
+    AxVideoFormat::I420,
+    AxVideoFormat::YUY2,
+    AxVideoFormat::GRAY8,
+  };
   if (std::none_of(valid_formats.begin(), valid_formats.end(), [input_details](auto format) {
         return format == input_details[0].format;
       })) {
     throw std::runtime_error("Barrel Correction does not work with the input format: "
                              + AxVideoFormatToString(input_details[0].format));
   }
-  if (output_details[0].format != AxVideoFormat::RGB
-      && output_details[0].format != AxVideoFormat::BGR
-      && output_details[0].format != AxVideoFormat::GRAY8) {
-    throw std::runtime_error("Barrel Correction does not work with the output format: "
-                             + AxVideoFormatToString(output_details[0].format));
-  }
-  return prop->barrelcorrect->run(input_details[0], output_details[0], *prop);
+  Ax::validate_output_format(output_details[0].format, prop->out_format, name, valid_formats);
+  prop->barrelcorrect->run(input_details[0], output_details[0], *prop);
 }
 
-extern "C" void
-transform(const AxDataInterface &input, const AxDataInterface &output,
-    const barrelcorrect_properties *prop, unsigned int, unsigned int,
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta, Ax::Logger &logger)
+extern "C" int
+query_supports(Ax::PluginFeature feature, const barrelcorrect_properties *prop,
+    Ax::Logger &logger)
 {
-  logger(AX_WARN) << "Running in synchronous mode, possible performance degradation"
-                  << std::endl;
-  auto completer = transform_async(input, output, prop, 0, 0, meta, logger);
-  completer();
+  if (feature == Ax::PluginFeature::opencl_buffers) {
+    return 1;
+  }
+  return Ax::PluginFeatureDefaults(feature);
 }

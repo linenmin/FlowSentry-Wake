@@ -29,6 +29,7 @@ struct InferenceProperties {
   std::string options;
   std::string meta;
   std::string devices;
+  std::string which_cl;
   int max_buffers{ 0 };
 };
 
@@ -79,6 +80,8 @@ class InferenceNet
   // Stop the inference pipeline, joins all threads and releases resources
   virtual void stop() = 0;
 
+  virtual bool supports_opencl_buffers(const AxVideoInterface &video) = 0;
+
   virtual ~InferenceNet() = default;
 };
 
@@ -125,8 +128,17 @@ InferenceNetProperties read_inferencenet_properties(std::istream &s, Ax::Logger 
 /// Other errors and warnings are reported to the logger.
 InferenceNetProperties read_inferencenet_properties(const std::string &p, Ax::Logger &logger);
 
-std::unique_ptr<InferenceNet> create_inference_net(
-    const InferenceNetProperties &properties, Ax::Logger &logger,
-    InferenceDoneCallback done_callback, LatencyCallback latency_callback = {});
-
+/// @brief Create an InferenceNet with the specified properties.
+/// @param properties - The properties that define the inference net, these can
+/// be manually specified or loaded from a configuration file.
+/// @param logger - The logger to use for logging messages.
+/// @param done_callback - called when a frame has completed the pipeline.
+/// @param latency_callback - called to report latency measurements.
+/// @param allocation_context - If non-null then it is used to avoid copying
+/// buffers that were created in axtransform operators to AxInferenceNet.
+std::unique_ptr<InferenceNet> create_inference_net(const InferenceNetProperties &properties,
+    Ax::Logger &logger, InferenceDoneCallback done_callback);
+std::unique_ptr<InferenceNet> create_inference_net(const InferenceNetProperties &properties,
+    Ax::Logger &logger, InferenceDoneCallback done_callback,
+    LatencyCallback latency_callback, AxAllocationContext *allocation_context);
 } // namespace Ax

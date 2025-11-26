@@ -21,25 +21,35 @@ NETWORK = 'yolov8s-coco'
 
 # format: off
 commands = [
-    ('sleep', 2),  #  PLAY      PAUSED   REMOVED
+    ('sleep', 5),  #  PLAY      PAUSED   REMOVED
     ('remove', 0),  #  1,2,3                0
     ('remove', 1),  #  2,3                 0,1
     ('pause', 2),  #  3         2         0,1
-    ('sleep', 2),  #
-    ('pause', 3),  #            2,3       0,1
-    ('sleep', 2),  #
-    ('add', 0),  #  0         2,3       1
-    ('sleep', 2),  #
+    ('sleep', 5),  #
+    # ('pause', 3),  #            2,3       0,1
+    ('sleep', 5),  #
+    ('add', 0),  #  0         2       1
+    ('pause', 3),  # 0           2,3       1
+    ('sleep', 5),  #
     ('add', 1),  #  0,1       2,3
     ('resume', 2),  #  0,1,2     3
-    ('sleep', 2),  #
+    ('sleep', 5),  #
     ('pause', 0),  #  1,2       0,3
     ('pause', 1),  #  2         0,1,3
-    ('sleep', 2),  #
+    ('sleep', 5),  #
     ('resume', 0),  #  0,2       1,3
-    ('sleep', 2),  #
+    ('sleep', 5),  #
     ('resume', 3),  #  0,2,3     1
     ('resume', 1),  #  0,1,2,3
+    ('sleep', 5),  #
+    ('remove', 3),  #  0,1,2                 3
+    ('sleep', 5),  #
+    ('remove', 2),  #  0,1                 2,3
+    ('sleep', 5),  #
+    ('remove', 1),  #  0                 1,2,3
+    ('add', 1),  #  0,1       2,3
+    ('add', 2),  #  0,1,2     3
+    ('add', 3),  #  0,1,2,3
     ('check',),  # all streams enabled and present again, so we can start at the beginning
 ]
 # format: on
@@ -83,10 +93,12 @@ def control_func(window, stream):
                 source = stopped.pop(stream_id)
                 stream.add_source(source, stream_id)
                 state = 'added'
+                window.open_source(stream_id)
             else:
                 stream.remove_source(stream_id)
                 stopped[stream_id] = existing_source
                 state = 'removed'
+                window.close_source(stream_id, reopen=False)
         elif cmd == 'check':
             if set(stream.get_stream_select()) == set(stream.sources.keys()):
                 LOG.debug("All streams are present and playing")
@@ -112,6 +124,9 @@ def main(window, stream):
     for frame_result in stream:
         if frame_result.image:
             window.show(frame_result.image, frame_result.meta, frame_result.stream_id)
+
+        if window.is_closed:
+            break
 
 
 if __name__ == '__main__':
@@ -139,7 +154,7 @@ if __name__ == '__main__':
         aipu_cores=args.aipu_cores,
     )
     try:
-        with App(visible=args.display, opengl=stream.hardware_caps.opengl) as app:
+        with App(renderer=args.display, opengl=stream.hardware_caps.opengl) as app:
             wnd = app.create_window("Stream select demo", args.window_size)
             app.start_thread(main, (wnd, stream), name='InferenceThread')
             app.run()

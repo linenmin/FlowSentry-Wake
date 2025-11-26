@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,7 +17,7 @@ __global const uchar4 *in, __global char4 *out, float4 mul, float4 add) {
     if (row < heightA && col < widthA){
       const int in_idx = row  * (strideIn >> 2) + col;
       const int out_idx = row * (strideOut >> 2) + col;
-      out[out_idx] = convert_char4_sat_rte(mad(convert_float4(in[in_idx]), mul, add));
+      out[out_idx] = convert_char4_sat(mad(convert_float4(in[in_idx]), mul, add));
     }
 }
 
@@ -47,8 +47,8 @@ class CLNormalize
     global_work_size[1] = out.height;
     error = program.execute_kernel(kernel, 2, global_work_size);
     if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Unable to execute kernel. Error code: " + std::to_string(error));
+      throw std::runtime_error("Unable to execute kernel. Error: "
+                               + ax_utils::cl_error_to_string(error));
     }
     return program.flush_output_buffer_async(outbuf, ax_utils::determine_buffer_size(out));
   }
@@ -65,8 +65,8 @@ class CLNormalize
 
     auto [error, event, mapped] = run_kernel(quantize, out, outbuf);
     if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Unable to map output buffer, error = " + std::to_string(error));
+      throw std::runtime_error("Unable to map output buffer, error: "
+                               + ax_utils::cl_error_to_string(error));
     }
     return [this, event, mapped, inpbuf, outbuf]() {
       program.unmap_buffer(event, outbuf, mapped);
@@ -165,7 +165,7 @@ set_output_interface(const AxDataInterface &interface,
 }
 
 
-extern "C" std::function<void()>
+static std::function<void()>
 transform_async(const AxDataInterface &input, const AxDataInterface &output,
     const normalize_properties *prop, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)

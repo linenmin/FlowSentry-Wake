@@ -1,11 +1,8 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # General functions for handling segment related tasks
 from __future__ import annotations
 
-from copy import deepcopy
-import math
-from typing import TYPE_CHECKING, List, Optional, Tuple
-import warnings
+from typing import TYPE_CHECKING, List, Tuple
 
 import cv2
 import numpy as np
@@ -13,7 +10,7 @@ import numpy as np
 from axelera import types
 
 if TYPE_CHECKING:
-    from axelera.app import operators
+    pass
 
 
 def combine_masks(masks: List[np.ndarray]) -> np.ndarray:

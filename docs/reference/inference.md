@@ -2,7 +2,7 @@
 # Inference
 
 - [Inference](#inference)
-  - [Configuration & Advanced Usage](#configuration--advanced-usage)
+  - [Configuration \& Advanced Usage](#configuration--advanced-usage)
     - [--pipe `<type>`](#--pipe-type)
     - [--frames `<frame-count>`](#--frames-frame-count)
     - [--display/--no-display](#--display--no-display)

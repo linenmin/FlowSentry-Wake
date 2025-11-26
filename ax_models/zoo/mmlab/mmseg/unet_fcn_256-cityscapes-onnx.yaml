@@ -56,5 +56,5 @@ datasets:
     data_dir_name: cityscapes
 
 model-env:
-  dependencies: ['mmcv==2.1.0 --no-cache-dir -f https://download.openmmlab.com/mmcv/dist/cpu/torch1.13/index.html',
+  dependencies: ['mmcv==2.1.0 --no-cache-dir -f https://download.openmmlab.com/mmcv/dist/cpu/torch2.4/index.html',
     mmsegmentation>=1.2.2, ftfy==6.2.0, cityscapesscripts, regex]

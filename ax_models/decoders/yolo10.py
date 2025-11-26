@@ -56,7 +56,7 @@ class DecodeYolo10(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -154,6 +154,10 @@ class DecodeYolo10(AxOperator):
             )
         if gst.tiling:
             master_key = 'flatten_meta:1;master_meta:axelera-tiles-internal;'
+            gst.axinplace(
+                lib='libinplace_nms.so',
+                options=f'meta_key:{str(self.task_name)};' f'{master_key}' f'location:CPU',
+            )
         if gst.tiling.size and not gst.tiling.show:
             gst.axinplace(
                 lib='libinplace_hidemeta.so', options=f'meta_key:axelera-tiles-internal;'

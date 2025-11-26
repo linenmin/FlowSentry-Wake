@@ -71,7 +71,7 @@ class Input(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
@@ -152,7 +152,7 @@ class InputFromROI(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
@@ -361,12 +361,13 @@ class InputWithImageProcessing(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
             model_info, context, task_name, taskn, compiled_model_dir, task_graph
         )
+        context.color_format = self.color_format
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         pass
@@ -412,6 +413,6 @@ class InputWithImageProcessing(AxOperator):
                 new_im = im.asarray(self.color_format)
                 im.update(new_im, color_format=self.color_format)
         if result is None and meta is None:
-            LOG.trace(f"Return for deploying the cascade model")
+            LOG.trace("Return for deploying the cascade model")
             return result[0], None, None
         return result[0], result, meta

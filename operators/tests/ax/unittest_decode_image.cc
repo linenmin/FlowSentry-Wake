@@ -2,7 +2,7 @@
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <string>
 #include <unordered_map>
@@ -79,13 +79,13 @@ TEST(decode_image, passthru_test)
     { "scale", "0" },
     { "output_datatype", "float32" },
   };
-  Decoder decoder("libdecode_image.so", properties);
+  auto decoder = Ax::LoadDecode("image", properties);
 
   AxVideoInterface video_info{ { 10, 10, 3, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto input_tensor = tensors_from_vector(image, { 1, 10, 10, 1 });
 
-  decoder.decode_to_meta(input_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(input_tensor, 0, 1, map, video_info);
 
   auto [actual_depth, actual_width, actual_height, is_float]
       = get_image_meta(map, meta_identifier);
@@ -108,13 +108,13 @@ TEST(decode_image, scale_test)
     { "scale", "1" },
     { "output_datatype", "float32" },
   };
-  Decoder decoder("libdecode_image.so", properties);
+  auto decoder = Ax::LoadDecode("image", properties);
 
   AxVideoInterface video_info{ { 10, 10, 3, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto input_tensor = tensors_from_vector(image, { 1, 10, 10, 1 });
 
-  decoder.decode_to_meta(input_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(input_tensor, 0, 1, map, video_info);
 
   auto [actual_depth, actual_width, actual_height, is_float]
       = get_image_meta(map, meta_identifier);
@@ -139,13 +139,13 @@ TEST(image_decode, uint8_test)
     { "scale", "1" },
     { "output_datatype", "uint8" },
   };
-  Decoder decoder("libdecode_image.so", properties);
+  auto decoder = Ax::LoadDecode("image", properties);
 
   AxVideoInterface video_info{ { 10, 10, 3, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto input_tensor = tensors_from_vector(image, { 1, 10, 10, 1 });
 
-  decoder.decode_to_meta(input_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(input_tensor, 0, 1, map, video_info);
 
   auto [actual_depth, actual_width, actual_height, is_float]
       = get_image_meta(map, meta_identifier);

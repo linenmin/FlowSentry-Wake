@@ -14,8 +14,10 @@
 #include <dlfcn.h>
 #include <list>
 #include <mutex>
+#include <opencv2/opencv.hpp>
 #include <queue>
 #include <set>
+#include <span>
 #include <stdio.h>
 #include <string>
 #include <sys/ioctl.h>
@@ -29,9 +31,10 @@
 #include "AxLog.hpp"
 #include "AxPlugin.hpp"
 
+struct opencl_buffer_details;
+
 namespace Ax
 {
-bool enable_opencl_double_buffering();
 
 template <typename T>
 T
@@ -40,6 +43,15 @@ pop_queue(std::queue<T> &q)
   assert(!q.empty());
   T t = std::move(q.front());
   q.pop();
+  return t;
+}
+template <typename T>
+T
+pop_queue(std::deque<T> &q)
+{
+  assert(!q.empty());
+  T t = std::move(q.front());
+  q.pop_front();
   return t;
 }
 
@@ -78,6 +90,13 @@ using SharedFD = std::shared_ptr<DmaBufHandle>;
 namespace Internal
 {
 
+struct ColorConversionCodesTableEntry {
+  AxVideoFormat in_fmt;
+  AxVideoFormat out_fmt;
+  cv::ColorConversionCodes code;
+};
+
+cv::ColorConversionCodes format2format(AxVideoFormat in_format, AxVideoFormat out_format);
 std::vector<std::string_view> split(std::string_view s, char delim);
 std::vector<std::string_view> split(std::string_view s, const std::string &delims);
 
@@ -241,13 +260,6 @@ class ManagedDataInterface
   ManagedDataInterface(ManagedDataInterface &&data) = default;
   ManagedDataInterface &operator=(ManagedDataInterface &&data) = default;
 
-  ManagedDataInterface clone() const
-  {
-    ManagedDataInterface res(data_);
-    res.buffers_ = buffers_;
-    res.fds_ = fds_;
-    return res;
-  }
 
   void set_data(const AxDataInterface &data)
   {
@@ -269,37 +281,43 @@ class ManagedDataInterface
     return fds_;
   }
 
-
-  void allocate(void *(allocator) (size_t))
+  const std::vector<std::shared_ptr<opencl_buffer>> &ocl_buffers() const
   {
-    buffers_.clear();
-    fds_.clear();
-    if (auto *video = std::get_if<AxVideoInterface>(&data_)) {
-      auto *p = allocator(video->info.stride * video->info.height);
-      video->data = p;
+    return ocl_buffers_;
+  }
+
+  template <typename T, typename U> void set_buffer_info(T p, U &interface)
+  {
+    interface.data = nullptr;
+    interface.fd = -1;
+    interface.ocl_buffer = nullptr;
+    if constexpr (std::is_same_v<T, void *>) {
+      interface.data = p;
       buffers_.emplace_back(p, std::free);
-    } else if (auto *tensors = std::get_if<AxTensorsInterface>(&data_)) {
-      for (auto &tensor : *tensors) {
-        auto *p = allocator(tensor.total_bytes());
-        tensor.data = p;
-        buffers_.emplace_back(p, std::free);
-      }
+    } else if constexpr (std::is_same_v<T, SharedFD>) {
+      interface.fd = p->fd;
+      fds_.push_back(std::move(p));
+    } else if constexpr (std::is_same_v<T, opencl_buffer_details *>) {
+      interface.ocl_buffer = p;
+      interface.data = p->data.data();
+      ocl_buffers_.push_back(std::shared_ptr<opencl_buffer>(p));
+    } else {
+      throw std::runtime_error("ManagedDataInterface: unsupported type for tensor data");
     }
   }
 
-  template <typename F> void allocate(F &&allocator)
+
+  void allocate(auto &&allocator)
   {
     buffers_.clear();
     fds_.clear();
     if (auto *video = std::get_if<AxVideoInterface>(&data_)) {
-      auto fd = allocator(video->info.stride * video->info.height);
-      video->data = nullptr;
-      fds_.push_back(std::move(fd));
+      auto p = allocator(video->info.stride * video->info.height);
+      set_buffer_info(p, *video);
     } else if (auto *tensors = std::get_if<AxTensorsInterface>(&data_)) {
       for (auto &tensor : *tensors) {
-        auto fd = allocator(tensor.total_bytes());
-        tensor.data = nullptr;
-        fds_.push_back(std::move(fd));
+        auto p = allocator(tensor.total_bytes());
+        set_buffer_info(p, tensor);
       }
     }
   }
@@ -317,10 +335,31 @@ class ManagedDataInterface
     }
   }
 
+  void set_buffers(const std::vector<std::shared_ptr<opencl_buffer>> &buffers)
+  {
+    if (auto *video = std::get_if<AxVideoInterface>(&data_)) {
+      video->data = nullptr;
+      video->ocl_buffer = ocl_buffers_.empty() ? nullptr : ocl_buffers_[0].get();
+    } else if (auto *tensors = std::get_if<AxTensorsInterface>(&data_)) {
+      for (auto i = 0; i != tensors->size(); ++i) {
+        auto &t = (*tensors)[i];
+        t.ocl_buffer = ocl_buffers_.empty() ? nullptr : ocl_buffers_[i].get();
+        t.data = nullptr;
+      }
+    }
+    buffers_.clear();
+  }
+
+  bool is_mapped() const
+  {
+    return !buffers_.empty();
+  }
+
   private:
   AxDataInterface data_;
   std::vector<std::shared_ptr<void>> buffers_;
   std::vector<SharedFD> fds_;
+  std::vector<std::shared_ptr<opencl_buffer>> ocl_buffers_;
 };
 
 using ManagedDataInterfaces = std::list<ManagedDataInterface>;
@@ -331,6 +370,7 @@ class DataInterfaceAllocator
   virtual ManagedDataInterface allocate(const AxDataInterface &data) = 0;
   virtual void map(ManagedDataInterface &data) = 0;
   virtual void unmap(ManagedDataInterface &data) = 0;
+  virtual void release(ManagedDataInterface &data) = 0;
   virtual ~DataInterfaceAllocator() = default;
 };
 
@@ -343,14 +383,21 @@ class NullDataInterfaceAllocator : public DataInterfaceAllocator
   }
   void map(ManagedDataInterface &) override
   {
+    //  Map if it an OpenCL buffer
   }
   void unmap(ManagedDataInterface &) override
+  {
+    //  Unmap if it an OpenCL buffer
+  }
+  void release(ManagedDataInterface &) override
   {
   }
 };
 
 std::unique_ptr<DataInterfaceAllocator> create_heap_allocator();
 std::unique_ptr<DataInterfaceAllocator> create_dma_buf_allocator();
+std::unique_ptr<DataInterfaceAllocator> create_opencl_allocator(
+    AxAllocationContext *context, Ax::Logger &logger);
 
 ManagedDataInterface allocate_batched_buffer(int batch_size,
     const AxDataInterface &input, DataInterfaceAllocator &allocator);
@@ -406,35 +453,27 @@ class SharedBatchBufferView
 class BatchedBuffer
 {
   public:
-  BatchedBuffer(int batch_size, const AxDataInterface &iface, DataInterfaceAllocator &allocator)
-      : batched(allocate_batched_buffer(batch_size, iface, allocator)),
-        allocator(allocator)
-  {
-    for (int i = 0; i < batch_size; ++i) {
-      views.push_back(batch_view(batched.data(), i));
-    }
-  }
+  BatchedBuffer(int batch_size, const AxDataInterface &iface,
+      DataInterfaceAllocator &allocator);
 
   BatchedBuffer &operator=(const BatchedBuffer &other) = delete;
   BatchedBuffer &operator=(BatchedBuffer &&other) = delete;
   BatchedBuffer(BatchedBuffer &&other) = delete;
   BatchedBuffer(const BatchedBuffer &other) = delete;
-  ~BatchedBuffer() = default;
-
-  void map()
+  ~BatchedBuffer()
   {
-    allocator.map(batched);
-    update_views();
+    //  Ensure we unamp
+    unmap();
   }
 
-  const ManagedDataInterface &get_batched(bool unmap_ = false)
-  {
-    if (unmap_) {
-      allocator.unmap(batched);
-      update_views();
-    }
-    return batched;
-  }
+  void map();
+
+  void unmap();
+
+  //  Called when a buffer is released back into a pool
+  void release();
+
+  const ManagedDataInterface &get_batched();
 
   // create a shared ptr to a view that will ensure the batch buffer is not
   // removed until all views of it are done with
@@ -444,79 +483,27 @@ class BatchedBuffer
     return SharedBatchBufferView(self, &self->views[batch]);
   }
 
-  void set_iface(const AxDataInterface &iface)
-  {
-    batched.set_data(iface);
-    update_views();
-  }
+  void set_iface(const AxDataInterface &iface);
 
   AxDataInterface update_iface(
-      const AxDataInterface &data, const AxDataInterface &iface, int batch_size)
-  {
-    // Update iface data from current
-    AxDataInterface output = iface;
-    struct map_data {
-      void *data;
-      int fd;
-    };
-    std::vector<map_data> ptrs;
-    if (std::holds_alternative<AxTensorsInterface>(data)) {
-      auto &tensors = std::get<AxTensorsInterface>(data);
-      for (auto &tensor : tensors) {
-        ptrs.emplace_back(tensor.data, tensor.fd);
-      }
-    } else if (std::holds_alternative<AxVideoInterface>(data)) {
-      auto &video = std::get<AxVideoInterface>(data);
-      ptrs.emplace_back(video.data, video.fd);
-    } else {
-      return output; // nothing to update
-    }
-
-    if (std::holds_alternative<AxTensorsInterface>(output)) {
-      auto &tensors = std::get<AxTensorsInterface>(output);
-      if (tensors.size() != ptrs.size()) {
-        throw std::runtime_error("BatchedBuffer: output tensors size mismatch");
-      }
-      for (int i = 0; i < tensors.size(); ++i) {
-        tensors[i].data = ptrs[i].data;
-        tensors[i].fd = ptrs[i].fd;
-        tensors[i].sizes[0] = batch_size;
-      }
-
-    } else if (std::holds_alternative<AxVideoInterface>(output)) {
-      if (ptrs.size() != 1) {
-        throw std::runtime_error("BatchedBuffer: output tensors size mismatch");
-      }
-      auto &video = std::get<AxVideoInterface>(output);
-      video.data = ptrs[0].data;
-      video.fd = ptrs[0].fd;
-    }
-    return output;
-  }
+      const AxDataInterface &data, const AxDataInterface &iface, int batch_size);
 
   //  This updates the buffer description but does not change the data
-  void update_iface(const AxDataInterface &iface, int batch_size)
-  {
-    auto new_iface = update_iface(batched.data(), iface, batch_size);
-    batched.set_data(new_iface);
-    update_views();
-  }
+  void update_iface(const AxDataInterface &iface, int batch_size);
 
-  int batch_size() const
+  int batch_size() const;
+
+  bool is_dmabuf() const;
+
+  bool is_opencl() const;
+
+  bool is_mapped() const
   {
-    return views.size();
+    return !batched.buffers().empty();
   }
 
   private:
-  void update_views()
-  {
-    size_t n = 0;
-    for (auto &view : views) {
-      // TODO this is inefficient, we just need to init the data param
-      view = batch_view(batched.data(), n);
-      ++n;
-    }
-  }
+  void update_views();
   ManagedDataInterface batched;
   std::vector<AxDataInterface> views;
   DataInterfaceAllocator &allocator;
@@ -540,25 +527,10 @@ are_equivalent(const AxDataInterface &a, const AxDataInterface &b)
              && std::holds_alternative<AxVideoInterface>(b)) {
     auto &va = std::get<AxVideoInterface>(a);
     auto &vb = std::get<AxVideoInterface>(b);
-    return va.info.stride == vb.info.stride && va.info.height == vb.info.height
+    return va.info.width == vb.info.width && va.info.height == vb.info.height
            && AxVideoFormatNumChannels(va.info.format)
                   == AxVideoFormatNumChannels(vb.info.format);
-  } else if (std::holds_alternative<AxVideoInterface>(a)
-             && std::holds_alternative<AxTensorsInterface>(b)) {
-    auto &va = std::get<AxVideoInterface>(a);
-    auto &tb = std::get<AxTensorsInterface>(b);
-    return tb.size() == 1 && va.strides.size() == 1
-           && tb[0].total_bytes() == va.info.stride * va.info.height
-           && va.strides[0] == va.info.width * AxVideoFormatNumChannels(va.info.format);
-  } else if (std::holds_alternative<AxTensorsInterface>(a)
-             && std::holds_alternative<AxVideoInterface>(b)) {
-    auto &ta = std::get<AxTensorsInterface>(a);
-    auto &vb = std::get<AxVideoInterface>(b);
-    return ta.size() == 1 && vb.strides.size() == 1
-           && ta[0].total_bytes() == vb.info.width * vb.info.height
-           && vb.strides[0] == vb.info.width * AxVideoFormatNumChannels(vb.info.format);
   }
-
   return false;
 }
 
@@ -568,55 +540,70 @@ class BatchedBufferPool
   BatchedBufferPool(int batch_size, const AxDataInterface &iface,
       DataInterfaceAllocator &allocator)
       : batch_size_(batch_size), iface_(iface), allocator_(allocator),
-        free_(std::make_shared<std::vector<std::unique_ptr<BatchedBuffer>>>())
+        mutex_(std::make_shared<std::mutex>()), free_(std::make_shared<FreeList>())
   {
   }
 
-
-  std::shared_ptr<BatchedBuffer> new_batched_buffer(
-      const AxDataInterface &new_iface, bool map = true)
+  int round_up(int value, int multiple)
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    return ((value + multiple - 1) / multiple) * multiple;
+  }
+
+  AxDataInterface create_new_iface(const AxDataInterface &iface)
+  {
+    auto new_iface = iface;
+    if (std::holds_alternative<AxVideoInterface>(new_iface)) {
+      auto &video = std::get<AxVideoInterface>(new_iface);
+      video.strides[0] = round_up(
+          video.info.width * AxVideoFormatNumChannels(video.info.format), 4);
+      video.info.stride = video.strides[0];
+    }
+    return new_iface;
+  }
+
+  std::shared_ptr<BatchedBuffer> new_batched_buffer(const AxDataInterface &new_iface)
+  {
+    std::lock_guard<std::mutex> lock(*mutex_);
     if (!are_equivalent(iface_, new_iface)) {
       iface_ = new_iface;
-      free_ = std::make_shared<std::vector<std::unique_ptr<BatchedBuffer>>>();
+      free_ = std::make_shared<FreeList>();
     }
 
     std::unique_ptr<BatchedBuffer> buffer;
     auto &free = *free_;
-    if ((free).empty()) {
+    if (free.empty()) {
       buffer.reset(new BatchedBuffer(batch_size_, iface_, allocator_));
     } else {
       buffer = std::move(free.back());
       free.pop_back();
       //  Ensure we have the correct caps
-      buffer->update_iface(new_iface, batch_size_);
-    }
-    if (map) {
-      buffer->map();
+      buffer->update_iface(iface_, batch_size_);
     }
     //  The destructor captures the free list so that even if the member free_
     //  is destroyed the buffer will still be returned to the free list which
     //  will be finally destroyed once the last buffer that belongs to that free
     //  list is returned (Python-like garbage collection)
-    return std::shared_ptr<BatchedBuffer>(
-        buffer.release(), [this, free = free_](BatchedBuffer *buffer) {
-          std::lock_guard<std::mutex> lock(mutex_);
-          (*free).emplace_back(buffer);
+    return std::shared_ptr<BatchedBuffer>(buffer.release(),
+        [this, free = free_, mutex = mutex_](BatchedBuffer *buffer) {
+          std::lock_guard<std::mutex> lock(*mutex);
+          buffer->release();
+          free->emplace_back(buffer);
         });
   }
 
-  std::shared_ptr<BatchedBuffer> new_batched_buffer(bool map = true)
+
+  std::shared_ptr<BatchedBuffer> new_batched_buffer()
   {
-    return new_batched_buffer(iface_, map);
+    return new_batched_buffer(iface_);
   }
 
   private:
   int batch_size_;
   AxDataInterface iface_;
   DataInterfaceAllocator &allocator_;
-  std::mutex mutex_;
-  std::shared_ptr<std::vector<std::unique_ptr<BatchedBuffer>>> free_;
+  std::shared_ptr<std::mutex> mutex_;
+  using FreeList = std::vector<std::unique_ptr<BatchedBuffer>>;
+  std::shared_ptr<FreeList> free_;
 };
 
 template <typename T, int queue_size = 1> struct BlockingQueue {
@@ -733,6 +720,7 @@ class SharedLib
   const bool close_on_destruct_;
 };
 
+
 std::string to_string(const std::set<int> &s);
 
 inline std::string
@@ -749,10 +737,138 @@ struct slice_overlap {
 
 slice_overlap determine_overlap(size_t image_size, size_t slice_size, size_t overlap);
 
-void load_v1_plugin(SharedLib &lib, V1Plugin::InPlace &plugin);
-void load_v1_plugin(SharedLib &lib, V1Plugin::Transform &plugin);
-void load_v1_plugin(SharedLib &lib, V1Plugin::Decoder &plugin);
 void load_v1_plugin(SharedLib &lib, V1Plugin::DetermineObjectAttribute &plugin);
 void load_v1_plugin(SharedLib &lib, V1Plugin::TrackerFilter &plugin);
 
+AxVideoInterface create_roi(
+    const AxVideoInterface &original, int x, int y, int width, int height);
+
+void validate_output_format(AxVideoFormat format, std::string_view prop_fmt,
+    std::string_view label, std::span<AxVideoFormat> valid_formats);
+
+template <typename PluginType, typename PluginBase>
+class LoadedPlugin : public PluginBase
+{
+  public:
+  LoadedPlugin(Ax::Logger &logger, Ax::SharedLib &&shared, std::string options,
+      AxAllocationContext *context, std::string mode = "none");
+
+  std::string name() const override
+  {
+    return name_;
+  }
+
+  std::string mode() const override
+  {
+    return mode_;
+  }
+
+  virtual ~LoadedPlugin() = default;
+
+  const Ax::StringSet &allowed_properties() const override
+  {
+    return allowed_;
+  }
+
+  void set_dynamic_properties(const Ax::StringMap &options) override
+  {
+    if (fns.set_dynamic_properties) {
+      fns.set_dynamic_properties(options, subplugin_data.get(), logger);
+    }
+  }
+
+  protected:
+  PluginType fns;
+  std::shared_ptr<void> subplugin_data;
+  Ax::Logger &logger;
+  Ax::SharedLib shared_;
+  std::string name_;
+  std::string mode_;
+  StringSet allowed_;
+};
+
+class LoadedInPlace : public LoadedPlugin<Ax::V1Plugin::InPlace, InPlace>
+{
+  public:
+  using LoadedPlugin<Ax::V1Plugin::InPlace, InPlace>::LoadedPlugin;
+
+  bool has_inplace() const override
+  {
+    return fns.inplace != nullptr;
+  }
+
+  void inplace(const AxDataInterface &interface, unsigned int subframe_index,
+      unsigned int number_of_subframes, MetaMap &map) override
+  {
+    fns.inplace(interface, subplugin_data.get(), subframe_index,
+        number_of_subframes, map, logger);
+  }
+};
+
+class LoadedTransform : public LoadedPlugin<Ax::V1Plugin::Transform, Transform>
+{
+  public:
+  using LoadedPlugin<Ax::V1Plugin::Transform, Transform>::LoadedPlugin;
+
+  bool has_transform() const override
+  {
+    return fns.transform != nullptr;
+  }
+
+  void transform(const AxDataInterface &input, const AxDataInterface &output,
+      unsigned int subframe_index, unsigned int subframe_count, MetaMap &meta_map) override
+  {
+    fns.transform(input, output, subplugin_data.get(), subframe_index,
+        subframe_count, meta_map, logger);
+  }
+
+  bool has_set_output_interface() const override
+  {
+    return fns.set_output_interface != nullptr;
+  }
+
+  bool has_set_output_interface_from_meta() const override
+  {
+    return fns.set_output_interface_from_meta != nullptr;
+  }
+
+  AxDataInterface set_output_interface(const AxDataInterface &input) override
+  {
+    return fns.set_output_interface ?
+               fns.set_output_interface(input, subplugin_data.get(), logger) :
+               input;
+  }
+
+  AxDataInterface set_output_interface_from_meta(const AxDataInterface &input,
+      unsigned int subframe_index, unsigned int number_of_subframes,
+      std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map) override
+  {
+    return fns.set_output_interface_from_meta(input, subplugin_data.get(),
+        subframe_index, number_of_subframes, meta_map, logger);
+  }
+
+  bool can_passthrough(const AxDataInterface &input, const AxDataInterface &output) const override
+  {
+    return fns.can_passthrough
+           && fns.can_passthrough(input, output, subplugin_data.get(), logger);
+  }
+
+  bool query_supports(PluginFeature feature) const override
+  {
+    return fns.query_supports && fns.query_supports(feature, subplugin_data.get(), logger);
+  }
+};
+
+class LoadedDecode : public LoadedPlugin<Ax::V1Plugin::Decode, Decode>
+{
+  public:
+  using LoadedPlugin<Ax::V1Plugin::Decode, Decode>::LoadedPlugin;
+
+  void decode_to_meta(const AxTensorsInterface &tensors, unsigned int subframe_index,
+      unsigned int number_of_subframes, MetaMap &map, const AxDataInterface &video) override
+  {
+    return fns.decode_to_meta(tensors, subplugin_data.get(), subframe_index,
+        number_of_subframes, map, video, logger);
+  }
+};
 } // namespace Ax

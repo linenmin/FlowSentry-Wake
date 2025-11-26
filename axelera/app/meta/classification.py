@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Metadata for classifier
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from .base import (
 
 if TYPE_CHECKING:
     from .. import display
+
+BOX_INDENT = 5
 
 
 class ClassifiedObject(MetaObject):
@@ -201,7 +203,7 @@ class ClassificationMeta(AxTaskMeta):
         for i, box in enumerate(boxes):
             if box is None:
                 # If no boxes, use the entire image with a small indent
-                box = [5, 5, draw.canvas_size[0] - 5, draw.canvas_size[1] - 5]
+                box = [5, 5, draw.image_size[0] - BOX_INDENT, draw.image_size[1] - BOX_INDENT]
 
             if i < len(self._class_ids):
                 score = self._scores[i][0] if self._scores[i] else 0
@@ -227,9 +229,9 @@ class ClassificationMeta(AxTaskMeta):
 
             # assign image size if box w/h is not provided
             if box[2] == -1:
-                box[2] = draw.canvas_size[0]
+                box[2] = draw.image_size[0] - BOX_INDENT
             if box[3] == -1:
-                box[3] = draw.canvas_size[1]
+                box[3] = draw.image_size[1] - BOX_INDENT
 
             p1, p2 = (int(box[0]), int(box[1])), (int(box[2]), int(box[3]))
         else:

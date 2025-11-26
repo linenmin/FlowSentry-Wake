@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 // Optimized anchor-free YOLO(v8) decoder
 
 #include "AxDataInterface.h"
@@ -77,12 +77,13 @@ sort_tensors(const AxTensorsInterface &tensors, int num_classes,
     int kpts_per_box, Ax::Logger &logger)
 {
   if (tensors.size() % 2 != 0 && kpts_per_box == 0) {
-    logger(AX_ERROR) << "The number of tensors must be even" << std::endl;
-    throw std::runtime_error("The number of tensors must be even");
+    logger.throw_error("libdecode_yolov8: The number of tensors must be even, but got "
+                       + Ax::to_string(tensors) + " when num_kpts=0");
   }
   if (tensors.size() % 3 != 0 && kpts_per_box > 0) {
-    logger(AX_ERROR) << "The number of tensors must be multiple of 3" << std::endl;
-    throw std::runtime_error("The number of tensors must be even");
+    logger.throw_error("libdecode_yolov8: The number of tensors must be multiple of 3, but got "
+                       + Ax::to_string(tensors) + " when num_kpts>0 ("
+                       + std::to_string(kpts_per_box) + ")");
   }
   std::vector<int> indices(tensors.size());
   std::iota(std::begin(indices), std::end(indices), 0);
@@ -119,14 +120,18 @@ sort_tensors(const AxTensorsInterface &tensors, int num_classes,
 /// @param outputs - output inferences
 /// @return - The number of predictions added
 int
-decode_cell(const int8_t *box_data, const int8_t *score_data,
-    const int8_t *kpts_data, const properties &props, int score_level, int box_level,
-    int kpt_level, float recip_width, int xpos, int ypos, inferences &outputs)
+decode_cell(const int8_t *box_data, const int8_t *score_data, const int8_t *kpts_data,
+    const properties &props, int score_level, int box_level, int kpt_level,
+    float recip_width, int xpos, int ypos, bool focal_loss, inferences &outputs)
 {
   const auto dummy = float{};
   const auto &lookups = props.sigmoid_tables.empty() ?
                             &dummy :
                             props.sigmoid_tables[score_level].data();
+
+  const auto &box_lookups = props.dequantize_tables.empty() ?
+                                &dummy :
+                                props.dequantize_tables[box_level].data();
   const auto confidence = props.confidence;
   const auto num_predictions = ax_utils::decode_scores(score_data, lookups, 1,
       props.filter, props.confidence, props.multiclass, outputs);
@@ -139,10 +144,15 @@ decode_cell(const int8_t *box_data, const int8_t *score_data,
     auto *box_ptr = box_data;
     auto next_box = softmaxed.size();
     for (auto &b : box) {
-      ax_utils::softmax(box_ptr, softmaxed.size(), 1, softmax_lookups, softmaxed.data());
-      b = std::transform_reduce(
-          props.weights.begin(), props.weights.end(), softmaxed.begin(), 0.0F);
-      box_ptr = std::next(box_ptr, next_box);
+      if (!focal_loss) {
+        b = yolov8_decode::dequantize(*box_ptr++, box_lookups);
+      } else {
+        ax_utils::softmax(
+            box_ptr, softmaxed.size(), 1, softmax_lookups, softmaxed.data());
+        b = std::transform_reduce(
+            props.weights.begin(), props.weights.end(), softmaxed.begin(), 0.0F);
+        box_ptr = std::next(box_ptr, next_box);
+      }
     }
 
     const auto x1 = (xpos + 0.5F - box[0]) * recip_width;
@@ -197,8 +207,9 @@ decode_cell(const int8_t *box_data, const int8_t *score_data,
 /// @param logger - The logger to use for logging
 /// @return - The number of predictions added
 int
-decode_tensor(const AxTensorsInterface &tensors, int score_idx, int box_idx, int kpt_idx,
-    const properties &props, int level, inferences &outputs, Ax::Logger &logger)
+decode_tensor(const AxTensorsInterface &tensors, int score_idx, int box_idx,
+    int kpt_idx, const properties &props, int level, inferences &outputs,
+    bool focal_loss, Ax::Logger &logger)
 {
   auto [box_width, box_height, box_depth] = ax_utils::get_dims(tensors, box_idx, true);
   auto [score_width, score_height, score_depth]
@@ -236,7 +247,7 @@ decode_tensor(const AxTensorsInterface &tensors, int score_idx, int box_idx, int
 
     for (auto x = 0; x != box_width; ++x) {
       total += decode_cell(box_ptr, score_ptr, kpts_ptr, props, score_idx,
-          box_idx, kpt_idx, recip_width, x, y, outputs);
+          box_idx, kpt_idx, recip_width, x, y, focal_loss, outputs);
       box_ptr = std::next(box_ptr, box_x_stride);
       score_ptr = std::next(score_ptr, score_x_stride);
       kpts_ptr = kpts_data != nullptr ? std::next(kpts_ptr, kpts_x_stride) : nullptr;
@@ -274,8 +285,24 @@ decode_tensors(const AxTensorsInterface &tensors, const properties &prop,
 
   for (int level = 0; level != tensor_order.size(); ++level) {
     const auto [conf_tensor, loc_tensor, kpt_tensor] = tensor_order[level];
+
+    auto [box_width, box_height, box_depth]
+        = ax_utils::get_dims(depad_tensors(tensors, padding), loc_tensor, true);
+    bool focal_loss;
+    if (box_depth == weights_size * 4) {
+      focal_loss = true;
+    } else if (box_depth == 4) {
+      focal_loss = false;
+    } else {
+      logger.throw_error(
+          "decode_tensors :  invalid tensor shape, expect ["
+          + std::to_string(box_width) + ", " + std::to_string(box_height) + ", 4] or ["
+          + std::to_string(box_width) + ", " + std::to_string(box_height) + ", "
+          + std::to_string(weights_size * 4) + "] but got: [" + std::to_string(box_width)
+          + ", " + std::to_string(box_height) + ", " + std::to_string(box_depth) + "] ");
+    }
     auto num = decode_tensor(tensors, conf_tensor, loc_tensor, kpt_tensor, prop,
-        level, predictions, logger);
+        level, predictions, focal_loss, logger);
   }
   return predictions;
 }
@@ -318,6 +345,7 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolov8_decode::proper
   }
 
   std::vector<KptXyv> pixel_kpts;
+  std::vector<int> ids;
   if (prop->kpts_shape[0] > 0) {
     if (prop->master_meta.empty()) {
       auto &vinfo = std::get<AxVideoInterface>(video_interface);
@@ -329,22 +357,15 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolov8_decode::proper
       pixel_kpts = ax_utils::scale_shift_kpts(predictions.kpts, master_box,
           prop->model_width, prop->model_height, prop->scale_up, prop->letterbox);
     }
-  }
-
-  std::vector<int> ids;
-  if (prop->kpts_shape[0] > 0) {
-    auto [boxes, kpts, scores] = ax_utils::remove_empty_boxes(
-        pixel_boxes, pixel_kpts, predictions.scores, prop->kpts_shape[0]);
     ax_utils::insert_and_associate_meta<AxMetaKptsDetection>(map,
         prop->meta_name, prop->master_meta, subframe_index, number_of_subframes,
-        prop->association_meta, std::move(boxes), std::move(kpts),
-        std::move(scores), ids, prop->kpts_shape, prop->decoder_name);
+        prop->association_meta, std::move(pixel_boxes), std::move(pixel_kpts),
+        std::move(predictions.scores), ids, prop->kpts_shape, prop->decoder_name);
   } else {
-    auto [boxes, scores, class_ids] = ax_utils::remove_empty_boxes(
-        pixel_boxes, predictions.scores, predictions.class_ids);
-    ax_utils::insert_and_associate_meta<AxMetaObjDetection>(map, prop->meta_name,
-        prop->master_meta, subframe_index, number_of_subframes, prop->association_meta,
-        std::move(boxes), std::move(scores), std::move(class_ids), ids);
+    ax_utils::insert_and_associate_meta<AxMetaObjDetection>(map,
+        prop->meta_name, prop->master_meta, subframe_index, number_of_subframes,
+        prop->association_meta, std::move(pixel_boxes),
+        std::move(predictions.scores), std::move(predictions.class_ids), ids);
   }
 
   auto end_time = std::chrono::high_resolution_clock::now();

@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Pre-processing operators following TorchVision
 # TODO: Add all of https://pytorch.org/vision/stable/transforms.html
 from __future__ import annotations
@@ -15,7 +15,6 @@ from .. import gst_builder
 from ..torch_utils import torch
 from .base import PreprocessOperator, builtin
 from .custom_preprocessing import PermuteChannels
-from .utils import inspect_resize_status
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -48,13 +47,38 @@ def _parse_multichannel_values(
 
 
 @builtin
+class Crop(PreprocessOperator):
+    left: int
+    top: int
+    width: int
+    height: int
+
+    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
+        gst.axtransform(
+            lib="libtransform_roicrop.so",
+            options=f'left:{self.left};top:{self.top};width:{self.width};height:{self.height}',
+        )
+
+    def exec_torch(self, image: types.Image) -> types.Image:
+        import torchvision.transforms.functional as TF
+
+        i = image.aspil()
+        i = TF.crop(i, self.top, self.left, self.height, self.width)
+        return types.Image.frompil(i, image.color_format)
+
+
+@builtin
 class CenterCrop(PreprocessOperator):
     width: int
     height: int
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
-        gst.videobox(autocrop=True)
-        gst.capsfilter(caps=f'video/x-raw,width={self.width},height={self.height}')
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError(f"Invalid dimensions for CenterCrop: {self.width}x{self.height}")
+        gst.axtransform(
+            lib='transform_centrecropextra.so',
+            options=f'crop_width:{self.width},crop_height:{self.height}',
+        )
 
     def exec_torch(self, image: types.Image) -> types.Image:
         import torchvision.transforms.functional as TF
@@ -250,11 +274,10 @@ class Resize(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         self.task_name = task_name
-        inspect_resize_status(context)
         context.resize_status = types.ResizeMode.STRETCH
 
         # TODO: it's weird that the use of size follows the smallest dimension? If this is a real case, we need to add a resize mode
@@ -370,7 +393,7 @@ class ToTensor(PreprocessOperator):
         # or it will copy the data to a new buffer with the correct stride
         gst.axtransform(
             lib='libtransform_resize.so',
-            options=f'to_tensor:1',
+            options='to_tensor:1',
         )
 
     def exec_torch(self, image: types.Image) -> torch.Tensor:
@@ -390,7 +413,7 @@ class CompositePreprocess(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         self.task_name = task_name

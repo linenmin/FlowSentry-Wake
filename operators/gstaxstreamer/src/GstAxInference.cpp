@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 
 #include <gst/allocators/gstfdmemory.h>
 #include <gst/gst.h>
@@ -287,7 +287,7 @@ push_inference(GstAxInference *self, GstBuffer *inbuf)
   }
 
   self->impl->inference->dispatch(
-      inputs.mapped, inputs.fds, outputs.mapped, outputs.fds);
+      { inputs.mapped, inputs.fds, outputs.mapped, outputs.fds, 0 });
   return outputs;
 }
 
@@ -300,7 +300,7 @@ pop_inference(GstAxInference *self, GstBuffer *inbuf, GstBuffer *outbuf, Params 
     throw std::runtime_error("Failed to copy metadata to output buffer");
   }
 
-  self->impl->inference->collect(outputs.mapped);
+  self->impl->inference->collect();
   // by this time the data should have been written to the output tensors so unmap them:
   outputs.mapped.clear();
 
@@ -363,7 +363,7 @@ gst_axinference_transform(GstBaseTransform *trans, GstBuffer *inbuf, GstBuffer *
       --self->impl->output_drop;
       // if are double buffered then we need to drop the output buffer because
       // actually the output for frame n is copied to the outputs given in frame n + 2
-      self->impl->inference->collect(outputs.mapped);
+      self->impl->inference->collect();
       return GST_BASE_TRANSFORM_FLOW_DROPPED;
     }
 
@@ -421,9 +421,11 @@ configure_instance(GstAxInference *self)
     return true;
   }
   auto &props = self->impl->props;
-  self->impl->inference = create_inference(self->impl->logger, props);
-  if (auto alloc = props.dmabuf_outputs ? gst_tensor_dmabuf_allocator_get(dmabuf_device) :
-                                          gst_aligned_allocator_get()) {
+  self->impl->inference = create_inference(self->impl->logger, props, {});
+  if (auto alloc = props.dmabuf_outputs ?
+                       gst_tensor_dmabuf_allocator_get(dmabuf_device) :
+                       gst_opencl_allocator_get(self->impl->props.which_cl.c_str(),
+                           &self->impl->logger)) {
     self->impl->out_allocator = Ax::as_handle(alloc);
     return true;
   }
@@ -619,7 +621,7 @@ gst_flush_eos_buffers(GstBaseTransform *trans)
 
   while (!self->impl->output_fifo.empty()) {
     auto outputs = Ax::pop_queue(self->impl->output_fifo);
-    self->impl->inference->collect(outputs.mapped);
+    self->impl->inference->collect();
   }
 
   while (!self->impl->input_fifo.empty()) {

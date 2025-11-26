@@ -1,8 +1,9 @@
+// Copyright Axelera AI, 2025
 #pragma once
 
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
-#include "AxPlugin.hpp"
+#include "AxUtils.hpp"
 
 #include <gmodule.h>
 #include <gst/gst.h>
@@ -10,10 +11,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
-#include <memory>
-#include <numeric>
-#include <string>
 #include <vector>
 
 
@@ -117,6 +114,7 @@ void assign_data_ptrs_to_interface(
     const std::vector<GstMapInfo> &info, AxDataInterface &interface);
 void assign_vaapi_ptrs_to_interface(
     const std::vector<GstMapInfo> &info, AxDataInterface &interface);
+void assign_opencl_ptrs_to_interface(AxDataInterface &input, GstBuffer *buffer);
 
 void assign_fds_to_interface(AxDataInterface &input, GstBuffer *buffer);
 void add_video_meta_from_interface_to_buffer(
@@ -126,14 +124,19 @@ GstCaps *caps_from_interface(const AxDataInterface &interface);
 std::vector<GstMapInfo> get_mem_map(GstBuffer *buffer, GstMapFlags flags, GObject *self);
 void unmap_mem(std::vector<GstMapInfo> &mapInfoVec);
 
-void init_options(GObject *self, const std::string &options_string,
-    const Ax::V1Plugin::Base &fns, Ax::Logger &logger,
-    std::shared_ptr<void> &options, bool &initialized, void *display);
-
-void update_options(GObject *self, const std::string &options_string,
-    const Ax::V1Plugin::Base &fns, Ax::Logger &logger,
-    std::shared_ptr<void> &options, bool &initialized);
-
 extern "C" GstAllocator *gst_tensor_dmabuf_allocator_get(const char *device);
 
 extern "C" GstAllocator *gst_aligned_allocator_get(void);
+
+extern "C" GstAllocator *gst_opencl_allocator_get(const char *cl_platform, Ax::Logger *logger);
+
+extern "C" gboolean gst_is_opencl_memory(GstMemory *mem);
+
+extern "C" opencl_buffer *gst_opencl_mem_get_opencl_buffer(GstMemory *mem);
+
+extern "C" AxAllocationContext *gst_opencl_allocator_get_context(
+    const char *cl_platform, Ax::Logger *logger);
+
+extern "C" void gst_opencl_mem_reset(GstMemory *mem);
+
+extern "C" void gst_opencl_memory_add_dependency(GstMemory *mem, GstBuffer *dependency);

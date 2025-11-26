@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Operators that convert model-specific tensor output to
 # generalized metadata representation
 from __future__ import annotations
@@ -34,18 +34,6 @@ class DecodeRTMDet(AxOperator):
     nms_top_k: int = 300
     # num_classes: int = 80
 
-    @classmethod
-    def handles_dequantization_and_depadding(cls):
-        return True
-
-    @classmethod
-    def handles_transpose(cls):
-        return True
-
-    @classmethod
-    def handles_postamble(cls):
-        return True
-
     def _post_init(self):
         super()._post_init()
 
@@ -55,7 +43,7 @@ class DecodeRTMDet(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(

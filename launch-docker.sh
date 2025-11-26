@@ -1,13 +1,12 @@
 #!/bin/bash
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
 
-# TODO support rootless Docker invocation
-
-# Variables
 _self="${0##*/}"
 
 VAR_docker_users=
 
+ARGL_keep=true
+ARGL_containers_only=false
 ARGL_ncpu=$(nproc)
 ARGL_ngpu="all"
 ARGL_list=false
@@ -16,37 +15,72 @@ ARGL_dry_run=false
 ARGL_verbose=false
 ARG_tag=
 
+VAR_HELP_EXIT_CODE=0
+
+# a few printy things copied from install.sh
+# because we can't source it before processing command line etc
+bold() {
+  if [ -t 1 ]; then
+    printf "\e[1m%s\e[m" "$1"
+  else
+    echo -n "$1"
+  fi
+}
+
+error_print() {
+  bold "ERROR"
+  echo ": $*"
+} >&2
+
+error() {
+  error_print "$@"
+  exit 1
+}
+
 # Transform long options to short ones
 _ignore=
 for arg in "$@"; do
   shift
   case "$_ignore$arg" in
-    "--tag")     set -- "$@" "-t" ;;
-    "--cpu")     set -- "$@" "-c" ;;
-    "--list")    set -- "$@" "-l" ;;
-    "--delete")  set -- "$@" "-d" ;;
-    "--verbose") set -- "$@" "-v" ;;
-    "--dry-run") set -- "$@" "-n" ;;
-    "--help")    set -- "$@" "-h" ;;
-    --?*)        echo Invalid option: $arg
-                 echo
-                 set -- "-h"
-                 break
-                 ;;
-    "--")        _ignore="ignore"
-                 set -- "$@" "$arg"
-                 ;;
-    *)           set -- "$@" "$arg"
+    "--keep")        set -- "$@" "-k" ;;
+    "--no-keep")     set -- "$@" "-K" ;;
+    "--tag")         set -- "$@" "-t" ;;
+    "--containers")  set -- "$@" "-c" ;;
+    "--cpu")         set -- "$@" "-C" ;;
+    "--list")        set -- "$@" "-l" ;;
+    "--delete")      set -- "$@" "-d" ;;
+    "--verbose")     set -- "$@" "-v" ;;
+    "--dry-run")     set -- "$@" "-n" ;;
+    "--help")        set -- "$@" "-h" ;;
+    --?*)            error_print Invalid option: $arg
+                     error_print
+                     set -- "-h"
+                     VAR_HELP_EXIT_CODE=1
+                     break
+                     ;;
+    "--")            _ignore="ignore"
+                     set -- "$@" "$arg"
+                     ;;
+    *)               set -- "$@" "$arg"
   esac
 done
 
 # Parse command-line options
-while getopts ":c:t:lvhdn-" opt; do
+while getopts ":C:t:lvhdnkKc-" opt; do
   case $opt in
     - )
       break
       ;;
+    k )
+      ARGL_keep=true
+      ;;
+    K )
+      ARGL_keep=false
+      ;;
     c )
+      ARGL_containers_only=true
+      ;;
+    C )
       ARGL_ncpu="$OPTARG"
       ;;
     d )
@@ -70,38 +104,37 @@ while getopts ":c:t:lvhdn-" opt; do
       echo
       echo "Launch Axelera Docker"
       echo
-      echo "  -t, --tag TAG      specify Docker tag (default based on YAML)"
-      echo "      --cpu [n]      specify number of CPUs (default: 4)"
-      echo "  -l, --list         list Axelera Docker images and associated volumes"
-      echo "                     (can be combined with --tag)"
-      echo "  -d, --delete       delete Axelera Docker images and associated volumes"
-      echo "                     (can be combined with --tag, otherwise deletes all)"
-      echo "  -v, --verbose      enable verbose output"
-      echo "  -n, --dry-run      show, but do not execute the docker run command"
-      echo "  -h, --help         display this help and exit"
+      echo "  -k --keep         keep the created container (default: keep) (-K --no-keep supported)"
+      echo "  -t --tag TAG      specify Docker tag (default based on YAML)"
+      echo "  -l --list         list Axelera Docker images and associated containers and volumes"
+      echo "                    (can be combined with --tag and/or --containers)"
+      echo "  -d --delete       delete Axelera Docker images and associated containers and volumes"
+      echo "                    (can be combined with --tag and/or --containers, otherwise deletes all)"
+      echo "  -c --containers   for use with --list and --delete to only list/delete containers"
+      echo "  -C --cpu [n]      specify number of CPUs (default: $ARGL_ncpu)"
+      echo "  -v --verbose      enable verbose output"
+      echo "  -n --dry-run      show, but do not execute the docker run command"
+      echo "  -h --help         display this help and exit"
       echo
       echo "Any arguments following '--' are passed verbatim to 'docker run'"
-      exit 0
+      exit $VAR_HELP_EXIT_CODE
       ;;
     \? )
-      echo "Invalid option: -$OPTARG" >&2
-      echo "Try '$_self --help' for a list of supported options"
-      exit 1
+      error_print "Invalid option: -$OPTARG" >&2
+      error "Try '$_self --help' for a list of supported options"
       ;;
     : )
-      if [ "$OPTARG" == "c" ]; then
-	echo "Missing option argument for --cpu" >&2;
+      if [ "$OPTARG" == "C" ]; then
+        error "Missing option argument for --cpu" >&2;
       elif [ "$OPTARG" == "t" ]; then
-	echo "Missing option argument for --tag" >&2;
+        error "Missing option argument for --tag" >&2;
       else
-	echo "Missing option argument for -$OPTARG" >&2;
+        error "Missing option argument for -$OPTARG" >&2;
       fi
-      exit 1
       ;;
     * )
-      echo "Invalid option: -$OPTARG" >&2
-      echo "Try '$_self --help' for a list of supported options"
-      exit 1
+      error_print "Invalid option: -$OPTARG" >&2
+      error "Try '$_self --help' for a list of supported options"
   esac
 done
 
@@ -109,7 +142,15 @@ done
 shift $((OPTIND-1))
 
 ARGL_extra_args="$*"
-$ARGL_verbose && [[ -n "$ARGL_extra_args" ]] && echo -e "Passing extra arguments to 'docker run':\n\t$ARGL_extra_args"
+if [[ -n "$ARGL_extra_args" ]]; then
+  if [[ -n "$_ignore" ]]; then
+    $ARGL_verbose && echo -e "Passing extra arguments to 'docker run':\n\t$ARGL_extra_args"
+  else
+    error_print "Extra argument(s) detected: ${1}"
+    error_print "Try '$_self --help' for a list of supported options"
+    error "or use -- <args> to pass them to 'docker run'"
+  fi
+fi
 
 # Source install script to check docker installation is OK and
 # obtain configuration settings
@@ -124,30 +165,42 @@ source "install.sh"
 
 if $ARGL_list; then
   if [[ ! -n "$(which docker)" ]]; then
-    echo "Docker not installed"
-    exit 1
+    error "Docker not installed"
   fi
-  sg "docker" "docker image ls" | grep -E "^(REPOSITORY|axelera/.*${ARG_tag})"
-  echo
-  exec sg "docker" "docker volume ls" | grep -E "(VOLUME NAME|axelera_${ARG_tag})"
+  if ! $ARGL_containers_only; then
+    sg "docker" "docker image ls" | grep -E "^(REPOSITORY|axelera/.*${ARG_tag})"
+    echo
+    sg "docker" "docker volume ls" | grep -E "(VOLUME NAME|axelera_${ARG_tag})"
+    echo
+  fi
+  exec sg "docker" "docker container ls --all" | grep -E "(CONTAINER ID|axelera_${ARG_tag})"
   exit 1
 fi
 
 if $ARGL_delete; then
   if [[ ! -n "$(which docker)" ]]; then
-    echo "Docker not installed"
-    exit 1
+    error "Docker not installed"
   fi
-  images=${VAR_target_container}${ARG_tag:+:$ARG_tag}
-  images=$(sg "docker" "docker images -q ${images}")
-  volumes=$(sg "docker" "docker volume ls" | grep -E "axelera_${ARG_tag}" | awk '{print $2}')
-  images=${images//$'\n'/ }
-  volumes=${volumes//$'\n'/ }
-  if [[ -z "$images$volumes" ]]; then
-    echo "No Axelera Docker images or volumes found"
-    exit 0
+  containers=$(sg "docker" "docker container ls --all" | grep -E "axelera_${ARG_tag}" | awk '{print $1}')
+  containers=${containers//$'\n'/ }
+  if $ARGL_containers_only; then
+    if [[ -z "$containers" ]]; then
+      echo "No Axelera Docker containers found"
+      exit 0
+    fi
+    echo "Removing Axelera Docker containers:"
+  else
+    images=${VAR_target_container}${ARG_tag:+:$ARG_tag}
+    images=$(sg "docker" "docker images -q ${images}")
+    volumes=$(sg "docker" "docker volume ls" | grep -E "axelera_${ARG_tag}" | awk '{print $2}')
+    images=${images//$'\n'/ }
+    volumes=${volumes//$'\n'/ }
+    if [[ -z "$images$volumes$containers" ]]; then
+      echo "No Axelera Docker images, containers or volumes found"
+      exit 0
+    fi
+    echo "Removing Axelera Docker images, containers and/or associated volumes:"
   fi
-  echo "Removing Axelera Docker images and/or associated volumes:"
   if [[ -n "$images" ]]; then
     echo
     sg "docker" "docker image ls" | grep -E "(^REPOSITORY|${images// /|})"
@@ -156,7 +209,14 @@ if $ARGL_delete; then
     echo
     sg "docker" "docker volume ls" | grep -E "(VOLUME NAME|${volumes// /|})"
   fi
+  if [[ -n "$containers" ]]; then
+    echo
+    sg "docker" "docker container ls --all" | grep -E "(CONTAINER ID|${containers// /|})"
+  fi
   if response_is_yes "Confirm delete?"; then
+    if [[ -n "$containers" ]]; then
+      sg "docker" "docker container rm -f ${containers}"
+    fi
     if [[ -n "$images" ]]; then
       sg "docker" "docker image rm ${images}"
     fi
@@ -169,20 +229,72 @@ fi
 
 # Check Docker is installed
 if needed "$AX_docker_system_component"; then
-  echo "Docker installation required"
-  echo "First run './install.sh --docker'"
-  exit 1
+  error_print "Docker installation required"
+  error "First run './install.sh --docker'"
 fi
 
 # Check Docker container is available
 if ! streq "$STATUS_container" "$STR_ok"; then
-  echo "Docker image $VAR_target_container with tag $VAR_target_container_tag not found on system"
-  echo "First run './install.sh --docker'"
-  exit 1
+  error_print "Docker image $VAR_target_container with tag $VAR_target_container_tag not found on system"
+  error "First run './install.sh --docker'"
+fi
+
+# Check if container already exists
+container_name="axelera_$VAR_target_container_tag"
+container_exists=$(sg "docker" "docker ps -a --format '{{.Names}}' | grep -w $container_name" 2>/dev/null || true)
+
+if [ -n "$container_exists" ]; then
+  use_autoremove=false
+  if [[ $(sg "docker" "docker inspect -f '{{.HostConfig.AutoRemove}}' $container_name" 2>/dev/null || true) == "true" ]]; then
+    autoremove=true
+  else
+    autoremove=false
+  fi
+  if $autoremove; then
+    bold "Warning"
+    echo ": There is an existing container set to auto-remove."
+    echo "This cannot be unset and the container will be removed when it exits."
+    if response_is_yes "Do you want to attach to this container?"; then
+      use_autoremove=true
+    fi
+  fi
+  if ($ARGL_keep && ! $autoremove) || $use_autoremove; then
+    # Container exists and --keep is set, check if it's running
+    container_running=$(sg "docker" "docker ps --format '{{.Names}}' | grep -w $container_name" 2>/dev/null || true)
+    if [ -n "$container_running" ]; then
+      echo "Attaching to existing running container: $container_name"
+      attach="docker attach $container_name"
+    else
+      echo "Starting and attaching to existing container: $container_name"
+      attach="docker start -ai $container_name"
+    fi
+    ($ARGL_verbose || $ARGL_dry_run) && echo "${attach}"
+    $ARGL_dry_run && exit 0
+    exec sg "docker" "${attach}"
+  else
+    # Container exists but --keep is not set, prompt user to remove it
+    $autoremove || echo "Container $container_name already exists."
+    if response_is_yes "Remove existing container and create a new one?"; then
+      remove="docker rm -f $container_name"
+      ($ARGL_verbose || $ARGL_dry_run) && echo "${remove}"
+      $ARGL_dry_run && exit 0
+      sg "docker" "${remove}" || \
+        error "Failed to remove existing container. Please remove it manually with: docker rm -f $container_name"
+      echo "Container removed. Proceeding with launch..."
+    elif $autoremove; then
+      error "Cannot proceed. Either agree to attach to the existing container or remove it first"
+    else
+      error "Cannot proceed. Either use --keep to attach to the existing container or remove it first"
+    fi
+  fi
 fi
 
 # Create launch command
-launch="docker run --rm --name Axelera --cpus $ARGL_ncpu"
+launch="docker run"
+if ! $ARGL_keep; then
+  launch="$launch --rm"
+fi
+launch="$launch --name $container_name --cpus $ARGL_ncpu"
 launch="$launch --hostname=docker --add-host=docker:127.0.0.1 --privileged --network=host"
 
 # Map UID/GID and home directory
@@ -217,12 +329,10 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
   launch="$launch -v $XAUTH:$XAUTH -e XAUTHORITY=$XAUTH"
 fi
 
-# Image
 launch="$launch -it -a STDOUT -a STDERR $ARGL_extra_args $VAR_target_container:$VAR_target_container_tag"
+launch="$launch bash -c 'make operators-docker; exec bash'"
 
 echo "Launching Docker container"
 ($ARGL_verbose || $ARGL_dry_run) && echo "$launch"
-if $ARGL_dry_run; then
-  exit 0
-fi
+$ARGL_dry_run && exit 0
 exec sg "docker" "$launch"

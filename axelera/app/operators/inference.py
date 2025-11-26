@@ -1,14 +1,13 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Inference Operator Implementation
 from __future__ import annotations
 
 import dataclasses
 import logging
-import os
 from pathlib import Path
 import re
 import sys
-from typing import TYPE_CHECKING, Any, Optional, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import numpy as np
 
@@ -415,24 +414,12 @@ class InferenceOpConfig:
     postamble_onnxruntime_intra_op_num_threads: int = 4
     postamble_onnxruntime_inter_op_num_threads: int = 4
     postamble_onnx: str = ''  # optional manual-cut postamble ONNX model path
-    postproc: list = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
         """Validates the flags and sets the internal state.
         If handle_all is set, individual flags must not be explicitly set.
         If postamble is True, depadding and transpose must also be True (will warn and force).
         """
-
-        decoder_handles_dequantization_and_depadding = False
-        decoder_handles_transpose = False
-        decoder_handles_postamble = False
-        if len(self.postproc) == 1:
-            decoder_handles_dequantization_and_depadding = self.postproc[
-                0
-            ].handles_dequantization_and_depadding()
-            decoder_handles_transpose = self.postproc[0].handles_transpose()
-            decoder_handles_postamble = self.postproc[0].handles_postamble()
-
         # Check for conflicting configuration
         individual_flags_set = any(
             [
@@ -451,21 +438,15 @@ class InferenceOpConfig:
 
         # Configure flags based on handle_all or set defaults for individual flags
         if self.handle_all is not None:
-            self.handle_dequantization_and_depadding = self.handle_all
-            self.handle_transpose = self.handle_all
-            self.handle_postamble = self.handle_all
-            self.handle_preamble = self.handle_all
+            self._configure_all_cpp_flags(self.handle_all)
         else:
             # Set defaults for individual flags if not specified
-            # If the decoder must handle it then inference shall not handle it
             if self.handle_dequantization_and_depadding is None:
-                self.handle_dequantization_and_depadding = (
-                    not decoder_handles_dequantization_and_depadding
-                )
+                self.handle_dequantization_and_depadding = True
             if self.handle_transpose is None:
-                self.handle_transpose = not decoder_handles_transpose
+                self.handle_transpose = True
             if self.handle_postamble is None:
-                self.handle_postamble = not decoder_handles_postamble
+                self.handle_postamble = True
             if self.handle_preamble is None:
                 self.handle_preamble = True
 
@@ -506,46 +487,6 @@ class InferenceOpConfig:
 
         self._transpose_aipu_output = None
 
-        # Check conflicts between decoder and inference config
-        self._cpp_conflict_handle_all = False
-        self._cpp_conflict_dequantization_and_depadding = False
-        self._cpp_conflict_transpose = False
-        self._cpp_conflict_postamble = False
-
-        if (
-            decoder_handles_dequantization_and_depadding
-            and self.handle_dequantization_and_depadding
-        ):
-            self._cpp_conflict_dequantization_and_depadding = True
-        if decoder_handles_transpose and self.handle_transpose:
-            self._cpp_conflict_transpose = True
-        if decoder_handles_postamble and self.handle_postamble:
-            self._cpp_conflict_postamble = True
-        if self.handle_all is not None and (
-            self._cpp_conflict_dequantization_and_depadding
-            or self._cpp_conflict_transpose
-            or self._cpp_conflict_postamble
-        ):
-            self._cpp_conflict_handle_all = True
-
-    def assert_no_conflict(self):
-        handle_all_message = " (via handle_all)" if self._cpp_conflict_handle_all else str()
-        if self._cpp_conflict_dequantization_and_depadding:
-            raise ValueError(
-                "Conflict in configuration of inference detected: dequantization and depadding must be handled by the decoder but it is set for inference"
-                + handle_all_message
-            )
-        if self._cpp_conflict_transpose:
-            raise ValueError(
-                "Conflict in configuration of inference detected: transpose must be handled by the decoder but it is set for inference"
-                + handle_all_message
-            )
-        if self._cpp_conflict_postamble:
-            raise ValueError(
-                "Conflict in configuration of inference detected: postamble must be handled by the decoder but it is set for inference"
-                + handle_all_message
-            )
-
     @property
     def transpose_aipu_output(self):
         if self._transpose_aipu_output is None:
@@ -577,6 +518,13 @@ class InferenceOpConfig:
             return False
         h, w = output_shape[1], output_shape[2]
         return h == w == 1
+
+    def _configure_all_cpp_flags(self, cpp_handles_all: bool):
+        """Configure all C++ flags based on the cpp_handles_all flag."""
+        self.handle_dequantization_and_depadding = cpp_handles_all
+        self.handle_transpose = cpp_handles_all
+        self.handle_postamble = cpp_handles_all
+        self.handle_preamble = cpp_handles_all
 
     def _determine_transpose_from_output_info(
         self,
@@ -689,7 +637,6 @@ class InferenceOpConfig:
     def from_yaml_dict(
         phases: dict[str, Any],
         template: dict[str, Any],
-        postproc: list = {},
     ):
         """Create InferenceOpConfig from YAML dictionaries with priority order.
 
@@ -762,7 +709,7 @@ class InferenceOpConfig:
             for key, value in phases.items():
                 config_kwargs[key] = value
 
-        return InferenceOpConfig(**config_kwargs, postproc=postproc)
+        return InferenceOpConfig(**config_kwargs)
 
     @property
     def cpp_decoder_does_dequantization_and_depadding(self) -> bool:
@@ -780,11 +727,12 @@ class Inference:
     def __init__(
         self,
         device_man: device_manager.DeviceManager,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         model_name: str,
         model: Union[types.Manifest, types.Model],
         model_info: types.ModelInfo,
         inference_op_config: InferenceOpConfig,
+        low_latency: bool,
     ):
         self.compiled_model_dir = compiled_model_dir
         self.model_name = model_name
@@ -799,6 +747,7 @@ class Inference:
         self._inf_config = inference_op_config
         self.pre_ort_sess, self.post_ort_sess = None, None
         self._core_model_output_shapes_cached = None
+        self._low_latency = low_latency
         self.devices = []
 
         self.device = _determine_device(self.model)
@@ -919,7 +868,7 @@ class Inference:
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         self.task_name = task_name
@@ -928,6 +877,8 @@ class Inference:
             self._model_cores = model_info.manifest.input_shapes[0][0]
             self._output_shapes = model_info.manifest.output_shapes
         self._taskn = taskn
+        if model_info.manifest and model_info.manifest.is_compiled():
+            self._quant = model_info.manifest.quantize_params
 
         if context.color_format != model_info.input_color_format:
             raise ValueError(
@@ -949,33 +900,23 @@ class Inference:
         from ..pipe.gst import generate_padding
 
         padding = generate_padding(self.model)
-        if self.check_focus_layer_on_host():
+        if self.config.handle_preamble and self.check_focus_layer_on_host():
             # Currently, we only handle a single special case involving 'preamble.onnx'.
             # TODO: Refactor and generalize preamble handling, similar to our approach for postamble
-            if self.config.handle_preamble:
-                gst.axtransform(
-                    lib='libtransform_yolopreproc.so',
-                    options=f'padding:{padding}',
-                    batch=self._model_cores,
-                )
-            else:
-                LOG.warning(
-                    "Preamble handling is not enabled, but focus layer should be run on host."
-                )
-                gst.axtransform(
-                    lib='libtransform_padding.so',
-                    options=f'padding:{padding};fill:{0}',
-                    batch=self._model_cores,
-                )
+            gst.axtransform(
+                lib='libtransform_yolopreproc.so',
+                options=f'padding:{padding}',
+                batch=self._model_cores,
+            )
         else:
+            _, zero = zip(*self._quant)
             gst.axtransform(
                 lib='libtransform_padding.so',
-                options=f'padding:{padding};fill:{0}',
+                options=f'padding:{padding};fill:{zero[0]}',
                 batch=self._model_cores,
             )
 
     def build_inference_gst(self, gst: gst_builder.Builder, num_cores: int):
-        self._inf_config.assert_no_conflict()
         self._do_pads_or_preproc(gst)
 
         num_children = 0
@@ -996,20 +937,13 @@ class Inference:
 
         name = f'inference-task{self._taskn}'
         options = _build_mock_options()
-        if config.env.low_latency:
-            LOG.info("Enabling low latency mode for inference, at the cost of performance")
-            double_buffer = False
-            dmabuf_outputs = False
-        else:
-            double_buffer = config.env.use_double_buffer
-            dmabuf_outputs = config.env.UseDmaBuf.OUTPUTS in config.env.use_dmabuf
         inf = dict(
             name=name,
             model=str(model),
             devices=','.join(d.name for d in self.devices),
-            double_buffer=double_buffer,
+            double_buffer=config.env.use_double_buffer and not self._low_latency,
             dmabuf_inputs=config.env.UseDmaBuf.INPUTS in config.env.use_dmabuf,
-            dmabuf_outputs=dmabuf_outputs,
+            dmabuf_outputs=config.env.UseDmaBuf.OUTPUTS in config.env.use_dmabuf,
             num_children=num_children,
         )
         if gst.tiling:
@@ -1045,7 +979,6 @@ class Inference:
             result = _convert_to_tensors(result if len(result) > 1 else result[0])
         elif isinstance(self.model, types.Manifest):
             if self._axr_conn is None:
-                from axelera import runtime
 
                 model_path = _get_model_path(self.compiled_model_dir, self.model.model_lib_file)
                 c = self._device_man.context
@@ -1330,7 +1263,7 @@ class AxeleraDequantize(AxOperator):
                 )
             else:
                 gst.axtransform(
-                    lib=f'libtransform_dequantize.so',
+                    lib='libtransform_dequantize.so',
                     options=f'dequant_scale:{scales};dequant_zeropoint:{zeros};transpose:{transpose_str};'
                     f'dequant_lut:{int(self.inference_op_config.dequantize_using_lut)}',
                     connections=connections,

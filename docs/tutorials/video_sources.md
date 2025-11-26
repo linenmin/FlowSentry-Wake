@@ -2,12 +2,17 @@
 
 # Working with different video sources
 
-- [Working with Different Video Sources](#working-with-different-video-sources)
+## Contents
+- [Working with different video sources](#working-with-different-video-sources)
+  - [Contents](#contents)
+  - [Prerequisites](#prerequisites)
+  - [Level](#level)
+  - [Overview](#overview)
   - [Quick notes](#quick-notes)
     - [Multiple sources](#multiple-sources)
     - [Application integration](#application-integration)
 - [Sources](#sources)
-  - [`dataset`](#dataset)
+  - [\`dataset\`](#dataset)
     - [Example:](#example)
   - [USB cameras](#usb-cameras)
     - [Example:](#example-1)
@@ -15,7 +20,21 @@
     - [Example:](#example-2)
   - [Local files](#local-files)
     - [Example:](#example-3)
+  - [Next Steps](#next-steps)
+  - [Related Documentation](#related-documentation)
+  - [Further support](#further-support)
 
+
+## Prerequisites
+- Complete [Installation Guide](install.md) - SDK must be installed
+- Virtual environment activated (`source ~/voyagersdk/bin/activate`)
+- Hardware connected and detected (`axdevice list`)
+
+## Level
+**Beginner** - Basic configuration, no coding required
+
+
+## Overview
 The Voyager SDK supports a wide variety of video sources as inputs to our Pipeline Builder solution. In fact, we aim to be agnostic to the origin of incoming video frames. Our underlying video pipeline is built with GStreamer, which provides powerful capabilities for processing video media and making sure that formats and sources align. We leverage this flexibility to support a wide variety of inputs: single images, video files saved on disc, RTSP streams, and USB cameras; with a variety of resolutions and other configurations. This guide goes over the basics of how to work with these different sources with our inference scripts and application APIs.
 
 
@@ -104,3 +123,26 @@ Note that the Voyager SDK comes with a number of example videos in the directory
 ```bash
 ./inference.py yolov5s-v7-coco media/traffic1_1080p.mp4
 ```
+
+## Next Steps
+- **Integrate into your application**: [Application Integration Tutorial](application.md)
+- **Test with multiple sources**: Try running inference on multiple cameras or files simultaneously
+- **Benchmark model accuracy**: [Benchmarking Tutorial](benchmarking.md) using the `dataset` source
+
+## Related Documentation
+**Tutorials:**
+- [Quick Start Guide](quick_start_guide.md) - Run your first inference
+- [Application Integration](application.md) - Use video sources in your Python/C++ code
+- [Benchmarking](benchmarking.md) - Uses `dataset` source for model evaluation
+
+**References:**
+- [Adapters Reference](../reference/adapters.md) - Detailed adapter configuration options
+- [inference.py CLI](../reference/inference.md) - Command-line inference tool documentation
+
+**Examples:**
+- [application.py](../../examples/application.py) - Basic example using USB camera
+- [application_extended.py](../../examples/application_extended.py) - Shows hardware caps for camera configuration
+
+## Further support
+- For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+- For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

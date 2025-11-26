@@ -1,3 +1,4 @@
+// Copyright Axelera AI, 2025
 #include "GstAxDecode.hpp"
 #include <gmodule.h>
 #include <gst/gst.h>
@@ -32,14 +33,12 @@ static GstStaticPadTemplate src_template
 
 struct _GstAxdecoderData {
   std::unique_ptr<Ax::SharedLib> shared;
-  std::shared_ptr<void> subplugin_data;
+  std::unique_ptr<Ax::Decode> plugin;
   std::string shared_lib_path;
   std::string mode;
   std::string options;
   bool options_initialised = false;
   Ax::Logger logger{ Ax::Severity::trace, nullptr, GST_CAT_DEFAULT };
-
-  Ax::V1Plugin::Decoder fns;
 };
 
 G_DEFINE_TYPE_WITH_CODE(GstAxdecoder, gst_axdecoder, GST_TYPE_AGGREGATOR,
@@ -51,21 +50,23 @@ gst_axdecoder_set_property(
 {
   GstAxdecoder *muxer = GST_AXDECODER(object);
   GST_DEBUG_OBJECT(muxer, "set_property");
+  auto &data = *muxer->data;
 
   switch (property_id) {
     case PROP_SHARED_LIB_PATH:
-      muxer->data->shared_lib_path = Ax::libname(g_value_get_string(value));
-      muxer->data->shared = std::make_unique<Ax::SharedLib>(
-          muxer->data->logger, muxer->data->shared_lib_path);
-      Ax::load_v1_plugin(*muxer->data->shared, muxer->data->fns);
+      data.shared_lib_path = Ax::libname(g_value_get_string(value));
+      data.shared = std::make_unique<Ax::SharedLib>(data.logger, data.shared_lib_path);
       break;
     case PROP_MODE:
-      muxer->data->mode = g_value_get_string(value);
+      data.mode = g_value_get_string(value);
       break;
     case PROP_OPTIONS:
-      muxer->data->options = g_value_get_string(value);
-      update_options(object, muxer->data->options, muxer->data->fns, muxer->data->logger,
-          muxer->data->subplugin_data, muxer->data->options_initialised);
+      data.options = g_value_get_string(value);
+      if (data.plugin) {
+        auto opts = Ax::parse_and_validate_plugin_options(
+            data.logger, data.options, data.plugin->allowed_properties());
+        data.plugin->set_dynamic_properties(opts);
+      }
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
@@ -167,9 +168,11 @@ gst_axdecoder_aggregate(GstAggregator *aggregator, gboolean timeout)
   GstAxdecoder *muxer = GST_AXDECODER(aggregator);
   GST_DEBUG_OBJECT(muxer, "aggregate");
 
-  init_options(G_OBJECT(aggregator), muxer->data->options, muxer->data->fns,
-      muxer->data->logger, muxer->data->subplugin_data,
-      muxer->data->options_initialised, nullptr);
+  auto &data = *muxer->data;
+  if (!data.plugin) {
+    data.plugin = std::make_unique<Ax::LoadedDecode>(
+        data.logger, std::move(*data.shared), data.options, nullptr, data.mode);
+  }
 
   bool main_sinkpad_has_buffer
       = gst_aggregator_pad_has_buffer(GST_AGGREGATOR_PAD_CAST(muxer->main_sinkpad));
@@ -244,12 +247,8 @@ gst_axdecoder_aggregate(GstAggregator *aggregator, gboolean timeout)
   AxDataInterface srcpad_info = interface_from_caps_and_meta(srcpad_caps, nullptr);
   gst_caps_unref(srcpad_caps);
 
-  if (muxer->data->fns.decode_to_meta) {
-    muxer->data->fns.decode_to_meta(std::get<AxTensorsInterface>(tensors),
-        muxer->data->subplugin_data.get(), subframe_index, subframe_number,
-        *gst_buffer_get_general_meta(buffer1)->meta_map_ptr, srcpad_info,
-        muxer->data->logger);
-  }
+  data.plugin->decode_to_meta(std::get<AxTensorsInterface>(tensors), subframe_index,
+      subframe_number, *gst_buffer_get_general_meta(buffer1)->meta_map_ptr, srcpad_info);
 
   unmap_mem(tensors_memmap);
   gst_buffer_unref(buffer2);

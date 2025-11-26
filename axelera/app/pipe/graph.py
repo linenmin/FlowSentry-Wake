@@ -4,7 +4,6 @@
 from collections import defaultdict
 import enum
 import functools
-import sys
 
 import networkx as nx
 
@@ -461,6 +460,7 @@ class TrackerHelper:
                 n for n in graph_nx.nodes() if n != tracker and n != input_placeholder
             ]
             subgraph = graph_nx.subgraph(nodes_without_tracker)
+            del subgraph  # We dont need the subgraph, it was just to check DAGness
 
             # It's a tracker cascade if:
             # - The tracker is a leaf node (no outgoing edges)

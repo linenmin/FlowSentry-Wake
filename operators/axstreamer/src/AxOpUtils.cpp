@@ -152,16 +152,16 @@ indices_for_topk_center(const std::vector<box_xyxy> &boxes, int topk, int width,
 inferences
 topk(const inferences &predictions, int topk)
 {
-  if (predictions.boxes.size() <= topk) {
-    return predictions;
-  }
   std::vector<int> indices = indices_for_topk(predictions.scores, topk);
   inferences result(topk);
   result.set_prototype_dims(predictions.prototype_width,
       predictions.prototype_height, predictions.prototype_depth);
   result.prototype_coefs = std::move(predictions.prototype_coefs);
   for (auto idx : indices) {
-    result.boxes.push_back(predictions.boxes[idx]);
+    if (!predictions.boxes.empty())
+      result.boxes.push_back(predictions.boxes[idx]);
+    if (!predictions.obb.empty())
+      result.obb.push_back(predictions.obb[idx]);
     result.scores.push_back(predictions.scores[idx]);
     result.class_ids.push_back(predictions.class_ids[idx]);
     if (!predictions.seg_funcs.empty())
@@ -224,6 +224,46 @@ build_exponential_tables_with_zero_point(
 {
   return build_general_dequantization_tables(
       zero_points, scales, [](float x) { return std::exp(x); });
+}
+
+std::vector<sin_cos_lookups>
+build_general_trigonometric_tables(const std::vector<float> &zero_points,
+    const std::vector<float> &scales, auto &&f1, auto &&f2)
+{
+  std::vector<sin_cos_lookups> trig_tables;
+  for (size_t i = 0; i < scales.size(); ++i) {
+    sin_cos_lookups trig_table;
+    // The zero points do not matter if we have ratios
+    // In this case for numerical stability the largest value is the best
+    float zero_point = 127.0;
+    if (!zero_points.empty()) {
+      zero_point = zero_points.at(i);
+    }
+    for (int j = 0; j < trig_table.size(); ++j) {
+      // Assuming signed int8, i.e. the range of the table is from -128 to 127
+      if (j < 256) {
+        trig_table[j] = f1(ax_utils::dequantize(j - 128, scales[i], zero_point));
+      } else {
+        trig_table[j] = f2(ax_utils::dequantize(j - 384, scales[i], zero_point));
+      }
+    }
+
+    trig_tables.push_back(trig_table);
+  }
+  return trig_tables;
+}
+std::vector<sin_cos_lookups>
+build_trigonometric_tables(const std::vector<float> &zero_points,
+    const std::vector<float> &scales, float add, float mul)
+{
+  auto sin_cos_tables = build_general_trigonometric_tables(
+      zero_points, scales,
+      [add, mul](
+          float x) { return std::sin((ax_utils::to_sigmoid(x) + add) * mul); },
+      [add, mul](
+          float x) { return std::cos((ax_utils::to_sigmoid(x) + add) * mul); });
+
+  return sin_cos_tables;
 }
 
 tensor_dims
@@ -304,13 +344,14 @@ determine_scale(int video_width, int video_height, int tensor_width,
     y_adjust = (tensor_height - video_height) / 2;
     scale_factor = std::max(tensor_width, tensor_height);
   }
-
   return { scale_factor, scale_factor, x_adjust, y_adjust };
 }
 
 struct scale_to_original {
   std::function<int(float)> to_orig_x;
   std::function<int(float)> to_orig_y;
+  float scale_x;
+  float scale_y;
 };
 scale_to_original
 scale(int video_width, int video_height, int tensor_width, int tensor_height,
@@ -329,15 +370,17 @@ scale(int video_width, int video_height, int tensor_width, int tensor_height,
     return std::clamp(adjusted, 0, max_height);
   };
 
-  return { to_orig_x, to_orig_y };
+  return { to_orig_x, to_orig_y, x_scale, y_scale };
 }
 
 std::vector<KptXyv>
 scale_kpts(const std::vector<ax_utils::fkpt> &norm_kpts, int video_width,
     int video_height, int tensor_width, int tensor_height, bool scale_up, bool letterbox)
 {
-  const auto [to_orig_x, to_orig_y] = scale(video_width, video_height,
-      tensor_width, tensor_height, scale_up, letterbox);
+  const auto [to_orig_x, to_orig_y, unused_scale_x, unused_scale_y] = scale(
+      video_width, video_height, tensor_width, tensor_height, scale_up, letterbox);
+  (void) unused_scale_x;
+  (void) unused_scale_y;
   std::vector<KptXyv> keypoints;
   keypoints.reserve(norm_kpts.size());
 
@@ -371,8 +414,8 @@ std::vector<BboxXyxy>
 scale_boxes(const std::vector<ax_utils::fbox> &norm_boxes, int video_width,
     int video_height, int tensor_width, int tensor_height, bool scale_up, bool letterbox)
 {
-  const auto [to_orig_x, to_orig_y] = scale(video_width, video_height,
-      tensor_width, tensor_height, scale_up, letterbox);
+  const auto [to_orig_x, to_orig_y, unused_scale_x, unused_scale_y] = scale(
+      video_width, video_height, tensor_width, tensor_height, scale_up, letterbox);
   std::vector<BboxXyxy> boxes;
   boxes.reserve(norm_boxes.size());
 
@@ -394,6 +437,46 @@ scale_boxes(const std::vector<ax_utils::fbox> &norm_boxes, const AxVideoInterfac
 {
   return scale_boxes(norm_boxes, vinfo.info.width, vinfo.info.height,
       model_width, model_height, scale_up, letterbox);
+}
+
+std::vector<BboxXywhr>
+scale_boxes(const std::vector<fobox> &norm_boxes, const AxVideoInterface &vinfo,
+    int model_width, int model_height, bool scale_up, bool letterbox)
+{
+  return scale_boxes(norm_boxes, vinfo.info.width, vinfo.info.height,
+      model_width, model_height, scale_up, letterbox);
+}
+
+std::vector<BboxXywhr>
+scale_boxes(const std::vector<ax_utils::fobox> &norm_boxes, int video_width,
+    int video_height, int tensor_width, int tensor_height, bool scale_up, bool letterbox)
+{
+  const auto [to_orig_x, to_orig_y, scale_x, scale_y] = scale(video_width,
+      video_height, tensor_width, tensor_height, scale_up, letterbox);
+  std::vector<BboxXywhr> boxes;
+  boxes.reserve(norm_boxes.size());
+
+  for (const auto &obb : norm_boxes) {
+    BboxXywhr transformed_box{ to_orig_x(obb.x), to_orig_y(obb.y),
+      static_cast<int>(scale_x * obb.w), static_cast<int>(scale_y * obb.h), obb.angle };
+    boxes.push_back(transformed_box);
+  }
+  return boxes;
+}
+
+std::vector<BboxXywhr>
+scale_shift_boxes(const std::vector<ax_utils::fobox> &norm_boxes, BboxXyxy master_box,
+    int tensor_width, int tensor_height, bool scale_up, bool letterbox)
+{
+  auto box_width = master_box.x2 - master_box.x1;
+  auto box_height = master_box.y2 - master_box.y1;
+  auto boxes = scale_boxes(norm_boxes, box_width, box_height, tensor_width,
+      tensor_height, scale_up, letterbox);
+  for (auto &box : boxes) {
+    box.x += master_box.x1;
+    box.y += master_box.y1;
+  }
+  return boxes;
 }
 
 std::vector<BboxXyxy>
@@ -497,7 +580,11 @@ get_buffer_details(const AxTensorInterface &input)
   details.height = input.sizes[1] * input.sizes[0];
   details.channels = input.sizes[3];
   details.stride = details.width * details.channels;
-  details.data = input.data;
+  if (input.ocl_buffer) {
+    details.data = input.ocl_buffer;
+  } else {
+    details.data = input.data;
+  }
   details.offsets = { 0 };
   details.strides = { static_cast<size_t>(details.stride) };
   details.format = AxVideoFormat::UNDEFINED;
@@ -529,6 +616,8 @@ get_buffer_details(const AxVideoInterface &input)
     details.data = input.fd;
   } else if (input.vaapi) {
     details.data = input.vaapi;
+  } else if (input.ocl_buffer) {
+    details.data = input.ocl_buffer;
   } else {
     details.data = input.data;
   }
@@ -541,10 +630,13 @@ get_buffer_details(const AxVideoInterface &input)
   if (details.offsets.empty()) {
     details.offsets = { 0 };
   }
-  details.crop_x = input.info.x_offset;
-  details.crop_y = input.info.y_offset;
-  details.actual_height = input.info.actual_height != 0 ? input.info.actual_height :
-                                                          input.info.height;
+  details.crop_x = input.info.cropped ? input.info.x_offset : 0;
+  details.crop_y = input.info.cropped ? input.info.y_offset : 0;
+  // If the actual height is not set, use the height
+  auto actual_height = input.info.actual_height != 0 ? input.info.actual_height :
+                                                       input.info.height;
+  //  If we have a cropped image use the actual height not the cropped height
+  details.actual_height = input.info.cropped ? actual_height : input.info.height;
   return { details };
 }
 

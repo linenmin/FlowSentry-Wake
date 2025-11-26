@@ -29,9 +29,7 @@ from . import (
     logging_utils,
     network,
     operators,
-    pipe,
     schema,
-    torch_utils,
     utils,
 )
 from .operators import AxOperator, compose_preprocess_transforms, get_input_operator
@@ -130,14 +128,14 @@ def _parse_deep_learning_task(
             raise ValueError(f"{', '.join(unknown)} {msg} of a Task")
 
     inp = _gen_input_transforms(phases['input'], template['input'], custom_operators)
+    inf_op_config = operators.InferenceOpConfig.from_yaml_dict(
+        phases['inference'], template['inference']
+    )
     preprocess = _gen_processing_transforms(
         phases, template, custom_operators, 'preprocess', task_name, eval_mode
     )
     postprocess = _gen_processing_transforms(
         phases, template, custom_operators, 'postprocess', task_name, eval_mode
-    )
-    inf_op_config = operators.InferenceOpConfig.from_yaml_dict(
-        phases['inference'], template['inference'], postprocess
     )
     task = AxTask(
         task_name,
@@ -316,7 +314,7 @@ def _get_template_processing_steps(processing_steps, model_info):
     if template_path := (processing_steps and processing_steps.get('template_path')):
         template_path = os.path.expandvars(template_path)
         refs = model_info_as_kwargs(model_info)
-        compiled_schema = schema.load(schema.task, template_path, False)
+        compiled_schema = schema.load_task(template_path, False)
         template.update(utils.load_yaml_by_reference(template_path, refs, compiled_schema))
     return template
 
@@ -330,8 +328,8 @@ def _batched(iterable, n):
 
 
 def _trace_model_info(model_info: types.ModelInfo, out: Callable[[str], None]):
-    def col(l, r):
-        return out(f'{l:>20} {r}'.rstrip())
+    def col(left, right):
+        return out(f'{left:>20} {right}'.rstrip())
 
     col('Field', 'Value')
     for name, val in model_info_as_kwargs(model_info).items():
@@ -409,7 +407,7 @@ def _deploy_model(
         if model_infos.model(model_name).model_type == types.ModelType.DEEP_LEARNING:
             with nn.from_model_dir(model_name):
                 model_obj = nn.instantiate_model_for_deployment(task)
-                LOG.debug(f"Compose dataset calibration transforms")
+                LOG.debug("Compose dataset calibration transforms")
                 preprocess = compose_preprocess_transforms(task.preprocess, task.input)
 
                 if compile_object:
@@ -499,7 +497,7 @@ def _deploy_model(
         out_json.write_text(task.model_info.to_json())
     except logging_utils.UserError:
         raise
-    except exceptions.PrequantizedModelRequired as e:
+    except exceptions.PrequantizedModelRequired:
         # pass the exception out to trigger prequantization
         raise
     except Exception as e:
@@ -611,11 +609,16 @@ def _build_deploy_command_and_run(
     if default_representative_images:
         cmd_parts.append('--default-representative-images')
 
+    if pipe_type == 'quantized':
+        mode = 'QUANTIZE'
+        debug = True
+    else:
+        cmd_parts.append(f'--pipe {pipe_type}')
+
     # Add other standard parameters
     cmd_parts.extend(
         [
             f'--data-root {data_root}',
-            f'--pipe {pipe_type}',
             f'--build-root {build_root}',
             nn_name,
         ]
@@ -727,14 +730,9 @@ def _deploy_from_yaml(
         metis = device_man.get_metis_type()
         LOG.info("Detected Metis type as %s", metis.name)
 
-    network.restrict_cores(
-        nn, pipeline_config.pipe_type, pipeline_config.aipu_cores, metis, deploy=True
-    )
+    network.restrict_cores(nn, pipeline_config, metis, deploy=True)
 
-    requested_exec_cores = pipeline_config.aipu_cores
-    model_infos = network.read_deployed_model_infos(
-        nn_dir, nn, pipeline_config.pipe_type, requested_exec_cores, metis
-    )
+    model_infos = network.read_deployed_model_infos(nn_dir, nn, pipeline_config, metis)
 
     if len(nn.tasks) < 1:
         raise ValueError(f"No tasks found in {path}")
@@ -761,7 +759,7 @@ def _deploy_from_yaml(
 
             compiler_overrides = model_infos.model_compiler_overrides(model_name, metis)
             deploy_cores = model_infos.determine_deploy_cores(
-                model_name, requested_exec_cores, metis
+                model_name, pipeline_config.aipu_cores, metis, pipeline_config.low_latency
             )
             try:
                 compilation_cfg = config.gen_compilation_config(
@@ -854,9 +852,7 @@ def _deploy_from_yaml(
         LOG.info(f"## Deploy {nnname} pipeline only")
 
     # redetect ready state, or else `check_ready` fails in _deploy_pipeline
-    model_infos = network.read_deployed_model_infos(
-        nn_dir, nn, pipeline_config.pipe_type, requested_exec_cores, metis
-    )
+    model_infos = network.read_deployed_model_infos(nn_dir, nn, pipeline_config, metis)
     if models_only or model:
         return ok
     elif ok:
@@ -1037,7 +1033,7 @@ def _gen_input_transforms(custom_config, template, custom_operators):
         LOG.trace("The source is not clearly declared, default as full frame")
         source = "full"
     elif source == "image_processing":
-        assert 'image_processing' in config, f"Please specify the image processing operator"
+        assert 'image_processing' in config, "Please specify the image processing operator"
         all_ops = collections.ChainMap(custom_operators, operators.builtins)
         config['image_processing'] = _create_transforms(
             config['image_processing'], 'image_processing', all_ops

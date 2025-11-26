@@ -10,7 +10,7 @@ torch = pytest.importorskip("torch")
 import torchvision.transforms.functional as TF
 
 from axelera import types
-from axelera.app import gst_builder, operators
+from axelera.app import config, gst_builder, operators
 
 
 def _gen_gst(op, stream_idx=''):
@@ -64,11 +64,9 @@ def test_resize_and_convert():
                 'options': 'width:20;height:10;letterbox:0',
             },
             {
-                'instance': 'videoconvert',
-            },
-            {
-                'caps': 'video/x-raw,format=RGBA',
-                'instance': 'capsfilter',
+                'instance': 'axtransform',
+                'lib': 'libtransform_colorconvert.so',
+                'options': 'format:rgba',
             },
         ]
         assert _gen_gst(op) == gst_exp_out
@@ -214,3 +212,27 @@ def test_ax_opencl_to_tensor_normalize():
             'options': 'to_tensor:1;mean:0.408,0.459,0.482;std:0.004,0.004,0.004;quant_scale:0.1;quant_zeropoint:-14.0',
         },
     ]
+
+
+@pytest.mark.parametrize(
+    'format,afmethod,colorconvertmethod',
+    [
+        ('rgb', config.VideoFlipMethod.clockwise, 'clockwise'),
+        ('rgb', config.VideoFlipMethod.rotate_180, 'rotate-180'),
+        ('rgb', config.VideoFlipMethod.counterclockwise, 'counterclockwise'),
+        ('rgb', config.VideoFlipMethod.horizontal_flip, 'horizontal-flip'),
+        ('rgb', config.VideoFlipMethod.vertical_flip, 'vertical-flip'),
+        ('rgb', config.VideoFlipMethod.upper_left_diagonal, 'upper-left-diagonal'),
+        ('bgr', config.VideoFlipMethod.upper_right_diagonal, 'upper-right-diagonal'),
+    ],
+)
+def test_opencl_videoflip_and_color(format, afmethod, colorconvertmethod):
+    op = operators.mega.OpenCLVideoFlipAndColorConvert(format=format, method=afmethod)
+    gst_exp_out = [
+        {
+            'instance': 'axtransform',
+            'lib': 'libtransform_colorconvert_cl.so',
+            'options': f'format:{format};flip_method:{colorconvertmethod}',
+        },
+    ]
+    assert _gen_gst(op) == gst_exp_out

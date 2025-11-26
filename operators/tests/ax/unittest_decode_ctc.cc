@@ -2,7 +2,7 @@
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <algorithm> // for std::find
 #include <cstdlib> // For rand()
@@ -278,9 +278,9 @@ TEST_F(DecodeCTCTest, nhwc_layout_with_reduce_mean)
   setup_nhwc_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
   auto properties = create_properties(chars_info.filename, true);
 
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
@@ -292,9 +292,9 @@ TEST_F(DecodeCTCTest, nhwc_layout_multi_heads_with_reduce_mean)
       chars_info.expected_blank_index, 3);
   auto properties = create_properties(chars_info.filename, true);
 
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
@@ -305,9 +305,9 @@ TEST_F(DecodeCTCTest, three_dimensional_tensor_without_reduce_mean)
   setup_3d_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
   auto properties = create_properties(chars_info.filename, false);
 
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
@@ -322,10 +322,10 @@ TEST_F(DecodeCTCTest, BlankIndexDetectEmptyString)
   setup_nhwc_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
   auto properties = create_properties(chars_info.filename, true); // Don't configure blank_index
 
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
   // Should decode correctly by detecting ""
-  ASSERT_NO_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
+  ASSERT_NO_THROW(decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
 
@@ -336,10 +336,10 @@ TEST_F(DecodeCTCTest, BlankIndexDetectHyphenFallback)
   setup_nhwc_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
   auto properties = create_properties(chars_info.filename, true); // Don't configure blank_index
 
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
   // Should decode correctly by falling back to detecting "-"
-  ASSERT_NO_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
+  ASSERT_NO_THROW(decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
 
@@ -360,10 +360,10 @@ TEST_F(DecodeCTCTest, BlankIndexConfiguredOverride)
   // Configure blank_index explicitly to the HYPHEN index
   auto properties = create_properties(chars_info.filename, true, hyphen_idx);
 
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
   // Should decode correctly using the CONFIGURED hyphen index, ignoring the empty string
-  ASSERT_NO_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
+  ASSERT_NO_THROW(decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
 
@@ -374,7 +374,7 @@ TEST_F(DecodeCTCTest, BlankIndexConfiguredInvalid)
       chars_info.num_chars + 5); // Out of bounds index
 
   // Expect init to throw because configured index is invalid
-  ASSERT_THROW(Decoder decoder("libdecode_ctc.so", properties), std::runtime_error);
+  ASSERT_THROW(Ax::LoadDecode("ctc", properties), std::runtime_error);
 }
 
 TEST_F(DecodeCTCTest, BlankIndexNotFound)
@@ -384,7 +384,7 @@ TEST_F(DecodeCTCTest, BlankIndexNotFound)
   auto properties = create_properties(chars_info.filename, true); // Don't configure
 
   // Expect init to throw because blank cannot be determined
-  ASSERT_THROW(Decoder decoder("libdecode_ctc.so", properties), std::runtime_error);
+  ASSERT_THROW(Ax::LoadDecode("ctc", properties), std::runtime_error);
 }
 
 TEST_F(DecodeCTCTest, BlankIndexMultipleHyphens)
@@ -403,10 +403,10 @@ TEST_F(DecodeCTCTest, BlankIndexMultipleHyphens)
   setup_nhwc_tensor(m_default_max_indices, chars_info.num_chars, first_hyphen_idx);
   auto properties = create_properties(chars_info.filename, true); // Don't configure blank_index
 
-  Decoder decoder("libdecode_ctc.so", properties); // Warning expected in logs here
+  auto decoder = Ax::LoadDecode("ctc", properties); // Warning expected in logs here
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
   // Should decode correctly using the FIRST hyphen index
-  ASSERT_NO_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
+  ASSERT_NO_THROW(decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, m_default_expected_text));
 }
 
@@ -425,9 +425,9 @@ TEST_F(DecodeCTCTest, DecodeUTF8)
   setup_nhwc_tensor(utf8_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
   auto properties = create_properties(chars_info.filename, true); // Don't configure, let it find "-"
 
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  ASSERT_NO_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
+  ASSERT_NO_THROW(decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info));
 
   // Verify the decoded string matches the expected multi-byte string
   ASSERT_TRUE(check_meta_exists(meta_map, m_meta_key, expected_utf8_text));
@@ -440,9 +440,9 @@ TEST_F(DecodeCTCTest, invalid_current_frame)
   auto chars_info = create_chars_file(m_default_chars, "");
   setup_nhwc_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
   auto properties = create_properties(chars_info.filename, true);
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  ASSERT_THROW(decoder.decode_to_meta(m_tensors, 1, 1, meta_map, m_video_info),
+  ASSERT_THROW(decoder->decode_to_meta(m_tensors, 1, 1, meta_map, m_video_info),
       std::runtime_error);
 }
 
@@ -450,10 +450,10 @@ TEST_F(DecodeCTCTest, empty_tensor_list)
 {
   auto chars_info = create_chars_file(m_default_chars, "");
   auto properties = create_properties(chars_info.filename, true);
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   AxTensorsInterface empty_tensors{};
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  ASSERT_THROW(decoder.decode_to_meta(empty_tensors, 0, 1, meta_map, m_video_info),
+  ASSERT_THROW(decoder->decode_to_meta(empty_tensors, 0, 1, meta_map, m_video_info),
       std::runtime_error);
 }
 
@@ -464,9 +464,9 @@ TEST_F(DecodeCTCTest, non_float_tensor)
   std::vector<int> shape = { 1, 1, 20, chars_info.num_chars }; // NHWC
   auto int_tensors = tensors_from_vector(int_data, shape);
   auto properties = create_properties(chars_info.filename, true);
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  ASSERT_THROW(decoder.decode_to_meta(int_tensors, 0, 1, meta_map, m_video_info),
+  ASSERT_THROW(decoder->decode_to_meta(int_tensors, 0, 1, meta_map, m_video_info),
       std::runtime_error);
 }
 
@@ -478,9 +478,9 @@ TEST_F(DecodeCTCTest, null_tensor_data)
   setup_nhwc_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
   m_tensors[0].data = nullptr; // Manually set data to null
   auto properties = create_properties(chars_info.filename, true);
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  ASSERT_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info),
+  ASSERT_THROW(decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info),
       std::runtime_error);
 }
 
@@ -498,9 +498,9 @@ TEST_F(DecodeCTCTest, zero_positions_dimension) // W=0
   m_tensors = tensors_from_vector(m_tensor_data, m_tensor_shape);
 
   auto properties = create_properties(chars_info.filename, true);
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  ASSERT_THROW(decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info),
+  ASSERT_THROW(decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info),
       std::runtime_error);
 }
 
@@ -520,7 +520,7 @@ TEST_F(DecodeCTCTest, zero_chars_dimension_3d) // C=0
 
   auto properties = create_properties(chars_info.filename, false);
   // Init should fail because chars list loaded from file is empty
-  ASSERT_THROW(Decoder decoder("libdecode_ctc.so", properties), std::runtime_error);
+  ASSERT_THROW(Ax::LoadDecode("ctc", properties), std::runtime_error);
 }
 //======== Configuration Tests (Adapted) ========
 
@@ -532,9 +532,9 @@ TEST_F(DecodeCTCTest, custom_meta_key)
   auto properties = create_properties(chars_info.filename, true);
   properties["meta_key"] = custom_meta_key;
 
-  Decoder decoder("libdecode_ctc.so", properties);
+  auto decoder = Ax::LoadDecode("ctc", properties);
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
   ASSERT_TRUE(check_meta_exists(meta_map, custom_meta_key, m_default_expected_text));
 }
 
@@ -544,14 +544,14 @@ TEST_F(DecodeCTCTest, replace_existing_meta)
   setup_nhwc_tensor(m_default_max_indices, chars_info.num_chars, chars_info.expected_blank_index);
 
   std::string meta_key = m_meta_key;
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> meta_map;
+  Ax::MetaMap meta_map;
   std::string initial_text = "INITIAL";
   meta_map[meta_key] = std::make_unique<AxLicensePlateMeta>(initial_text);
   ASSERT_TRUE(check_meta_exists(meta_map, meta_key, initial_text));
 
   auto properties = create_properties(chars_info.filename, true);
-  Decoder decoder("libdecode_ctc.so", properties);
-  decoder.decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
+  auto decoder = Ax::LoadDecode("ctc", properties);
+  decoder->decode_to_meta(m_tensors, 0, 1, meta_map, m_video_info);
   ASSERT_TRUE(check_meta_exists(meta_map, meta_key, m_default_expected_text));
 }
 

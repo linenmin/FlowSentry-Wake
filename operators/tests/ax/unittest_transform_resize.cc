@@ -1,8 +1,9 @@
-#include "unittest_transform_common.h"
+// Copyright Axelera AI, 2025
+#include "unittest_ax_common.h"
 
 namespace
 {
-const auto resize_lib = "libtransform_resize.so";
+const auto resize_lib = "resize";
 
 TEST(resize_letterbox, output_is_square_of_resize_size_if_letterbox)
 {
@@ -11,9 +12,9 @@ TEST(resize_letterbox, output_is_square_of_resize_size_if_letterbox)
     { "size", std::to_string(resize_size) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
+  auto xform = Ax::LoadTransform(resize_lib, input);
   AxVideoInterface video_info{ { 640, 480, 640 * 4, 0, AxVideoFormat::RGBA }, nullptr };
-  auto out_interface = resizer.set_output_interface(video_info);
+  auto out_interface = xform->set_output_interface(video_info);
   auto info = std::get<AxVideoInterface>(out_interface).info;
   EXPECT_EQ(info.width, info.height);
   EXPECT_EQ(info.width, resize_size);
@@ -28,12 +29,52 @@ TEST(resize_letterbox, output_is_width_height_if_no_size_andletterbox)
     { "height", std::to_string(out_height) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
+  auto xform = Ax::LoadTransform(resize_lib, input);
   AxVideoInterface video_info{ { 640, 480, 640 * 4, 0, AxVideoFormat::RGBA }, nullptr };
-  auto out_interface = resizer.set_output_interface(video_info);
+  auto out_interface = xform->set_output_interface(video_info);
   auto info = std::get<AxVideoInterface>(out_interface).info;
   EXPECT_EQ(info.width, out_width);
   EXPECT_EQ(info.height, out_height);
+}
+
+TEST(resize_letterbox, output_channels_is_three_for_rgb_input)
+{
+  int out_width = 256;
+  int out_height = 128;
+  std::unordered_map<std::string, std::string> input = {
+    { "width", std::to_string(out_width) },
+    { "height", std::to_string(out_height) },
+    { "letterbox", "0" },
+    { "to_tensor", "1" },
+
+  };
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  AxVideoInterface video_info{ { 640, 480, 640 * 3, 0, AxVideoFormat::RGB }, nullptr };
+  auto out_interface = xform->set_output_interface(video_info);
+  auto info = std::get<AxTensorsInterface>(out_interface);
+  EXPECT_EQ(info.size(), 1);
+  EXPECT_EQ(info[0].sizes.size(), 4);
+  EXPECT_EQ(info[0].sizes[3], 3); // channels
+}
+
+TEST(resize_letterbox, output_channels_is_one_for_gray_input)
+{
+  int out_width = 256;
+  int out_height = 128;
+  std::unordered_map<std::string, std::string> input = {
+    { "width", std::to_string(out_width) },
+    { "height", std::to_string(out_height) },
+    { "letterbox", "0" },
+    { "to_tensor", "1" },
+
+  };
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  AxVideoInterface video_info{ { 640, 480, 640 * 1, 0, AxVideoFormat::GRAY8 }, nullptr };
+  auto out_interface = xform->set_output_interface(video_info);
+  auto info = std::get<AxTensorsInterface>(out_interface);
+  EXPECT_EQ(info.size(), 1);
+  EXPECT_EQ(info[0].sizes.size(), 4);
+  EXPECT_EQ(info[0].sizes[3], 1); // channels
 }
 
 
@@ -44,9 +85,9 @@ TEST(resize_letterbox, maintains_aspect_ratio_if_no_letterbox_and_only_size_prov
     { "size", std::to_string(resize_size) },
     { "letterbox", "0" },
   };
-  Transformer resizer(resize_lib, input);
+  auto xform = Ax::LoadTransform(resize_lib, input);
   AxVideoInterface video_info{ { 1024, 512, 1024 * 4, 0, AxVideoFormat::RGBA }, nullptr };
-  auto out_interface = resizer.set_output_interface(video_info);
+  auto out_interface = xform->set_output_interface(video_info);
   auto info = std::get<AxVideoInterface>(out_interface).info;
   EXPECT_EQ(info.height, 256);
   EXPECT_EQ(info.width, 512);
@@ -59,14 +100,14 @@ TEST(resize_letterbox, top_bottom_default_padding)
     { "width", std::to_string(resize_size) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 2 * 4, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 4, 255);
   AxVideoInterface in_info{ { 4, 2, 4 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 4, 0, AxVideoFormat::RGBA }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -87,14 +128,14 @@ TEST(resize_letterbox, top_bottom_default_padding_rgb)
     { "width", std::to_string(resize_size) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 2 * 3, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 3, 255);
   AxVideoInterface in_info{ { 4, 2, 4 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -115,14 +156,14 @@ TEST(resize_letterbox, top_bottom_default_padding_gray8)
     { "width", std::to_string(resize_size) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 2 * 1, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 1, 255);
   AxVideoInterface in_info{ { 4, 2, 4 * 1, 0, AxVideoFormat::GRAY8 }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 1, 0, AxVideoFormat::GRAY8 }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -144,14 +185,14 @@ TEST(resize_letterbox, left_right_default_padding)
     { "width", std::to_string(resize_size) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(2 * 4 * 4, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 4, 255);
   AxVideoInterface in_info{ { 2, 4, 2 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 4, 0, AxVideoFormat::RGBA }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -171,14 +212,14 @@ TEST(resize_letterbox, left_right_default_padding_rgb)
     { "width", std::to_string(resize_size) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(2 * 4 * 3, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 3, 255);
   AxVideoInterface in_info{ { 2, 4, 2 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -198,14 +239,14 @@ TEST(resize_letterbox, left_right_default_padding_gray8)
     { "width", std::to_string(resize_size) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(2 * 4 * 1, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 1, 255);
   AxVideoInterface in_info{ { 2, 4, 2 * 1, 0, AxVideoFormat::GRAY8 }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 1, 0, AxVideoFormat::GRAY8 }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -227,14 +268,14 @@ TEST(resize_letterbox, top_bottom_overidden_padding)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 2 * 4, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 4, 255);
   AxVideoInterface in_info{ { 4, 2, 4 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 4, 0, AxVideoFormat::RGBA }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -257,14 +298,14 @@ TEST(resize_letterbox, top_bottom_overidden_padding_rgb)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 2 * 3, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 3, 255);
   AxVideoInterface in_info{ { 4, 2, 4 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -287,14 +328,14 @@ TEST(resize_letterbox, top_bottom_overidden_padding_gray8)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 2 * 1, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 1, 255);
   AxVideoInterface in_info{ { 4, 2, 4 * 1, 0, AxVideoFormat::GRAY8 }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 1, 0, AxVideoFormat::GRAY8 }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -317,14 +358,14 @@ TEST(resize_letterbox, left_right_overidden_padding)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(2 * 4 * 4, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 4, 255);
   AxVideoInterface in_info{ { 2, 4, 2 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 4, 0, AxVideoFormat::RGBA }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -347,14 +388,14 @@ TEST(resize_letterbox, left_right_overidden_padding_rgb)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(2 * 4 * 3, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 3, 255);
   AxVideoInterface in_info{ { 2, 4, 2 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -377,14 +418,14 @@ TEST(resize_letterbox, left_right_overidden_padding_gray8)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(2 * 4 * 1, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 1, 255);
   AxVideoInterface in_info{ { 2, 4, 2 * 1, 0, AxVideoFormat::GRAY8 }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 1, 0, AxVideoFormat::GRAY8 }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -408,14 +449,14 @@ TEST(resize_letterbox, left_right_overidden_padding_with_resize)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 8 * 4, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 4, 255);
   AxVideoInterface in_info{ { 4, 8, 4 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 4, 0, AxVideoFormat::RGBA }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -438,14 +479,14 @@ TEST(resize_letterbox, left_right_overidden_padding_with_resize_rgb)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 8 * 3, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 3, 255);
   AxVideoInterface in_info{ { 4, 8, 4 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -468,14 +509,14 @@ TEST(resize_letterbox, left_right_overidden_padding_with_resize_gray8)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 8 * 1, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 1, 255);
   AxVideoInterface in_info{ { 4, 8, 4 * 1, 0, AxVideoFormat::GRAY8 }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 1, 0, AxVideoFormat::GRAY8 }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -499,14 +540,14 @@ TEST(resize_letterbox, top_bottom_overidden_padding_with_resize)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(8 * 4 * 4, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 4, 255);
   AxVideoInterface in_info{ { 8, 4, 8 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 4, 0, AxVideoFormat::RGBA }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -528,14 +569,14 @@ TEST(resize_letterbox, top_bottom_overidden_padding_with_resize_rgb)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(8 * 4 * 3, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 3, 255);
   AxVideoInterface in_info{ { 8, 4, 8 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -557,14 +598,14 @@ TEST(resize_letterbox, top_bottom_overidden_padding_with_resize_GRAY8)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(8 * 4 * 1, 33);
   auto out_buf = std::vector<uint8_t>(4 * 4 * 1, 255);
   AxVideoInterface in_info{ { 8, 4, 8 * 1, 0, AxVideoFormat::GRAY8 }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 4, 4 * 1, 0, AxVideoFormat::GRAY8 }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -589,14 +630,14 @@ TEST(resize_letterbox, input_taller_than_output_non_square)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(4 * 6 * 1, 33);
   auto out_buf = std::vector<uint8_t>(4 * 3 * 1, 255);
   AxVideoInterface in_info{ { 4, 6, 4 * 1, 0, AxVideoFormat::GRAY8 }, in_buf.data() };
   AxVideoInterface out_info{ { 4, 3, 4 * 1, 0, AxVideoFormat::GRAY8 }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -620,14 +661,14 @@ TEST(resize_letterbox, input_shorter_than_output_non_square)
     { "padding", std::to_string(padding) },
     { "letterbox", "1" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(6 * 4 * 1, 33);
   auto out_buf = std::vector<uint8_t>(3 * 4 * 1, 255);
   AxVideoInterface in_info{ { 6, 4, 6 * 1, 0, AxVideoFormat::GRAY8 }, in_buf.data() };
   AxVideoInterface out_info{ { 3, 4, 3 * 1, 0, AxVideoFormat::GRAY8 }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -648,14 +689,14 @@ TEST(resize_letterbox, test_size_maintains_aspect_ratio)
     { "size", std::to_string(out_size) },
     { "letterbox", "0" },
   };
-  Transformer resizer(resize_lib, input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto xform = Ax::LoadTransform(resize_lib, input);
+  Ax::MetaMap metadata;
 
   auto in_buf = std::vector<uint8_t>(6 * 4 * 4, 33);
   auto out_buf = std::vector<uint8_t>(3 * 2 * 4, 255);
   AxVideoInterface in_info{ { 6, 4, 6 * 4, 0, AxVideoFormat::RGBA }, in_buf.data() };
   AxVideoInterface out_info{ { 3, 2, 3 * 4, 0, AxVideoFormat::RGBA }, out_buf.data() };
-  resizer.transform(in_info, out_info, metadata, 0, 1);
+  xform->transform(in_info, out_info, 0, 1, metadata);
 
   auto expected = std::vector<uint8_t>(3 * 2 * 4, 33);
   ASSERT_EQ(out_buf, expected);

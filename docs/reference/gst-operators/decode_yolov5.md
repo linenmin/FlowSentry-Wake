@@ -43,7 +43,7 @@ element.
     The dequantization zeropoint parameters per tensor from `manifest.json`.
 
 *   **scales**<br>
-    *arroy of float*<br>
+    *array of float*<br>
     The dequantization scale parameters per tensor from `manifest.json`.
 
 *   **anchors**<br>

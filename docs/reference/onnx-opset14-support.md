@@ -1,6 +1,5 @@
 <!--- SPDX-License-Identifier: Apache-2.0 -->
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-
 # AIPU support of ONNX opset14 operators
 
 > [!NOTE]
@@ -1298,7 +1297,7 @@ Constrain input and output types to all tensor types.
 
 **Axelera's notes for developers**
 
-Split is supported for axis different than 0. Negative axis values are not supported.
+Split is not supported as the first operator in a model. Split is supported for axis different than 0. Negative axis values are not supported.
 
 **AIPU Acceleration Constraints**
 - rule: `axis > 0`

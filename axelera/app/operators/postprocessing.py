@@ -1,9 +1,9 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # General post-processing operators
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Optional, Union
 
 import numpy as np
 
@@ -42,7 +42,7 @@ class TopK(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -176,7 +176,7 @@ class CTCDecoder(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -371,7 +371,7 @@ class DecodeEmbeddings(AxOperator):
         task_name: str,
         taskn: int,
         where: str,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
     ):
         super().configure_model_and_context_info(
             model_info, context, task_name, taskn, where, compiled_model_dir
@@ -481,7 +481,7 @@ class Recognition(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -567,7 +567,7 @@ class Recognition(AxOperator):
         - DIR/AJ_Cook.jpg (any_folder/person_name.jpg)
         """
         if not image_id:
-            LOG.warning(f"Cannot extract person name: empty image_id")
+            LOG.warning("Cannot extract person name: empty image_id")
             return None
 
         path = Path(image_id)
@@ -779,7 +779,7 @@ class SemanticSegmentation(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -929,7 +929,7 @@ class GetRawTensor(AxOperator):
         task_name: str,
         taskn: int,
         where: str,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
     ):
         super().configure_model_and_context_info(
             model_info, context, task_name, taskn, where, compiled_model_dir

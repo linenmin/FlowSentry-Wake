@@ -1,6 +1,27 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 # Build a cascade pipeline
 
+## Contents
+- [Build a cascade pipeline](#build-a-cascade-pipeline)
+  - [Contents](#contents)
+  - [Prerequisites](#prerequisites)
+  - [Level](#level)
+  - [Overview](#overview)
+  - [Related Documentation](#related-documentation)
+  - [Next Steps](#next-steps)
+  - [Further support](#further-support)
+
+## Prerequisites
+- Complete [Application Integration](application.md) - understand single-model pipelines
+- Understanding of object detection and classification tasks
+- Familiarity with YAML pipeline configuration
+- Knowledge of how to filter detections by class
+
+## Level
+**Advanced** - Requires understanding of multi-stage inference and task chaining
+
+## Overview
+
 - [Build a cascade pipeline](#build-a-cascade-pipeline)
 
 A cascade pipeline with ssd-mobilenetv1 to detect selected objects and resnet50 for further
@@ -52,3 +73,28 @@ pipeline:
 
 In actual applications, this pipeline can have many extended uses, such as first detecting cars,
 then classifying the cars into corresponding makes/models or model years.
+
+## Related Documentation
+**Tutorials:**
+- [Application Integration](application.md) - Learn single-model pipeline basics first
+- [Custom Weights](custom_weights.md) - Use custom models in cascaded pipelines
+- [Custom Model](custom_model.md) - Build entirely custom cascaded architectures
+
+**References:**
+- [Pipeline Operators](../reference/pipeline_operators.md) - Operators for chaining models
+- [YAML Operators](../reference/yaml_operators.md) - YAML syntax for pipeline definition
+- [Model Zoo](../reference/model_zoo.md) - Available models for cascading
+
+**Examples:**
+- [axinferencenet_cascaded.cpp](../../examples/axinferencenet/axinferencenet_cascaded.cpp) - C++ cascaded pipeline implementation
+- SDK includes `ssd-mobilenetv1-resnet50.yaml` as reference cascade example
+
+## Next Steps
+- **Implement in C++**: Use [axinferencenet_cascaded.cpp](../../examples/axinferencenet/axinferencenet_cascaded.cpp) as template
+- **Deploy custom cascades**: Combine your own models using patterns from this tutorial
+- **Optimize performance**: [Compiler Configs](../reference/compiler_configs.md) for multi-model optimization
+- **Add tracking**: Extend cascades with object tracking (see tracker examples in Model Zoo)
+
+## Further support
+- For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+- For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

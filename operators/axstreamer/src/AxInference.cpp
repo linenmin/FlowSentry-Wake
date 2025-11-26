@@ -95,8 +95,9 @@ output_name(uint32_t crc, int param_num)
   std::snprintf(name.data(), name.size() + 1, "%08x_%02d.bin", crc, param_num);
   return name;
 }
+std::tuple<AxTensorsInterface, AxTensorsInterface> get_shapes_from_model(axrModel *model);
 
-class MockInference : public Ax::Inference
+class MockInference : public Ax::BasicInference
 {
   public:
   MockInference(Ax::Logger &logger, const std::string &model,
@@ -114,30 +115,12 @@ class MockInference : public Ax::Inference
     }
   }
 
-  int batch_size() const override
-  {
-    return inputs_.front().sizes.front();
-  }
-
-  const AxTensorsInterface &input_shapes() const override
-  {
-    return inputs_;
-  }
-
-  const AxTensorsInterface &output_shapes() const override
-  {
-    return outputs_;
-  }
-
-  void dispatch(const std::vector<std::shared_ptr<void>> &input_ptrs,
-      const std::vector<Ax::SharedFD> &input_fds,
-      const std::vector<std::shared_ptr<void>> &output_ptrs,
-      const std::vector<Ax::SharedFD> &output_fds) override
+  Ax::InferenceParams execute(Ax::InferenceParams p) override
   {
     ready_time_ = std::chrono::steady_clock::now() + frame_duration_;
-    assert(output_ptrs.size() == output_shapes().size());
-    const auto crc = calculate_input_crc(inputs_, input_ptrs, input_fds);
-    for (auto &&[n, ptr] : Ax::Internal::enumerate(output_ptrs)) {
+    assert(p.output_ptrs.size() == outputs_.size());
+    const auto crc = calculate_input_crc(inputs_, p.input_ptrs, p.input_fds);
+    for (auto &&[n, ptr] : Ax::Internal::enumerate(p.output_ptrs)) {
       std::ifstream file(path_ + "/" + output_name(crc, n), std::ios::binary);
       const auto size = outputs_[n].total_bytes();
       if (file) {
@@ -149,11 +132,9 @@ class MockInference : public Ax::Inference
         std::fill(data, data + size, std::byte{ 0xa0 });
       }
     }
-  }
 
-  void collect(const std::vector<std::shared_ptr<void>> &) override
-  {
     std::this_thread::sleep_until(ready_time_);
+    return p;
   }
 
   private:
@@ -165,18 +146,20 @@ class MockInference : public Ax::Inference
   std::chrono::microseconds frame_duration_;
 };
 
-class SaveInference : public Ax::Inference
+class SaveInference : public Ax::BasicInference
 {
   public:
-  SaveInference(const std::string &path, std::unique_ptr<Ax::Inference> &&inference)
+  SaveInference(const std::string &path, axrModel *model,
+      std::unique_ptr<Ax::BasicInference> &&inference)
       : path_(path), inference_(std::move(inference))
   {
+    std::tie(inputs_, outputs_) = get_shapes_from_model(model);
     std::string shapes;
-    for (auto &&tensor : inference_->input_shapes()) {
+    for (auto &&tensor : inputs_) {
       shapes += Ax::Internal::join(tensor.sizes, "x");
       shapes += ',';
     }
-    for (auto &&tensor : inference_->output_shapes()) {
+    for (auto &&tensor : outputs_) {
       shapes += Ax::Internal::join(tensor.sizes, "x");
       shapes += ',';
     }
@@ -186,47 +169,27 @@ class SaveInference : public Ax::Inference
     file << shapes << std::endl;
   }
 
-  int batch_size() const override
+  Ax::InferenceParams execute(Ax::InferenceParams p) override
   {
-    return inference_->input_shapes().front().sizes.front();
-  }
+    crcs_.push(calculate_input_crc(inputs_, p.input_ptrs, p.input_fds));
 
-  const AxTensorsInterface &input_shapes() const override
-  {
-    return inference_->input_shapes();
-  }
+    auto q = inference_->execute(std::move(p));
 
-  const AxTensorsInterface &output_shapes() const override
-  {
-    return inference_->output_shapes();
-  }
-
-  void dispatch(const std::vector<std::shared_ptr<void>> &input_ptrs,
-      const std::vector<Ax::SharedFD> &input_fds,
-      const std::vector<std::shared_ptr<void>> &output_ptrs,
-      const std::vector<Ax::SharedFD> &output_fds) override
-  {
-    assert(output_ptrs.size() == output_shapes().size());
-    crcs_.push(calculate_input_crc(input_shapes(), input_ptrs, input_fds));
-    inference_->dispatch(input_ptrs, input_fds, output_ptrs, output_fds);
-  }
-
-  void collect(const std::vector<std::shared_ptr<void>> &output_ptrs) override
-  {
-    inference_->collect(output_ptrs);
-    const auto crc = crcs_.front();
-    crcs_.pop();
+    const auto crc = Ax::pop_queue(crcs_);
     // TODO output_fds not supported in mock
-    for (auto &&[n, ptr] : Ax::Internal::enumerate(output_ptrs)) {
-      const auto size = output_shapes()[n].total_bytes();
+    for (auto &&[n, ptr] : Ax::Internal::enumerate(q.output_ptrs)) {
+      const auto size = outputs_[n].total_bytes();
       std::ofstream file(path_ + "/" + output_name(crc, n), std::ios::binary);
       file.write(static_cast<char *>(ptr.get()), size);
     }
+    return q;
   }
 
   private:
   std::string path_;
-  std::unique_ptr<Ax::Inference> inference_;
+  AxTensorsInterface inputs_;
+  AxTensorsInterface outputs_;
+  std::unique_ptr<Ax::BasicInference> inference_;
   std::queue<uint32_t> crcs_;
 };
 
@@ -246,7 +209,7 @@ parse_options(Ax::Logger &logger, const std::string &options)
 }
 
 
-std::unique_ptr<Ax::Inference>
+std::unique_ptr<Ax::BasicInference>
 maybe_create_mock_inference(Ax::Logger &logger, const Ax::InferenceProperties &props)
 {
   auto opts = parse_options(logger, props.options);
@@ -263,7 +226,7 @@ maybe_create_mock_inference(Ax::Logger &logger, const Ax::InferenceProperties &p
   return std::make_unique<MockInference>(logger, path, shapes, fps);
 }
 
-std::unique_ptr<Ax::Inference>
+std::unique_ptr<Ax::BasicInference>
 create_single_inference(Ax::Logger &logger, axrContext *ctx, axrModel *model,
     const Ax::InferenceProperties &props)
 {
@@ -277,7 +240,7 @@ create_single_inference(Ax::Logger &logger, axrContext *ctx, axrModel *model,
     auto subprops = props;
     subprops.options.clear(); // strip any mock options
     auto inf = create_single_inference(logger, ctx, model, subprops);
-    return std::make_unique<SaveInference>(path, std::move(inf));
+    return std::make_unique<SaveInference>(path, model, std::move(inf));
   }
   return create_axruntime_inference(logger, ctx, model, props);
 }
@@ -353,16 +316,118 @@ read_gst_debug_level(const std::string &gst_debug)
 axr::ptr<axrContext>
 create_context(Ax::Logger &logger)
 {
+#if __SANITIZE_ADDRESS__
+  // Disable implicit address sanitizer for subprocesses (e.g. the riscv toolchain)
+  ::unsetenv("LD_PRELOAD");
+#endif
   auto ctx = axr::to_ptr(axr_create_context());
   auto level = read_gst_debug_level(getenv("GST_DEBUG") ? getenv("GST_DEBUG") : "");
   axr_set_logger(ctx.get(), level, log, &logger);
   return ctx;
 }
 
+class Executor
+{
+  public:
+  virtual void thread_func(size_t n, Ax::BasicInference &instance) = 0;
+  virtual void stop() = 0;
+  virtual void dispatch(Ax::InferenceParams params) = 0;
+  virtual void collect() = 0;
+  virtual ~Executor() = default;
+};
+
+class RoundRobinExecutor : public Executor
+{
+  public:
+  explicit RoundRobinExecutor(size_t num_instances)
+      : inqs_(num_instances), outqs_(num_instances)
+  {
+  }
+
+
+  void dispatch(Ax::InferenceParams params) override
+  {
+    inqs_[next_available_child_].push(std::move(params));
+    next_available_child_ = (next_available_child_ + 1) % inqs_.size();
+  }
+
+  void collect() override
+  {
+    outqs_[next_ready_child_].wait_one();
+    next_ready_child_ = (next_ready_child_ + 1) % outqs_.size();
+  }
+
+  void stop() override
+  {
+    stop_queues(inqs_);
+    stop_queues(outqs_);
+  }
+
+  private:
+  void stop_queues(std::vector<Ax::BlockingQueue<Ax::InferenceParams>> &queues)
+  {
+    for (auto &&q : queues) {
+      q.stop();
+    }
+  }
+
+  void thread_func(size_t n, Ax::BasicInference &instance)
+  {
+    auto &inq = inqs_[n];
+    auto &outq = outqs_[n];
+    while (auto p = inq.wait_one()) {
+      outq.push(instance.execute(std::move(p)));
+    }
+  }
+  std::vector<Ax::BlockingQueue<Ax::InferenceParams>> inqs_;
+  std::vector<Ax::BlockingQueue<Ax::InferenceParams>> outqs_;
+  size_t next_available_child_ = 0;
+  size_t next_ready_child_ = 0;
+};
+
+
+class LowLatencyExecutor : public Executor
+{
+  public:
+  explicit LowLatencyExecutor(Ax::InferenceReadyCallback callback)
+      : callback_(std::move(callback))
+  {
+  }
+
+
+  void dispatch(Ax::InferenceParams params) override
+  {
+    inq_.push(std::move(params));
+  }
+
+  void collect() override
+  {
+  }
+
+  void stop() override
+  {
+    inq_.stop();
+  }
+
+  void thread_func(size_t n, Ax::BasicInference &instance) override
+  {
+    while (auto p = inq_.wait_one()) {
+      auto frame_id = p.frame_id;
+      instance.execute(std::move(p));
+      callback_(frame_id);
+    }
+  }
+
+  // TODO we need to empirally measure some other queue sizes here:
+  Ax::BlockingQueue<Ax::InferenceParams, 4> inq_;
+  Ax::InferenceReadyCallback callback_;
+};
+
 class MultiThreadedInference : public Ax::Inference
 {
   public:
-  MultiThreadedInference(Ax::Logger &logger, const Ax::InferenceProperties &props)
+  MultiThreadedInference(Ax::Logger &logger,
+      const Ax::InferenceProperties &props, Ax::InferenceReadyCallback callback)
       : logger_(logger), context_(create_context(logger)),
         model_(axr_load_model(context_.get(), props.model.c_str()))
   {
@@ -372,21 +437,47 @@ class MultiThreadedInference : public Ax::Inference
     }
     std::tie(input_shapes_, output_shapes_) = get_shapes_from_model(model_.get());
 
-    const auto num_threads = std::max(props.num_children, 1);
+    const auto num_cores = std::max(props.num_children, 1);
     auto devices = Ax::Internal::split(props.devices, ",");
     if (devices.empty()) {
       devices.push_back("");
     }
-    for (auto n = 0; n != num_threads; ++n) {
+    for (auto n = 0; n != num_cores; ++n) {
       for (auto &&device : devices) {
         auto subprops = props;
         subprops.devices = device;
-        inqs_.emplace_back(std::make_unique<Ax::BlockingQueue<Ax::InferenceParams>>());
-        outqs_.emplace_back(std::make_unique<Ax::BlockingQueue<Ax::InferenceParams>>());
         subprops_.emplace_back(subprops);
       }
     }
-    jthreads_.emplace_back(&MultiThreadedInference::thread_func, this, 0);
+    is_low_latency_ = callback && !props.double_buffer
+                      && input_shapes_.front().sizes.front() == 1;
+    if (is_low_latency_) {
+      executor_ = std::make_unique<LowLatencyExecutor>(callback);
+    } else {
+      executor_ = std::make_unique<RoundRobinExecutor>(subprops_.size());
+    }
+    first_thread_ = std::jthread([this]() { init_instances(); });
+  }
+
+  void init_instances()
+  {
+    for (const auto &[n, subprop] : Ax::Internal::enumerate(subprops_)) {
+      logger_(AX_INFO) << "Creating instance " << n << " on device "
+                       << subprop.devices << std::endl;
+      instances_.push_back(
+          create_single_inference(logger_, context_.get(), model_.get(), subprop));
+    }
+    logger_(AX_INFO) << "Done creating runtime instances" << std::endl;
+    for (auto n = size_t{ 1 }; n != instances_.size(); ++n) {
+      jthreads_.emplace_back(
+          [this, n]() { executor_->thread_func(n, *instances_[n]); });
+    }
+    executor_->thread_func(0, *instances_[0]);
+  }
+
+  bool is_low_latency() const override
+  {
+    return is_low_latency_;
   }
 
   int batch_size() const override
@@ -404,104 +495,42 @@ class MultiThreadedInference : public Ax::Inference
     return output_shapes_;
   }
 
-  void dispatch(const std::vector<std::shared_ptr<void>> &input_ptrs,
-      const std::vector<Ax::SharedFD> &input_fds,
-      const std::vector<std::shared_ptr<void>> &output_ptrs,
-      const std::vector<Ax::SharedFD> &output_fds) override
+  void dispatch(Ax::InferenceParams params) override
   {
-    inqs_[next_available_child_]->push(
-        Ax::InferenceParams(input_ptrs, input_fds, output_ptrs, output_fds));
-    next_available_child_ = (next_available_child_ + 1) % jthreads_.size();
+    executor_->dispatch(std::move(params));
   }
 
-  void collect(const std::vector<std::shared_ptr<void>> &) override
+  void collect() override
   {
-    outqs_[next_ready_child_]->wait_one();
-    next_ready_child_ = (next_ready_child_ + 1) % jthreads_.size();
+    executor_->collect();
   }
 
   ~MultiThreadedInference()
   {
-    stop_queues(inqs_);
-    stop_queues(outqs_);
+    executor_->stop();
+    first_thread_.join();
     jthreads_.clear();
-    logger_(AX_INFO) << "Inference threads joined" << std::endl;
     instances_.clear();
-    logger_(AX_INFO) << "Inference instances destroyed" << std::endl;
   }
 
   private:
-  void stop_queues(
-      std::vector<std::unique_ptr<Ax::BlockingQueue<Ax::InferenceParams>>> &queues)
-  {
-    for (auto &&q : queues) {
-      q->stop();
-    }
-  }
-
-  void thread_func(size_t n)
-  {
-    if (n == 0) {
-      int instance_no = 0;
-      for (const auto &subprop : subprops_) {
-        logger_(AX_INFO) << "Creating instance " << instance_no++
-                         << " on device " << subprop.devices << std::endl;
-        instances_.push_back(
-            create_single_inference(logger_, context_.get(), model_.get(), subprop));
-      }
-      logger_(AX_INFO) << "Done creating runtime instances, starting extra threads"
-                       << std::endl;
-      for (auto t = size_t{ 1 }; t != instances_.size(); ++t) {
-        jthreads_.emplace_back(&MultiThreadedInference::thread_func, this, t);
-      }
-    }
-
-
-    auto &tvm = *instances_[n];
-    auto &inq = *inqs_[n];
-    auto &outq = *outqs_[n];
-
-    while (1) {
-      auto p = inq.wait_one();
-      if (!p) {
-        logger_(AX_INFO) << "Got shutdown event on thread  " << n << std::endl;
-        return;
-      }
-      tvm.dispatch(p.input_ptrs, p.input_fds, p.output_ptrs, p.output_fds);
-      tvm.collect(p.output_ptrs);
-      outq.push(std::move(p));
-    }
-  }
-
   Ax::Logger &logger_;
   axr::ptr<axrContext> context_;
   axr::ptr<axrModel> model_;
-  std::vector<std::unique_ptr<Ax::BlockingQueue<Ax::InferenceParams>>> inqs_;
-  std::vector<std::unique_ptr<Ax::BlockingQueue<Ax::InferenceParams>>> outqs_;
   std::vector<Ax::InferenceProperties> subprops_;
-  std::vector<std::unique_ptr<Ax::Inference>> instances_;
+  std::vector<std::unique_ptr<Ax::BasicInference>> instances_;
+  std::jthread first_thread_;
   std::vector<std::jthread> jthreads_;
-  size_t next_available_child_ = 0;
-  size_t next_ready_child_ = 0;
   AxTensorsInterface input_shapes_;
   AxTensorsInterface output_shapes_;
+  std::unique_ptr<Executor> executor_;
+  bool is_low_latency_ = false;
 };
 } // namespace
 
-Ax::InferenceParams
-Ax::zero_params(const Ax::Inference &tvm, bool input_dmabuf, bool output_dmabuf)
-{
-  auto in_alloc = input_dmabuf ? Ax::create_dma_buf_allocator() :
-                                 Ax::create_heap_allocator();
-  auto out_alloc = output_dmabuf ? Ax::create_dma_buf_allocator() :
-                                   Ax::create_heap_allocator();
-  auto in = in_alloc->allocate(tvm.input_shapes());
-  auto out = out_alloc->allocate(tvm.output_shapes());
-  return InferenceParams(in.buffers(), in.fds(), out.buffers(), out.fds());
-}
-
 std::unique_ptr<Ax::Inference>
-Ax::create_inference(Ax::Logger &logger, const InferenceProperties &props)
+Ax::create_inference(Ax::Logger &logger, const InferenceProperties &props,
+    InferenceReadyCallback callback)
 {
-  return std::make_unique<MultiThreadedInference>(logger, props);
+  return std::make_unique<MultiThreadedInference>(logger, props, callback);
 }

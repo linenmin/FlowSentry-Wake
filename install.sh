@@ -73,7 +73,6 @@ ARG_activate_env=false
 ARG_quiet=false
 ARG_allow_as_sudo=false
 ARG_verbose=false
-ARG_llm=false
 ARG_debug=false
 ARG_optional=false
 
@@ -151,6 +150,7 @@ AX_gen_pipfile_tasks="0"
 AX_prerequisite_tasks="0"
 
 VAR_deferred_warnings=
+VAR_deferred_user_advisories=
 VAR_any_errors=false
 VAR_docker_version=
 VAR_docker_apt=
@@ -382,20 +382,6 @@ requested_install() {
   fi
 }
 
-bold() {
-  if [ -t 1 ]; then
-    printf "\e[1m%s\e[m" "$1"
-  else
-    echo -n "$1"
-  fi
-}
-
-spaces() {
-  # print $1 number of spaces
-  # shellcheck disable=SC2183
-  printf '%*s' "$1" | tr ' ' ' '
-}
-
 progress_num() {
   local t=${#VAR_tasks}
   local v=${#VAR_i}
@@ -456,6 +442,24 @@ print_deferred_warnings() {
   while IFS= read -r warn; do
     is_set "$warn" && warn "$warn"
   done <<< "$VAR_deferred_warnings"
+}
+
+advisory() {
+  bold_red "ACTION REQUIRED: $*"
+  echo
+}
+
+advisory_defer() {
+  advisory "$1"
+  VAR_deferred_user_advisories="$VAR_deferred_user_advisories"$'\n'"$1"
+}
+
+print_deferred_advisories() {
+  local adv=
+  is_set "$VAR_deferred_user_advisories" && print_newline
+  while IFS= read -r adv; do
+    is_set "$adv" && advisory "$adv"
+  done <<< "$VAR_deferred_user_advisories"
 }
 
 first_word() {
@@ -593,6 +597,15 @@ apt_install_with_dep_check() {
   fi
 }
 
+is_ubuntu_2404() {
+  if [[ $(lsb_release -is 2>/dev/null) == "Ubuntu" ]] && [[ $(lsb_release -rs 2>/dev/null) == "24.04" ]];
+  then
+    true
+  else
+    false
+  fi
+}
+
 check_installer_requirements_met() {
   local ok=true
   # use system pip at this stage as not in virtual env here
@@ -601,6 +614,10 @@ check_installer_requirements_met() {
     # If not in a venv, and not root, install required
     # packages with --user flag (no sudo/systemwide effect)
     pip_install="$pip_install --user"
+  fi
+  # needed for system pip at this stage
+  if is_ubuntu_2404; then
+    pip_install="$pip_install --break-system-packages"
   fi
   declare -a installs
   local apt_update="sudo apt update"
@@ -880,20 +897,62 @@ set_arg_if_not_unset() {
   fi
 }
 
+min() {
+  # Return minimum of two numbers
+  if (( $1 < $2 )); then
+    echo "$1"
+  else
+    echo "$2"
+  fi
+}
+
+bold() {
+  if [ -t 1 ]; then
+    printf "\e[1m%s\e[m" "$1"
+  else
+    echo -n "$1"
+  fi
+}
+
+bold_red() {
+  if [ -t 1 ]; then
+    printf "\e[31;1m%s\e[m" "$1"
+  else
+    echo -n "$1"
+  fi
+}
+
+# how wide to make status info
+VAR_info_width=$(min $(tput cols || echo 80) 100)
+VAR_name_width=15
+
+print_multi() {
+  # print $1 $2 times
+  # shellcheck disable=SC2183}
+  printf "%0.s$1" $(eval echo {1..$2})
+}
+
+spaces() {
+  print_multi ' ' "$1"
+}
+
+print_edged_line() {
+  # print a line of $2's edged with $1
+  printf $1
+  print_multi "$2" $(($VAR_info_width-2))
+  printf "$1\n"
+}
+
 print_config_header() {
   if ! $VAR_post_table; then
-    printf '+'
-    printf '%0.s-' {1..77}
-    echo '+'
+    print_edged_line '+' '-'
   else
     echo
   fi
 }
 
 print_config_separator() {
-  printf '|'
-  printf '%0.s=' {1..77}
-  echo '|'
+  print_edged_line '|' '='
 }
 
 print_new_component() {
@@ -901,9 +960,48 @@ print_new_component() {
   VAR_need_separator=false
 }
 
+print_config_line() {
+  local lines=
+  if ! $VAR_post_table; then
+    local text_width=$((VAR_info_width-4))
+    lines=$(fold "-sw${text_width}" <<< "$1")
+    while IFS= read -r line; do
+      printf "| %-${text_width}s" "${line:0:${text_width}}"
+      echo ' |'
+    done <<< "$lines"
+  else
+    echo "$1"
+  fi
+  VAR_need_separator=true
+}
+
+print_config_setting() {
+  # print "| name | item info |" justifying and folding as appropriate
+  python3 installer_support.py --status $VAR_info_width $VAR_name_width "$1" "$2" "$3"
+}
+
+print_env() {
+  local name=$1
+  local desc_len=$(($VAR_info_width-7-${VAR_name_width}))
+  local var=${2}
+  local value=${3}
+  # attempt to simplify any ${VAR:+...} expressions for display
+  while  [[ "$value" =~ (.*)\$\{([^:]*):\+(:*)\$([^:]*)(:*)\}(.*) ]] && [[ "${BASH_REMATCH[2]}" == "${BASH_REMATCH[4]}" ]]; do
+      value="${BASH_REMATCH[1]}${BASH_REMATCH[3]}\${${BASH_REMATCH[2]}}${BASH_REMATCH[5]}${BASH_REMATCH[6]}"
+  done
+  if [[ "$value" =~ \$\{[^:}]+:.*\} ]]; then
+    # if this proves too complex (there are still other ${xxx:...} expressions, we fall back to displaying the raw value
+    value="${3}"
+  elif [[ "${var,,}" =~ path$ ]]; then
+    # if it looks like a PATH variable, separate any path components with plus
+    value=${value//:/ + }
+  fi
+  python3 installer_support.py --status $VAR_info_width $VAR_name_width "$name" "$var" "$value"
+  VAR_need_separator=true
+}
+
 print_config_title() {
-  printf '| %-76s' "$1"
-  echo '|'
+  print_config_line "$1"
 }
 
 print_config_dep_list() {
@@ -972,57 +1070,6 @@ print_component() {
   if ! $any; then
     print_config_setting "$desc" "Installed" "$STR_ok"
   fi
-}
-
-print_config_line() {
-  local lines=
-  if ! $VAR_post_table; then
-    lines=$(fold "-w76" <<< "$1")
-    while IFS= read -r line; do
-      printf '| %-75s' "${line:0:75}"
-      echo ' |'
-    done <<< "$lines"
-  else
-    echo "$1"
-  fi
-  VAR_need_separator=true
-}
-
-print_config_setting() {
-  local name=$1
-  local stat=${3::50}
-  local len=$((59-${#stat}-2))
-  local lines=$(fold "-w$len" <<< "$2")
-  local pad=$(spaces 59)
-  local line=
-  while IFS= read -r line; do
-    local desc="$line$pad"
-    printf '| %-15s' "${name:0:15}"
-    echo "| ${desc::$len} $stat |"
-    name=
-    stat=$(spaces "${#stat}")
-  done <<< "$lines"
-  VAR_need_separator=true
-}
-
-print_env() {
-  local name=$1
-  local together="${2} ${3}"
-  if [[ "${#together}" -le 58 ]]; then
-    print_config_setting "$1" "$2" "$3"
-    return
-  fi
-  local lines=$(fold "-w58" <<< "$together")
-  local pad=$(spaces 58)
-  local line=
-  while IFS= read -r line; do
-    local desc="$line$pad"
-    printf '| %-15s' "${name:0:15}"
-    echo "| ${desc::58} |"
-    name=
-    stat=$(spaces "${#stat}")
-  done <<< "$lines"
-  VAR_need_separator=true
 }
 
 signcomp() {
@@ -1168,7 +1215,7 @@ print_config() {
   local repo_status=
   local var=
   print_config_header
-  print_config_title "$name"
+  print_config_title "$name $AX_vars_AX_VERSION"
   print_config_header
   print_os
   if ! $ARG_status; then
@@ -1559,6 +1606,14 @@ set_status_python_libs() {
       _revised="$_revised"$'\n'"${var}"
     done <<< "$_installed"
     _installed=${_revised:1}
+    _revised=
+    while IFS="" read -r var || [ -n "$var" ]; do
+      if [[ "${var}" =~ ^(torch.*==.*)\+.*$ ]]; then
+        var=${BASH_REMATCH[1]}
+      fi
+      _revised="$_revised"$'\n'"${var}"
+    done <<< "$_requested"
+    _requested=${_revised:1}
     # If a local wheel is followed by comments (with name=version),
     # replace path with comment for accurate diffing with the
     # installed version displayed by pip freeze
@@ -1786,8 +1841,8 @@ install_system_package_with_apt() {
   apt_check_system
   apt_update_system
   if is_package_marked_for_removal "$pkg"; then
-    progress_info "Mark desired state of '$description' package to 'install'"
-    sudo "echo \"$pkg\" install | sudo dpkg --set-selections" || error "Failed to update package '$pkg' state to 'install'"
+    progress_info "Mark desired state of '$pkg' package to 'install'"
+    (echo "$pkg" install | sudo dpkg --set-selections) || error "Failed to update package '$pkg' state to 'install'"
   else
     progress_info "Install $pkg"
     if [[ "$pkg" =~ "axelera-pcie-driver" ]] || [[ "$pkg" =~ "metis-dkms" ]]; then
@@ -1962,8 +2017,8 @@ ensure_and_validate_user_token() {
     fi
   else
     ${check_cmd}
-    error_continue "Authentication failed for the supplied email address (${ARG_user}) and token."
-    error_continue "Please check your credentials and try again."
+    error_print "Authentication failed for the supplied email address (${ARG_user}) and token."
+    error_print "Please check your credentials and try again."
     error "(Please refer to docs/tutorials/install.md for more information.)"
   fi
 }
@@ -2008,6 +2063,8 @@ install_python_libs() {
   local list=$(subset_packages "$1")
   local index_url_var="AX_penv_${1}_index_url"
   local index_url=${!index_url_var}
+  local pip_extra_args="AX_penv_${1}_pip_extra_args"
+  pip_extra_args=${!pip_extra_args}
   local auth="AX_penv_${1}_requires_auth"
 
   local secret_mount=
@@ -2020,10 +2077,10 @@ install_python_libs() {
 
   if for_docker; then
     if [[ -n "${list}" ]]; then
-      write_to_dockerfile "RUN ${secret_mount}python3 -m pip install --no-cache-dir --no-deps --index-url ${index_url} -c \"$(basename ${AX_penv_requirements})\"" ${list}
+      write_to_dockerfile "RUN ${secret_mount}python3 -m pip install --no-cache-dir --no-deps --index-url ${index_url} ${pip_extra_args} -c \"$(basename ${AX_penv_requirements})\"" ${list}
     fi
   else
-    cmd_stem="python3 -m pip --disable-pip-version-check install --index-url ${index_url} --no-deps -c ${AX_penv_requirements}"
+    cmd_stem="python3 -m pip --disable-pip-version-check install --index-url ${index_url} ${pip_extra_args} --no-deps -c ${AX_penv_requirements}"
 
     progress_info Installing ${1} libraries
     for lib in ${list[@]}; do
@@ -2077,7 +2134,7 @@ generate_pkg_matchers() {
     fi
   done
   shopt -u extglob
-  echo "${matchers[@]}"
+  export to_be_stripped=("${matchers[@]}")
 }
 
 with_out() {
@@ -2096,18 +2153,9 @@ revise_requirements() {
   local new_line=
   local pkg=
 
-  local llm_used=false
-  if [[ $(tail -1 "$AX_penv_requirements") =~ ^#\ Axelera\ config:.*\ llm_used=(true|false).*$ ]]; then
-    llm_used=${BASH_REMATCH[1]}
-  fi
-  if [[ ${llm_used} != ${ARG_llm} ]]; then
-    error_continue "${AX_penv_requirements} has been generated $(with_out ${llm_used}) '--llm', but you are trying to install $(with_out ${ARG_llm}) '--llm'"
-    error "Please ensure you run './$_self --gen-requirements' $(with_out ${ARG_llm}) '--llm' before installing."
-  fi
-
   list="$(list "AX_penv_axelera_.\+_libs_")"$'\n'"$(list "AX_penv_torch_libs_")"$'\n'"$(list "AX_penv_development_libs_")"$'\n'"$(list "AX_penv_runtime_libs_")"
 
-  to_be_stripped=($(generate_pkg_matchers "$list"))
+  generate_pkg_matchers "$list"
 
   while IFS= read -r pkg; do
     # uncomment this if qtools stops pinning torch version
@@ -2116,7 +2164,9 @@ revise_requirements() {
     #else
     #  new_line="$pkg"
     #fi
-    new_line="$pkg"
+
+    # trim any package[extra]==version to package==version as not allowed in constraints files
+    new_line=$(echo "$pkg" | sed -e 's/\(^.*\)\[.*\]==/\1==/')
     revised="${revised}"$'\n'"${new_line}"
     pkg=$(uncomment_url_pkg "$pkg")
     if [[ ! "$pkg" =~ ^# ]] && ! drop_package "$pkg"; then
@@ -2136,7 +2186,6 @@ python_subsets_to_install() {
     $ARG_no_development || subsets+=" axelera_development development"
     $ARG_no_runtime || subsets+=" axelera_runtime runtime"
   fi
-  ${ARG_llm} && subsets+=" llm"
 
   echo "$subsets"
 }
@@ -2321,17 +2370,8 @@ docker_check() {
     echo
     exit 1
   fi
-  #TODO: check that there are no issues running doker commands with 'exec ag docker'
-  #IFS=", " read -r -a groups <<< "$(groups)"
-  #if is_called_from_docker_launcher && [[ ! " ${groups[*]} " =~ " docker " ]]; then
-  #  echo "Log out and log back in to re-evaluate your group membership"
-  #  echo "or run the following command to activate group changes in a new shell:"
-  #  echo "  newgrp docker"
-  #  echo
-  #  exit 1
-  #fi
   if ! in_container; then
-    # With bash as an init process inside containder systemd isn't available
+    # With bash as an init process inside container systemd isn't available
     if ! systemctl | grep running | grep -q docker.service; then
       echo "Docker service not running"
       echo "First run 'sudo systemctl --now enable docker'"
@@ -2513,21 +2553,6 @@ complete_task() {
   VAR_i=$((VAR_i+${1:-1}))
 }
 
-filter_libs_for_pipfile() {
-  if ! ${ARG_llm}; then
-    # remove llm libs
-    local filtered=()
-    for lib in $1; do
-      if [[ ! "$lib" =~ ^.*_llm_libs_.*$ ]]; then
-        filtered+=("$lib")
-      fi
-    done
-    echo "${filtered[@]}"
-  else
-    echo "$1"
-  fi
-}
-
 gen_pipfile() {
   # Regenerate Python requirements
   if $ARG_dry_run; then
@@ -2535,7 +2560,6 @@ gen_pipfile() {
     return
   fi
   local libs="$(list "AX_penv_.\+_libs")"
-  libs=$(filter_libs_for_pipfile "$libs")
   local repo=$(list_of_dict "AX_penv_repositories")
   local var=
   local name=
@@ -2600,7 +2624,6 @@ pipfile_to_requirements() {
   local out=
   local dirname=
   local libs="$(list "AX_penv_.\+_libs")"
-  libs=$(filter_libs_for_pipfile "$libs")
   local var=
   local var_x=
   local var_y=
@@ -2697,7 +2720,6 @@ pipfile_to_requirements() {
     fi
   done
   echo "$resolved" > "$AX_penv_requirements"
-  echo "# Axelera config: llm_used=${ARG_llm}" >> "$AX_penv_requirements"
   revise_requirements
   complete_task
   determine_python_requirements
@@ -2880,6 +2902,8 @@ if ! which dpkg-query &> /dev/null; then
   exit 1
 fi
 
+VAR_HELP_EXIT_CODE=0
+
 # Transform long options to short ones
 for arg in "$@"; do
   shift
@@ -2908,13 +2932,13 @@ for arg in "$@"; do
     "--quiet")             set -- "$@" "-q" ;;
     "--verbose")           set -- "$@" "-v" ;;
     "--allow-as-sudo")     set -- "$@" "-S" ;;
-    "--llm")               set -- "$@" "-l" ;;
     "--optional")          set -- "$@" "-o" ;;
     "--debug")             set -- "$@" "-V" ;;
     "--help")              set -- "$@" "-h" ;;
-    --*)                   echo Invalid option: $arg
-                           echo
+    --*)                   error_print Invalid option: $arg
+                           error_print
                            set -- "-h"
+                           VAR_HELP_EXIT_CODE=1
                            break
                            ;;
     *)                     set -- "$@" "$arg"
@@ -2922,7 +2946,7 @@ for arg in "$@"; do
 done
 
 # Parse command-line options
-while getopts ":adDrRpPginkKcyYsefmqvVlShu:t:o" opt; do
+while getopts ":adDrRpPginkKcyYsefmqvVShu:t:o" opt; do
   case $opt in
     a )
       ARG_all=true
@@ -3033,9 +3057,6 @@ while getopts ":adDrRpPginkKcyYsefmqvVlShu:t:o" opt; do
     S )
       ARG_allow_as_sudo=true
       ;;
-    l )
-      ARG_llm=true
-      ;;
     h )
       echo "Usage:"
       echo "  $_self [options]"
@@ -3061,25 +3082,27 @@ while getopts ":adDrRpPginkKcyYsefmqvVlShu:t:o" opt; do
       echo "     --quiet            display less output"
       echo "     --verbose          display more output"
       echo "     --allow-as-sudo    allow installer to be run as sudo - not recommended"
-      echo "     --llm              install LLM components"
       echo "     --optional         install optional components"
       echo "  -h --help             display this help and exit"
       echo
-      exit 0
+      exit $VAR_HELP_EXIT_CODE
       ;;
     \? )
-      echo "Invalid option: -$OPTARG" >&2
-      echo "Try '$_self --help' for a list of supported options"
-      exit 1
+      error_print "Invalid option: -$OPTARG"
+      error "Try '$_self --help' for a list of supported options"
       ;;
     * )
-      echo "Invalid option: -$OPTARG" >&2
-      echo "Try '$_self --help' for a list of supported options"
-      exit 1
+      error_print "Invalid option: -$OPTARG"
+      error "Try '$_self --help' for a list of supported options"
   esac
 done
 
 shift $((OPTIND-1))
+
+if is_set "$1"; then
+  error_print "Invalid argument: $1"
+  error "Try '$_self --help' for a list of supported options"
+fi
 
 exit_if_error
 
@@ -3156,18 +3179,6 @@ determine_system_and_cfg_file
 # Get configuration settings
 get_config_from_yaml "$SYS_config"
 AX_penv_trimmed_requirements=$(dirname "$AX_penv_requirements")/trimmed-$(basename "$AX_penv_requirements")
-
-if ${ARG_llm}; then
-  if [ -z "$(list AX_penv_llm_libs)" ]; then
-    error "Using the --llm option requires a non-empty \"penv:llm:libs:\" section to be present in ${SYS_config}"
-  fi
-  # Display a clear warning about potential issues with LLM packages
-  warn "*** IMPORTANT: Installing LLM packages may affect core SDK functionality ***"
-  warn "If you experience issues with core VISION model tasks after using LLM features,"
-  warn "it is strongly recommended to regenerate the requirements without LLM packages,"
-  warn "using ./${_self} --gen-requirements without the --llm flag."
-  warn "Then rerun the installer without the --llm flag to guarantee a clean environment."
-fi
 
 # When installing with --docker option we need to know the
 # container name, so disable interactive installation
@@ -3374,7 +3385,8 @@ if is_set $VAR_groups; then
     fi
   done
   if $added && ! $ARG_dry_run; then
-    echo "Log out and log back in to apply group changes"
+    advisory_defer "You must log out and log back in to apply group changes."
+    advisory_defer "Not doing so may mean some components (e.g. OpenCL) will not work correctly."
   fi
   if ! $VAR_install && streq "$AX_development_component" "$STR_ok"; then
     print_next_steps "Installation complete"
@@ -3411,6 +3423,11 @@ if needed "$STATUS_container"; then
     write_to_dockerfile "ARG DEBIAN_FRONTEND=noninteractive"
     write_to_dockerfile "ENV DISPLAY=:0"
     is_set "$AX_docker_term" && write_to_dockerfile "ENV TERM=$AX_docker_term"
+    if is_set "$TZ"; then
+      write_to_dockerfile "ENV TZ=$TZ"
+    else
+      write_to_dockerfile "ENV TZ=$(timedatectl | grep -i zone | awk '{ print $3 }')"
+    fi
     write_to_dockerfile "WORKDIR /tmp"
     print_envs_to_source "AX_runtime_envs"
     install_docker_libs
@@ -3477,7 +3494,7 @@ if ! needed "$STATUS_container"; then
     source "${ACTIVATE}"
     if ! $ARG_no_runtime; then
       echo building operators
-      cmd "make clobber-libs && make operators" || warn "Failed to make operators"
+      (make clobber-libs && make operators) >& _operators.log || (cat _operators.log && error_continue "Failed to build operators")
     fi
 
     if is_dpkg_installed "metis-dkms"; then
@@ -3533,9 +3550,12 @@ else
   fi
 fi
 
+if is_set "$VAR_deferred_user_advisories"; then
+  print_deferred_advisories
+fi
+
 if $VAR_any_errors; then
-  error_continue "Installation complete, but with unresolved issues (see above)"
-  exit 1
+  error "Installation complete, but with unresolved issues (see above)"
 fi
 
 if ! $ARG_dry_run && ! $ARG_gen_dockerfile && ! $ARG_gen_requirements; then

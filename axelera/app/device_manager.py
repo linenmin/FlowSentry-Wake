@@ -1,9 +1,8 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Utility functions used by the Voyager SDK
 from __future__ import annotations
 
 import abc
-import os
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -103,11 +102,20 @@ def _human_readable(key, value):
     return value
 
 
+def _list_devices(ctx):
+    if _list_devices._cache is None:
+        _list_devices._cache = ctx.list_devices()
+    return _list_devices._cache
+
+
+_list_devices._cache = None
+
+
 class _AipuDeviceManager(DeviceManager):
     def __init__(self, override_metis=config.Metis.none, device_selector: str = ''):
         self.context = runtime.Context()
         try:
-            devices = self.context.list_devices()
+            devices = _list_devices(self.context)
             if not devices:
                 raise RuntimeError("No devices found")
         except RuntimeError as e:

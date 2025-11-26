@@ -256,17 +256,28 @@ def parse_ultralytics_data_yaml(
                     full_path = resolved_path if resolved_path else (ultralytics_root / split_path)
 
                 if full_path.is_file():
-                    # It's a file containing image paths
-                    with open(full_path, 'r') as f:
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                # Make sure the path is absolute
-                                img_path = Path(line)
-                                if not img_path.is_absolute():
-                                    img_path = ultralytics_root / line
-                                temp_file.write(f"{img_path.absolute()}\n")
-                                image_count += 1
+                    file_suffix = full_path.suffix.lower()
+
+                    # Check if it's a COCO JSON or PascalVOC XML annotation file
+                    if file_suffix in ['.json', '.xml']:
+                        # For annotation files (JSON/XML), write the path to the file itself
+                        # The dataset loader will handle parsing the annotations
+                        temp_file.write(f"{full_path.absolute()}\n")
+                        image_count += 1
+                        format_type = 'COCO JSON' if file_suffix == '.json' else 'PascalVOC XML'
+                        LOG.debug(f"Detected {format_type} file for {split_name}: {full_path}")
+                    else:
+                        # It's a text file containing image paths (one per line)
+                        with open(full_path, 'r') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line:
+                                    # Make sure the path is absolute
+                                    img_path = Path(line)
+                                    if not img_path.is_absolute():
+                                        img_path = ultralytics_root / line
+                                    temp_file.write(f"{img_path.absolute()}\n")
+                                    image_count += 1
                 elif full_path.is_dir():
                     # It's a directory containing images
                     img_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp'}

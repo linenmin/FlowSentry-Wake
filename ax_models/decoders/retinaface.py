@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Operators that convert retinaface-specific tensor output to
 # generalized metadata representation
 
@@ -151,18 +151,6 @@ class DecodeRetinaface(AxOperator):
     nms_class_agnostic: bool = False
     nms_top_k: int = 300
 
-    @classmethod
-    def handles_dequantization_and_depadding(cls):
-        return True
-
-    @classmethod
-    def handles_transpose(cls):
-        return True
-
-    @classmethod
-    def handles_postamble(cls):
-        return True
-
     def _post_init(self):
         self._tmp_labels: Optional[Path] = None
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
@@ -180,7 +168,7 @@ class DecodeRetinaface(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(

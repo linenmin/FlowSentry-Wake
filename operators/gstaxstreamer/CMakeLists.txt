@@ -9,6 +9,7 @@ pkg_check_modules(GST_BASE REQUIRED gstreamer-base-1.0)
 pkg_check_modules(GST_VIDEO REQUIRED gstreamer-video-1.0)
 pkg_check_modules(GST_ALLOCATORS REQUIRED gstreamer-allocators-1.0)
 pkg_check_modules(opencv4 REQUIRED opencv4)
+pkg_check_modules(opencl opencl)
 
 include_directories(
     ${GLIB_INCLUDE_DIRS}
@@ -34,6 +35,8 @@ set(SOURCE_FILES
     src/GstAxPlugins.cpp
     src/GstAxStreamerUtils.cpp
     src/GstAxTransform.cpp
+    src/GstAxOpenCLAllocator.cpp
+    src/GstAxBufferPool.cpp
 )
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND SOURCE_FILES src/GstAxDmaBufAllocator.cpp)

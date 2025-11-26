@@ -5,7 +5,6 @@
 // instead of relying on built-in metadata or postprocessing.
 
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -20,19 +19,15 @@
 #include "axruntime/axruntime.hpp"
 #include "opencv2/opencv.hpp"
 
+#include "AxFFMpegVideoDecoder.hpp"
+#include "AxOpenCVRender.hpp"
+#include "AxOpenCVVideoDecoder.hpp"
+
 using namespace std::string_literals;
-using std::chrono::high_resolution_clock;
-using std::chrono::microseconds;
 constexpr auto DEFAULT_LABELS = "ax_datasets/labels/coco.names";
 
 namespace
 {
-auto
-micro_duration(high_resolution_clock::time_point start, high_resolution_clock::time_point now)
-{
-  return std::chrono::duration_cast<std::chrono::microseconds>(now - start);
-}
-
 auto
 read_labels(const std::string &path)
 {
@@ -56,7 +51,8 @@ parse_args(int argc, char **argv)
       model_properties = s;
     } else if (s.ends_with(".txt") || s.ends_with(".names")) {
       labels = read_labels(s);
-    } else if (!std::filesystem::exists(s)) {
+    } else if (!std::filesystem::exists(s) && !s.starts_with("rtsp://")
+               && !s.starts_with("/dev/video")) {
       std::cerr << "Warning: Path does not exist: " << s << std::endl;
     } else if (!input.empty()) {
       std::cerr << "Warning: Multiple input files specified: " << s << std::endl;
@@ -69,7 +65,7 @@ parse_args(int argc, char **argv)
         << "Usage: " << argv[0] << " <model>.axnet [labels.txt] input-source\n"
         << "  <model>.axnet: path to the model axnet file\n"
         << "  labels.txt: path to the labels file (default: " << DEFAULT_LABELS << ")\n"
-        << "  input-source: path to video source\n"
+        << "  input-source: video source (e.g. file path, rtsp://, /dev/video)\n"
         << "\n"
         << "The <model>.axnet file describes the model and the pipeline stages.\n"
         << "In the axinferencenet_example.cpp, AxInferenceNet runs the full end-to-end pipeline, including preprocessing, inference, and postprocessing.\n"
@@ -100,25 +96,9 @@ parse_args(int argc, char **argv)
 }
 
 struct Frame {
-  cv::Mat bgr;
+  cv::Mat rgb;
   Ax::MetaMap meta;
 };
-
-void
-reader_thread(cv::VideoCapture &input, Ax::InferenceNet &net)
-{
-  while (true) {
-    auto frame = std::make_shared<Frame>();
-    if (!input.read(frame->bgr)) {
-      // Signal to AxInferenceNet that there is no more input and it should
-      // flush any buffers still in the pipeline.
-      net.end_of_input();
-      break;
-    }
-    auto video = Ax::video_from_cvmat(frame->bgr, AxVideoFormat::BGR);
-    net.push_new_frame(frame, video, frame->meta);
-  }
-}
 
 struct Detection {
   cv::Rect bbox;
@@ -234,63 +214,57 @@ main(int argc, char **argv)
 {
   Ax::Logger logger;
   const auto [model_properties, labels, input] = parse_args(argc, argv);
-  cv::VideoCapture cap(input);
-  if (!cap.isOpened()) {
-    std::cerr << "Error: Could not open video source: " << input << std::endl;
-    return 1;
-  }
 
   // We use BlockingQueue to communicate between the frame_completed callback and the main loop
   Ax::BlockingQueue<std::shared_ptr<Frame>> ready;
   auto props = Ax::read_inferencenet_properties(model_properties, logger);
   auto net = Ax::create_inference_net(props, logger, Ax::forward_to(ready));
 
-  // Start the reader thread which reads frames from the video source and pushes
-  // them to the inference network
-  std::thread reader(reader_thread, std::ref(cap), std::ref(*net));
+  auto frame_callback = [&net](cv::Mat frame) {
+    if (frame.empty()) {
+      net->end_of_input();
+      return;
+    }
+    auto frame_data = std::make_shared<Frame>();
+    frame_data->rgb = std::move(frame);
+    auto video = Ax::video_from_cvmat(frame_data->rgb, AxVideoFormat::RGB);
+    net->push_new_frame(frame_data, video, frame_data->meta);
+  };
 
-  // Use OpenCV window to display the results
-  const std::string wndname = "AxInferenceNet Tensor Output Demo";
-  cv::namedWindow(wndname, cv::WINDOW_AUTOSIZE);
-  cv::setWindowProperty(wndname, cv::WND_PROP_ASPECT_RATIO, cv::WINDOW_KEEPRATIO);
+  auto video_decoder = Ax::FFMpegVideoDecoder(input, frame_callback, AxVideoFormat::RGB);
+  // auto video_decoder = Ax::OpenCVVideoDecoder(input, frame_callback, AxVideoFormat::RGB);
+  video_decoder.start_decoding();
 
+  auto display = Ax::OpenCV::create_display("AxInferenceNet Tensor Output Demo");
   int model_input_width = 640;
   int model_input_height = 640;
   bool letterboxed = true;
 
-  const auto start = high_resolution_clock::now();
-  int num_frames = 0;
   while (1) {
     auto frame = ready.wait_one();
     if (!frame) {
       break;
     }
-    if ((num_frames % 10) == 0) {
-      // OpenCV is quite slow at rendering results, so we only render every 10th frame
+
+    try {
       auto &tensor_wrapper = dynamic_cast<AxMetaRawTensor &>(*frame->meta["detections"]);
       if (tensor_wrapper.get_tensor() && tensor_wrapper.get_tensor()->num_tensors() > 0) {
         std::vector<int64_t> dims = get_tensor_shape(tensor_wrapper);
         const float *data = get_tensor_data<float>(tensor_wrapper);
         auto detections = postprocess_yolov8(data, dims, 0.25f, 0.45f, 100,
-            frame->bgr.cols, frame->bgr.rows, model_input_width,
+            frame->rgb.cols, frame->rgb.rows, model_input_width,
             model_input_height, letterboxed);
-        render_detections(detections, frame->bgr, labels);
+        render_detections(detections, frame->rgb, labels);
       }
-      cv::imshow(wndname, frame->bgr);
-      cv::waitKey(1);
+    } catch (const std::bad_cast &) {
+      throw std::runtime_error(
+          "Error: Expected AxMetaRawTensor for detections, got different type.");
     }
-    ++num_frames;
+    // disable the default rendering of meta data, just show the already augmented image
+    Ax::MetaMap empty_meta;
+    display->show(frame->rgb, empty_meta, AxVideoFormat::RGB, {}, 0);
   }
-  const auto end = high_resolution_clock::now();
 
   // Wait for AxInferenceNet to complete and join its threads, before joining the reader thread
   net->stop();
-  reader.join();
-
-  // Output some statistics
-  const auto duration = micro_duration(start, end);
-  const auto taken = static_cast<float>(duration.count()) / 1e6;
-  std::cout << "Executed " << num_frames << " frames in " << taken
-            << "s : " << num_frames / taken << "fps" << std::endl;
-  cv::destroyWindow(wndname);
 }

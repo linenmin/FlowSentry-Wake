@@ -1,5 +1,4 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-
 # Compiler CLI
 
 - [Compiler CLI](#compiler-cli)
@@ -128,15 +127,15 @@ Compilation artifacts are saved to the output directory in the following structu
 .
 ├── cli_args.json
 ├── conf.json
-├── quantized_model_manifest.json
-├── compiled_model_manifest.json
 ├── input_model
 │   └── fp32_model.onnx
 ├── quantized_model
+│   ├── quantized_model_manifest.json
 │   ├── quantized_model.json
 │   ├── quantized_model.txt
 │   └── report.json
 ├── compiled_model
+│   ├── manifest.json
 │   ├── model.json
 │   ├── quantized_model.json
 │   ├── kernel_function.c 
@@ -150,11 +149,9 @@ Compilation artifacts are saved to the output directory in the following structu
 |---------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
 | `cli_args.json`                 | Dump of CLI arguments used at this compilation. Can be reused as input for another compilation.                                        |
 | `conf.json`                     | Compiler configuration used at compilation                                                                                             |
-| `quantized_model_manifest.json` | Manifest of the quantized model. Can be used as input for compilation.                                                                 |
-| `compiled_model_manifest.json`  | Manifest of the compiled model. Can be used as input for inference.                                                                    |
 | `input_model`                   | Directory that contains a copy of the input model                                                                                      |
-| `quantized_model`               | Artifacts of model quantization                                                                                                        |
-| `compiled_model`                | Artifacts of model compilation                                                                                                         |
+| `quantized_model`               | Artifacts of model quantization. Contains the manifest of the quantized model that can be used as input for compilation.               |
+| `compiled_model`                | Artifacts of model compilation. Contains the manifest of the compiled model that can be used as input for inference.                   |
 | `compilation_report.json`       | Compilation status report. In case of failed compilation store error message and information at which compilation step network failed. |
 | `compilation_log.txt`           | Full log output of the compilation process.                                                                                            |
 

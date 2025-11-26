@@ -164,7 +164,7 @@ struct Ax::InferenceNetProperties {
 ```
 `model` path to the Axelera model. If this is compiled using the pipeline builder it will be located at `build/networkname/modelname/1/model.json`
 
-`double_buffer` double buffering is an optimization to increase throughput by overlaying Host to Device data transfer with inference execution. It typically improves throughput from 10-40% depending on the model. However, enabling it has a drawback of increasing latency.
+`double_buffer` double buffering is an optimization to increase throughput by overlaying host to device data transfer with inference execution. It typically improves throughput from 10-40% depending on the model. However, enabling it has a drawback of increasing latency.
 
 `dmabuf_inputs` enabling this causes the use of Linux DMA Buffers for transferring data to the Metis accelerator. This is ignored on systems that do not support DMA Bufs. This should always be enabled.
 

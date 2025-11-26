@@ -1,9 +1,10 @@
 #!/usr/bin/env python
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Makefile and build system integration
 
 import collections
 import difflib
+import functools
 import os
 from pathlib import Path
 import textwrap
@@ -250,7 +251,7 @@ def gen_model_envs(nn):
             for model_name, model_yaml in model.get('models', {}).items():
                 print(_space(f"NN_MODELS+={model_name}.o"))
                 print(_space(f"NN_DEPS+={root/model_yaml['class_path']}"))
-            print(_space(f"NN_SET:=1"))
+            print(_space("NN_SET:=1"))
             break
     else:
         print("NN_SET:=0")
@@ -471,7 +472,16 @@ def _get_network_yaml_info(models):
     return network_yaml_info
 
 
-def get_network_yaml_info(
+@functools.cache
+def get_network_yaml_info():
+    '''See network_yaml_info() for details.
+
+    This variant uses the default parameters and caches the result for efficiency.
+    '''
+    return network_yaml_info()
+
+
+def network_yaml_info(
     model_cards_only: bool = False,
     check_customer_models: bool = False,
     apply_framework_dir: bool = True,

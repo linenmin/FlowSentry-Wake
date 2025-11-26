@@ -1,10 +1,11 @@
+// Copyright Axelera AI, 2025
 #include "AxMetaKptsDetection.hpp"
 #include "AxStreamerUtils.hpp"
-#include "unittest_transform_common.h"
+#include "unittest_ax_common.h"
 
 namespace
 {
-const auto facealign_lib = "libtransform_facealign.so";
+const auto facealign_lib = "facealign";
 
 // Create a simple keypoints meta class for testing
 class TestMetaKpts : public AxMetaKpts
@@ -103,9 +104,9 @@ TEST(transform_facealign, output_interface_set)
       = { { "width", std::to_string(out_width) },
           { "height", std::to_string(out_height) }, { "master_meta", "face_boxes" } };
 
-  Transformer aligner(facealign_lib, input);
+  auto xform = Ax::LoadTransform(facealign_lib, input);
   AxVideoInterface video_info{ { 640, 480, 640 * 3, 0, AxVideoFormat::RGB }, nullptr };
-  auto out_interface = aligner.set_output_interface(video_info);
+  auto out_interface = xform->set_output_interface(video_info);
   auto info = std::get<AxVideoInterface>(out_interface).info;
 
   EXPECT_EQ(info.width, out_width);
@@ -122,7 +123,7 @@ TEST(transform_facealign, self_normalizing_five_points)
     { "keypoints_submeta_key", "face_landmarks" }, { "use_self_normalizing", "1" } };
 
   try {
-    Transformer aligner(facealign_lib, input);
+    auto xform = Ax::LoadTransform(facealign_lib, input);
 
     // Create a 100x100 test image (gray for simplicity)
     auto in_buf = std::vector<uint8_t>(100 * 100, 100); // Gray background
@@ -157,10 +158,10 @@ TEST(transform_facealign, self_normalizing_five_points)
     auto kpts_meta = std::make_unique<TestMetaKpts>(kpts, boxes.size());
 
     // Create the metadata
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+    Ax::MetaMap metadata;
 
     // Add submeta to a temporary map
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> submetas;
+    Ax::MetaMap submetas;
     submetas.emplace("face_landmarks", std::move(kpts_meta));
 
     // Create the bbox meta with submeta - we move submetas here
@@ -170,7 +171,7 @@ TEST(transform_facealign, self_normalizing_five_points)
     std::cout << "About to call transform" << std::endl;
 
     // Perform the transformation
-    aligner.transform(in_info, out_info, metadata, 0, 1);
+    xform->transform(in_info, out_info, 0, 1, metadata);
 
     std::cout << "Transform completed" << std::endl;
 
@@ -209,7 +210,7 @@ TEST(transform_facealign, template_based)
           { "padding", std::to_string(padding) }, { "use_self_normalizing", "0" } };
 
   try {
-    Transformer aligner(facealign_lib, input);
+    auto xform = Ax::LoadTransform(facealign_lib, input);
 
     // Create a 100x100 test image (gray for simplicity)
     auto in_buf = std::vector<uint8_t>(100 * 100, 100); // Gray background
@@ -241,10 +242,10 @@ TEST(transform_facealign, template_based)
     auto kpts_meta = std::make_unique<TestMetaKpts>(kpts, boxes.size());
 
     // Create the metadata
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+    Ax::MetaMap metadata;
 
     // Add submeta to a temporary map
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> submetas;
+    Ax::MetaMap submetas;
     submetas.emplace("face_landmarks", std::move(kpts_meta));
 
     // Create the bbox meta with submeta
@@ -254,7 +255,7 @@ TEST(transform_facealign, template_based)
     std::cout << "About to call transform for template-based test" << std::endl;
 
     // Perform the transformation
-    aligner.transform(in_info, out_info, metadata, 0, 1);
+    xform->transform(in_info, out_info, 0, 1, metadata);
 
     std::cout << "Template-based transform completed" << std::endl;
 
@@ -306,7 +307,7 @@ TEST(transform_facealign, custom_template)
     { "template_keypoints_y", template_y_str }, { "use_self_normalizing", "0" } };
 
   try {
-    Transformer aligner(facealign_lib, input);
+    auto xform = Ax::LoadTransform(facealign_lib, input);
 
     // Create a 100x100 test image (gray for simplicity)
     auto in_buf = std::vector<uint8_t>(100 * 100, 100); // Gray background
@@ -335,10 +336,10 @@ TEST(transform_facealign, custom_template)
     auto kpts_meta = std::make_unique<TestMetaKpts>(kpts, boxes.size());
 
     // Create the metadata
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+    Ax::MetaMap metadata;
 
     // Add submeta to a temporary map
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> submetas;
+    Ax::MetaMap submetas;
     submetas.emplace("face_landmarks", std::move(kpts_meta));
 
     // Create the bbox meta with submeta
@@ -348,7 +349,7 @@ TEST(transform_facealign, custom_template)
     std::cout << "About to call transform for custom template test" << std::endl;
 
     // Perform the transformation
-    aligner.transform(in_info, out_info, metadata, 0, 1);
+    xform->transform(in_info, out_info, 0, 1, metadata);
 
     std::cout << "Custom template transform completed" << std::endl;
 
@@ -381,7 +382,7 @@ TEST(transform_facealign, no_keypoints)
           { "use_self_normalizing", "1" } };
 
   try {
-    Transformer aligner(facealign_lib, input);
+    auto xform = Ax::LoadTransform(facealign_lib, input);
 
     // Create a 100x100 test image
     auto in_buf = std::vector<uint8_t>(100 * 100, 100);
@@ -396,7 +397,7 @@ TEST(transform_facealign, no_keypoints)
     boxes.push_back(box_xyxy(10.0f, 10.0f, 90.0f, 90.0f));
 
     // Create the metadata
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+    Ax::MetaMap metadata;
 
     // Create the bbox meta without submeta
     auto bbox_meta = std::make_unique<TestMetaBbox>(boxes);
@@ -408,7 +409,7 @@ TEST(transform_facealign, no_keypoints)
     // The transform should throw an exception
     bool exception_thrown = false;
     try {
-      aligner.transform(in_info, out_info, metadata, 0, 1);
+      xform->transform(in_info, out_info, 0, 1, metadata);
     } catch (const std::exception &e) {
       exception_thrown = true;
       std::cout << "Exception caught as expected: " << e.what() << std::endl;

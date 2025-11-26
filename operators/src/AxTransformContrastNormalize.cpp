@@ -1,9 +1,11 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <unordered_map>
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
 #include "AxUtils.hpp"
+
+#include <opencv2/core/ocl.hpp>
 
 extern "C" void
 transform(const AxDataInterface &input, const AxDataInterface &output,
@@ -48,6 +50,7 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     throw std::runtime_error(
         "contrastnormalize must return the same number of channels as the input format in NHWC format");
   }
+  cv::ocl::setUseOpenCL(false);
   cv::Mat output_mat(cv::Size(input_video.info.width, input_video.info.height),
       Ax::opencv_type_f32(input_video.info.format), output_tensor.data);
 

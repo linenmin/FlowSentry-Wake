@@ -1,12 +1,14 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <unordered_map>
 #include <unordered_set>
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
+#include "AxOpUtils.hpp"
 #include "AxOpenCl.hpp"
 #include "AxUtils.hpp"
 
+#include <opencv2/core/ocl.hpp>
 #include <opencv2/opencv.hpp>
 
 struct resize_properties {
@@ -75,6 +77,7 @@ set_output_interface(const AxDataInterface &interface,
 {
   AxDataInterface output = interface;
   auto &info = std::get<AxVideoInterface>(output).info;
+  auto output_channels = AxVideoFormatNumChannels(info.format);
   if (prop->letterbox || prop->size == 0) {
     if (prop->width != 0 || prop->height != 0) {
       info.width = prop->width;
@@ -86,7 +89,8 @@ set_output_interface(const AxDataInterface &interface,
     info.height = info.height * prop->size / shortest;
   }
   if (prop->to_tensor) {
-    AxTensorsInterface output = { { { 1, info.height, info.width, 4 }, 1, nullptr } };
+    AxTensorsInterface output
+        = { { { 1, info.height, info.width, output_channels }, 1, nullptr } };
     return AxDataInterface(output);
   }
 
@@ -115,15 +119,28 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     const resize_properties *prop, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)
 {
+  cv::ocl::setUseOpenCL(false);
+
   if (!std::holds_alternative<AxVideoInterface>(input)) {
     logger(AX_ERROR) << "resize works on video only" << std::endl;
     throw std::runtime_error("resize works on video only");
   }
 
   auto &input_video = std::get<AxVideoInterface>(input);
-  cv::Mat input_mat(cv::Size(input_video.info.width, input_video.info.height),
+
+  // Get the full input buffer dimensions including crop information
+  auto input_details = ax_utils::extract_buffer_details(input);
+  auto &input_buffer = input_details[0];
+  // Create input mat with full buffer dimensions
+  cv::Mat full_input_mat(cv::Size(input_buffer.width + input_buffer.crop_x,
+                             input_buffer.height + input_buffer.crop_y),
       Ax::opencv_type_u8(input_video.info.format), input_video.data,
       input_video.info.stride);
+
+  // Apply crop if present by creating a ROI
+  cv::Rect crop_roi(input_buffer.crop_x, input_buffer.crop_y,
+      input_video.info.width, input_video.info.height);
+  cv::Mat input_mat = full_input_mat(crop_roi);
 
   auto output_mat = get_output_mat(input, output, prop);
 
@@ -190,4 +207,13 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
   cv::rectangle(output_mat, top_left, fill_color, cv::FILLED);
   cv::rectangle(output_mat, bottom_right, fill_color, cv::FILLED);
   cv::resize(input_mat, output_window, cv::Size(width, height), cv::INTER_LINEAR);
+}
+
+extern "C" bool
+query_supports(Ax::PluginFeature feature, const void *resize_properties, Ax::Logger &logger)
+{
+  if (feature == Ax::PluginFeature::crop_meta) {
+    return true;
+  }
+  return Ax::PluginFeatureDefaults(feature);
 }

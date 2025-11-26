@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Utils for building task meta
 
 from dataclasses import dataclass, field
@@ -9,7 +9,6 @@ import numpy as np
 from axelera import types
 
 from .. import logging_utils, utils
-from ..model_utils import segment as segment_utils
 from ..model_utils.box import convert
 from ..torch_utils import torch
 
@@ -117,12 +116,16 @@ class BBoxState:
     label_filter: Optional[List[str]] = field(default=None)
 
     # outputs
-    _boxes: np.ndarray = field(default_factory=lambda: np.empty((0, 4), float), init=False)
+    _boxes: np.ndarray = field(default_factory=lambda: np.empty((0, 0), float), init=False)
     _scores: np.ndarray = field(default_factory=lambda: np.empty([0], float), init=False)
     _class_ids: np.ndarray = field(default_factory=lambda: np.empty([0], int), init=False)
     # keypoints 51 = 17*3 for COCO body with visibility
     _kpts: np.ndarray = field(default_factory=lambda: np.empty((0, 51), float), init=False)
     _masks: np.ndarray = field(default_factory=lambda: np.empty((0, 160, 160), float), init=False)
+
+    # in
+    x_indexes: List[int] = field(default_factory=lambda: [0, 2], init=False)
+    y_indexes: List[int] = field(default_factory=lambda: [1, 3], init=False)
 
     def __post_init__(self) -> None:
         if self.nms_iou_threshold == 0.0:
@@ -131,12 +134,32 @@ class BBoxState:
         self.label_filter_ids = None
         if self.labels and self.label_filter:  # get id from label
             if isinstance(self.labels, utils.FrozenIntEnumMeta):
-                self.label_filter_ids = [getattr(self.labels, l) for l in self.label_filter]
+                self.label_filter_ids = [getattr(self.labels, i) for i in self.label_filter]
             else:
-                self.label_filter_ids = [self.labels.index(l) for l in self.label_filter]
+                self.label_filter_ids = [self.labels.index(i) for i in self.label_filter]
 
         if isinstance(self.box_format, str):
             self.box_format = types.BoxFormat.parse(self.box_format)
+
+        if (
+            self.box_format == types.BoxFormat.XYWHR
+            and self.scaled != types.ResizeMode.LETTERBOX_FIT
+            and self.scaled != types.ResizeMode.ORIGINAL
+        ):
+            raise ValueError("XYWHR box format requires LETTERBOX_FIT or ORIGINAL resize mode.")
+
+        if self.box_format == types.BoxFormat.XYXYXYXY:
+            self._boxes = np.empty((0, 8), float)
+            self.x_indexes = [0, 2, 4, 6]
+            self.y_indexes = [1, 3, 5, 7]
+        else:
+            if self.box_format == types.BoxFormat.XYWHR:
+                self._boxes = np.empty((0, 5), float)
+            else:
+                self._boxes = np.empty((0, 4), float)
+
+            self.x_indexes = [0, 2]
+            self.y_indexes = [1, 3]
 
         if self.scaled not in [
             types.ResizeMode.ORIGINAL,
@@ -146,7 +169,7 @@ class BBoxState:
         ]:
             raise ValueError(f"Resize mode: {self.scaled} is not supported yet")
 
-        if type(self.src_image_width) != int:
+        if type(self.src_image_width) is not int:
             self.src_image_width = int(self.src_image_width + 0.5)
             self.src_image_height = int(self.src_image_height + 0.5)
 
@@ -179,9 +202,9 @@ class BBoxState:
             class_ids = class_ids[valid]
 
         if len(boxes) > 0:
-            if boxes.shape[1] != 4:
+            if boxes.shape[1] not in [4, 5, 8]:
                 raise ValueError(
-                    "The input box must be a 4-dimensional representative of coordinates"
+                    "The input box must be a 4, 5 or 8-dimensional representative of coordinates"
                 )
 
             # descending sort by score and remove excess boxes
@@ -191,7 +214,7 @@ class BBoxState:
             self._scores = scores[descending_idx]
             self._class_ids = class_ids[descending_idx]
             self.formatting()
-            if self.nms_iou_threshold > 0:
+            if self.nms_iou_threshold > 0 and self.box_format == types.BoxFormat.XYXY:
                 self.nms()
         return self._boxes, self._scores, self._class_ids
 
@@ -210,6 +233,9 @@ class BBoxState:
         scores: A list of scores associated with each detected box.
         kpts: A list of N-dimensional representative coordinates of the detected keypoints.
         """
+        if self.box_format == types.BoxFormat.XYXYXYXY or self.box_format == types.BoxFormat.XYWHR:
+            raise NotImplementedError("XYXYXYXY and XYWHR box formats are not supported yet.")
+
         num_samples = len(boxes)
         if num_samples == 0:
             return boxes, scores, kpts
@@ -259,6 +285,9 @@ class BBoxState:
         protos: np.ndarray,  # The prototype masks.
         unpad: bool,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if self.box_format == types.BoxFormat.XYXYXYXY or self.box_format == types.BoxFormat.XYWHR:
+            raise NotImplementedError("XYXYXYXY and XYWHR box formats are not supported yet.")
+
         assert (
             len(boxes) == len(scores) == len(class_ids)
         ), f"Shapes do not match: boxes {len(boxes)}, scores {len(scores)}, class_ids {len(class_ids)}"
@@ -318,6 +347,10 @@ class BBoxState:
         # scale_mask_to_input: bool,
         unpad: bool,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple]:
+
+        if self.box_format == types.BoxFormat.XYXYXYXY or self.box_format == types.BoxFormat.XYWHR:
+            raise NotImplementedError("XYXYXYXY and XYWHR box formats are not supported yet.")
+
         assert (
             len(boxes) == len(scores) == len(class_ids)
         ), f"Shapes do not match: boxes {len(boxes)}, scores {len(scores)}, class_ids {len(class_ids)}"
@@ -384,17 +417,51 @@ class BBoxState:
         return len(self._class_ids) == 0
 
     def xyxy(self):
-        return convert(self._boxes, self.box_format, types.BoxFormat.XYXY)
+        if (
+            self.box_format != types.BoxFormat.XYXYXYXY
+            and self.box_format != types.BoxFormat.XYWHR
+        ):
+            return convert(self._boxes, self.box_format, types.BoxFormat.XYXY)
+        else:
+            raise NotImplementedError("xyxy conversion for oriented bbox is not possible")
 
     def xywh(self):
-        return convert(self._boxes, self.box_format, types.BoxFormat.XYWH)
+        if (
+            self.box_format != types.BoxFormat.XYXYXYXY
+            and self.box_format != types.BoxFormat.XYWHR
+        ):
+            return convert(self._boxes, self.box_format, types.BoxFormat.XYWH)
+        else:
+            raise NotImplementedError("xywh conversion for oriented bbox is not possible")
 
     def ltwh(self):
-        return convert(self._boxes, self.box_format, types.BoxFormat.LTWH)
+        if (
+            self.box_format != types.BoxFormat.XYXYXYXY
+            and self.box_format != types.BoxFormat.XYWHR
+        ):
+            return convert(self._boxes, self.box_format, types.BoxFormat.LTWH)
+        else:
+            raise NotImplementedError("ltwh conversion for oriented bbox is not possible")
+
+    def xyxyxyxy(self):
+        if self.box_format == types.BoxFormat.XYWHR:
+            return convert(self._boxes, self.box_format, types.BoxFormat.XYXYXYXY)
+        else:
+            raise NotImplementedError("xyxyxyxy conversion is only implemented from xywhr format")
+
+    def xywhr(self):
+        if self.box_format == types.BoxFormat.XYXYXYXY:
+            return convert(self._boxes, self.box_format, types.BoxFormat.XYWHR)
+        else:
+            raise NotImplementedError("xywhr conversion is only implemented from xyxyxyxy format")
 
     def formatting(self) -> None:
         """Rescale + denormalized + boxes as xyxy format"""
-        if self.box_format != types.BoxFormat.XYXY:
+        if self.box_format not in [
+            types.BoxFormat.XYXY,
+            types.BoxFormat.XYXYXYXY,
+            types.BoxFormat.XYWHR,
+        ]:
             self._boxes = self.xyxy()
             self.box_format = types.BoxFormat.XYXY
 
@@ -406,20 +473,29 @@ class BBoxState:
                 width, height = self.model_width, self.model_height
             else:
                 raise ValueError(f"Unsupported resize mode: {self.scaled}")
-            self._boxes[:, [0, 2]] *= width
-            self._boxes[:, [1, 3]] *= height
+            print(
+                f"Denormalizing boxes with width: {width}, height: {height}, scaled mode: {self.scaled}"
+            )
+            self._boxes[:, self.x_indexes] *= width
+            self._boxes[:, self.y_indexes] *= height
             self.normalized_coord = False
         elif self.scaled != types.ResizeMode.ORIGINAL:
             self._boxes, _, _ = self.rescale(
                 self._boxes,
-                types.BoxFormat.XYXY,
+                self.box_format,
                 (self.model_height, self.model_width),
                 (self.src_image_height, self.src_image_width),
                 resize_mode=self.scaled,
             )
             self.scaled = types.ResizeMode.ORIGINAL
-        self._boxes[:, [0, 2]] = np.clip(self._boxes[:, [0, 2]], 0, self.src_image_width)
-        self._boxes[:, [1, 3]] = np.clip(self._boxes[:, [1, 3]], 0, self.src_image_height)
+
+        if self.box_format != types.BoxFormat.XYWHR:
+            self._boxes[:, self.x_indexes] = np.clip(
+                self._boxes[:, self.x_indexes], 0, self.src_image_width
+            )
+            self._boxes[:, self.y_indexes] = np.clip(
+                self._boxes[:, self.y_indexes], 0, self.src_image_height
+            )
 
     def formatting_kpts(self) -> None:
         if self.box_format != types.BoxFormat.XYXY:
@@ -483,8 +559,9 @@ class BBoxState:
         '''Rescale the bounding boxes and keypoints to the original image size.
 
         Args:
-            boxes (np.ndarray): The input bounding boxes. Shape (n, 4) where n is the number of boxes.
-            box_format (types.BoxFormat): The format of the bounding boxes. Either 'xyxy', 'xywh', or 'ltwh'.
+            boxes (np.ndarray): The input bounding boxes. Shape (n, 4), (n, 5) or (n, 8) where n is the number of boxes.
+            (n, 5) and (n, 8) represent oriented bbox.
+            box_format (types.BoxFormat): The format of the bounding boxes. Either 'xyxy', 'xywh', 'ltwh', 'xywhr' or 'xyxyxyxy'.
             ori_shape (Tuple[int, int]): The original image size in the format (height, width).
             target_shape (Tuple[int, int]): The target image size in the format (height, width).
             ratio_pad (Optional[Tuple[float, Tuple[float, float]]]): The padding ratio and padding amounts when letterbox scaleup is true.
@@ -496,14 +573,22 @@ class BBoxState:
         Returns:
             Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]: The rescaled bounding boxes and keypointscaled masks (if any).
         '''
+
+        if box_format == types.BoxFormat.XYXYXYXY:
+            x_indexes = [0, 2, 4, 6]
+            y_indexes = [1, 3, 5, 7]
+        else:
+            x_indexes = [0, 2]
+            y_indexes = [1, 3]
+
         rescaled_kpts = None
 
         if resize_mode == types.ResizeMode.STRETCH:
             rescaled_boxes = np.copy(boxes)
             ratio_x = ori_shape[1] / target_shape[1]
-            rescaled_boxes[:, [0, 2]] /= ratio_x
+            rescaled_boxes[:, x_indexes] /= ratio_x
             ratio_y = ori_shape[0] / target_shape[0]
-            rescaled_boxes[:, [1, 3]] /= ratio_y
+            rescaled_boxes[:, y_indexes] /= ratio_y
             if kpts is not None:
                 rescaled_kpts = np.copy(kpts)
                 rescaled_kpts[:, :, 1] /= ratio_y
@@ -530,17 +615,28 @@ class BBoxState:
         if box_format == types.BoxFormat.XYXY:
             rescaled_boxes[:, 2] -= padding[0]  # x2
             rescaled_boxes[:, 3] -= padding[1]  # y2
+        elif box_format == types.BoxFormat.XYXYXYXY:
+            rescaled_boxes[:, 2] -= padding[0]  # x2
+            rescaled_boxes[:, 3] -= padding[1]  # y2
+            rescaled_boxes[:, 4] -= padding[0]  # x2
+            rescaled_boxes[:, 5] -= padding[1]  # y2
+            rescaled_boxes[:, 6] -= padding[0]  # x2
+            rescaled_boxes[:, 7] -= padding[1]  # y2
+
         rescaled_boxes[:, :4] /= ratio
+        if box_format == types.BoxFormat.XYXYXYXY:
+            rescaled_boxes[:, 4:] /= ratio
+
         if kpts is not None:
             rescaled_kpts = np.copy(kpts)
             rescaled_kpts[:, :, 0] -= padding[0]
             rescaled_kpts[:, :, 1] -= padding[1]
             rescaled_kpts[:, :, :2] /= ratio
 
-        rescaled_boxes[:, [0, 2]] = rescaled_boxes[:, [0, 2]].clip(
+        rescaled_boxes[:, x_indexes] = rescaled_boxes[:, x_indexes].clip(
             0, target_shape[1]
         )  # x1,w  or x1x2
-        rescaled_boxes[:, [1, 3]] = rescaled_boxes[:, [1, 3]].clip(
+        rescaled_boxes[:, y_indexes] = rescaled_boxes[:, y_indexes].clip(
             0, target_shape[0]
         )  # y1,h  or y1y2
         if kpts is not None:

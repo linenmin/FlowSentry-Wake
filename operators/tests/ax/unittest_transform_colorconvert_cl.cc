@@ -1,4 +1,5 @@
-#include "unittest_transform_common.h"
+// Copyright Axelera AI, 2025
+#include "unittest_ax_common.h"
 
 #define CL_TARGET_OPENCL_VERSION 210
 #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
@@ -31,6 +32,7 @@ struct format_params {
 struct passthrough_params {
   AxVideoFormat in;
   std::string out;
+  std::string flip;
   bool passthrough;
 };
 
@@ -39,26 +41,30 @@ class PassthroughFixture : public ::testing::TestWithParam<passthrough_params>
 };
 
 INSTANTIATE_TEST_SUITE_P(ColorConvertTestSuite, PassthroughFixture,
-    ::testing::Values(passthrough_params{ AxVideoFormat::RGBA, "bgra", false },
-        passthrough_params{ AxVideoFormat::BGRA, "rgba", false },
-        passthrough_params{ AxVideoFormat::NV12, "rgba", false },
-        passthrough_params{ AxVideoFormat::NV12, "bgra", false },
-        passthrough_params{ AxVideoFormat::I420, "rgba", false },
-        passthrough_params{ AxVideoFormat::I420, "bgra", false },
-        passthrough_params{ AxVideoFormat::YUY2, "rgba", false },
-        passthrough_params{ AxVideoFormat::YUY2, "bgra", false },
-        passthrough_params{ AxVideoFormat::BGRA, "bgra", true },
-        passthrough_params{ AxVideoFormat::RGBA, "rgba", true },
+    ::testing::Values(passthrough_params{ AxVideoFormat::RGBA, "bgra", "none", false },
+        passthrough_params{ AxVideoFormat::BGRA, "rgba", "none", false },
+        passthrough_params{ AxVideoFormat::NV12, "rgba", "none", false },
+        passthrough_params{ AxVideoFormat::NV12, "bgra", "none", false },
+        passthrough_params{ AxVideoFormat::I420, "rgba", "none", false },
+        passthrough_params{ AxVideoFormat::I420, "bgra", "none", false },
+        passthrough_params{ AxVideoFormat::YUY2, "rgba", "none", false },
+        passthrough_params{ AxVideoFormat::YUY2, "bgra", "none", false },
+        passthrough_params{ AxVideoFormat::BGRA, "bgra", "none", true },
+        passthrough_params{ AxVideoFormat::RGBA, "rgba", "none", true },
         // Test grayscale conversion passthrough cases
-        passthrough_params{ AxVideoFormat::NV12, "gray", true },
-        passthrough_params{ AxVideoFormat::I420, "gray", true },
-        passthrough_params{ AxVideoFormat::GRAY8, "gray", true },
+        passthrough_params{ AxVideoFormat::NV12, "gray", "none", true },
+        passthrough_params{ AxVideoFormat::I420, "gray", "none", true },
+        passthrough_params{ AxVideoFormat::GRAY8, "gray", "none", true },
         // Test grayscale conversion non-passthrough cases
-        passthrough_params{ AxVideoFormat::RGBA, "gray", false },
-        passthrough_params{ AxVideoFormat::BGRA, "gray", false },
-        passthrough_params{ AxVideoFormat::RGB, "gray", false },
-        passthrough_params{ AxVideoFormat::BGR, "gray", false },
-        passthrough_params{ AxVideoFormat::YUY2, "gray", false }));
+        passthrough_params{ AxVideoFormat::RGBA, "gray", "none", false },
+        passthrough_params{ AxVideoFormat::BGRA, "gray", "none", false },
+        passthrough_params{ AxVideoFormat::RGB, "gray", "none", false },
+        passthrough_params{ AxVideoFormat::BGR, "gray", "none", false },
+        passthrough_params{ AxVideoFormat::YUY2, "gray", "none", false },
+        passthrough_params{ AxVideoFormat::RGB, "rgb", "none", true },
+        passthrough_params{ AxVideoFormat::RGB, "rgb", "clockwise", false },
+        passthrough_params{ AxVideoFormat::BGR, "bgr", "none", true },
+        passthrough_params{ AxVideoFormat::BGR, "bgr", "counterclockwise", false }));
 
 
 TEST_P(PassthroughFixture, can_passthrough)
@@ -69,9 +75,10 @@ TEST_P(PassthroughFixture, can_passthrough)
   auto format = GetParam();
   std::unordered_map<std::string, std::string> input = {
     { "format", format.out },
+    { "flip_method", format.flip },
   };
 
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   std::vector<int8_t> in_buf(640 * 480 * 4);
   std::vector<int8_t> out_buf(640 * 480 * 4);
 
@@ -103,6 +110,12 @@ TEST_P(PassthroughFixture, can_passthrough)
   } else if (format.out == "gray") {
     out_format = AxVideoFormat::GRAY8;
     stride_multiplier = 1; // Only 1 byte per pixel for grayscale
+  } else if (format.out == "rgb") {
+    out_format = AxVideoFormat::RGB;
+    stride_multiplier = 3; // 3 bytes per pixel for RGB
+  } else if (format.out == "bgr") {
+    out_format = AxVideoFormat::BGR;
+    stride_multiplier = 3; // 3 bytes per pixel for BGR
   } else {
     // Default to RGBA if unknown format
     out_format = AxVideoFormat::RGBA;
@@ -111,11 +124,10 @@ TEST_P(PassthroughFixture, can_passthrough)
   auto out = AxVideoInterface{ { 640, 480, 640 * stride_multiplier, 0, out_format },
     out_buf.data(), { static_cast<size_t>(640 * stride_multiplier) }, { 0 }, -1 };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  ASSERT_EQ(color_convert.can_passthrough(in, out), format.passthrough);
+  ASSERT_EQ(xform->can_passthrough(in, out), format.passthrough);
 }
 
-TEST(Conversions, rgb2bgr)
+TEST(Conversions1, rgb2bgr)
 {
   if (!has_opencl_platform) {
     GTEST_SKIP();
@@ -123,7 +135,7 @@ TEST(Conversions, rgb2bgr)
   std::unordered_map<std::string, std::string> input = {
     { "format", "bgra" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{ 0, 1, 2, 0, 3, 4, 5, 0, 6, 7, 8, 0, 9, 10,
     11, 0, 12, 13, 14, 0, 15, 16, 17, 0, 18, 19, 20, 0, 21, 22, 23, 0, 24, 25,
     26, 0, 27, 28, 29, 0, 30, 31, 32, 0, 33, 34, 35, 0, 36, 37, 38, 0, 39, 40,
@@ -143,8 +155,8 @@ TEST(Conversions, rgb2bgr)
 
   auto out = AxVideoInterface{ { 8, 2, 8 * 4, 0, AxVideoFormat::BGRA },
     out_buf.data(), { 8 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -156,7 +168,7 @@ TEST(Conversions, bgr2rgb)
   std::unordered_map<std::string, std::string> input = {
     { "format", "rgba" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{ 0, 1, 2, 0, 3, 4, 5, 0, 6, 7, 8, 0, 9, 10,
     11, 0, 12, 13, 14, 0, 15, 16, 17, 0, 18, 19, 20, 0, 21, 22, 23, 0, 24, 25,
     26, 0, 27, 28, 29, 0, 30, 31, 32, 0, 33, 34, 35, 0, 36, 37, 38, 0, 39, 40,
@@ -176,8 +188,8 @@ TEST(Conversions, bgr2rgb)
 
   auto out = AxVideoInterface{ { 8, 2, 8 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 8 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -189,7 +201,7 @@ TEST(Conversion, yuyv2rgb)
   std::unordered_map<std::string, std::string> input = {
     { "format", "rgba" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0x98, 0x3a, 0x98, 0xc9, 0x98, 0x3a, 0x98, 0xc9, 0x98, 0x3a, 0x98, 0xc9,
@@ -215,8 +227,8 @@ TEST(Conversion, yuyv2rgb)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -228,7 +240,7 @@ TEST(Conversion, i4202rgb)
   std::unordered_map<std::string, std::string> input = {
     { "format", "rgba" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
@@ -258,8 +270,8 @@ TEST(Conversion, i4202rgb)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -271,7 +283,7 @@ TEST(Conversion, nv12torgb)
   std::unordered_map<std::string, std::string> input = {
     { "format", "rgba" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0x98, 0x98, 0x98, 0x98, 0x98, 0x98,
@@ -299,8 +311,8 @@ TEST(Conversion, nv12torgb)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -313,7 +325,7 @@ TEST(Conversion, rgb2gray)
   std::unordered_map<std::string, std::string> input = {
     { "format", "gray" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     255, 0, 0, // Red
     0, 255, 0, // Green
@@ -339,9 +351,8 @@ TEST(Conversion, rgb2gray)
   auto out = AxVideoInterface{ { 4, 1, 4, 0, AxVideoFormat::GRAY8 },
     out_buf.data(), { 4 }, { 0 }, -1 };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -354,7 +365,7 @@ TEST(Conversion, yuv2gray_passthrough)
   std::unordered_map<std::string, std::string> input = {
     { "format", "gray" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
 
   // Test with NV12 input format
   {
@@ -370,7 +381,7 @@ TEST(Conversion, yuv2gray_passthrough)
       out_buf.data(), { 640 }, { 0 }, -1 };
 
     // First confirm this is a passthrough case
-    ASSERT_TRUE(color_convert.can_passthrough(in, out));
+    ASSERT_TRUE(xform->can_passthrough(in, out));
 
     // Check that the first 10 pixels match the input luma plane
     for (int i = 0; i < 10; i++) {
@@ -393,7 +404,7 @@ TEST(Conversion, yuv2gray_passthrough)
       out_buf.data(), { 640 }, { 0 }, -1 };
 
     // First confirm this is a passthrough case
-    ASSERT_TRUE(color_convert.can_passthrough(in, out));
+    ASSERT_TRUE(xform->can_passthrough(in, out));
   }
 }
 
@@ -407,7 +418,7 @@ TEST(Conversion, i4202rgb_clockwise)
     { "format", "rgba" },
     { "flip_method", "clockwise" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
@@ -438,8 +449,8 @@ TEST(Conversion, i4202rgb_clockwise)
 
   auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 2 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -452,7 +463,7 @@ TEST(Conversion, i4202rgb_counterclockwise)
     { "format", "rgba" },
     { "flip_method", "counterclockwise" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
@@ -483,8 +494,8 @@ TEST(Conversion, i4202rgb_counterclockwise)
 
   auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 2 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -497,7 +508,7 @@ TEST(Conversion, i4202rgb_upper_left_diagonal)
     { "format", "rgba" },
     { "flip_method", "upper-left-diagonal" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
@@ -528,8 +539,8 @@ TEST(Conversion, i4202rgb_upper_left_diagonal)
 
   auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 2 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -542,7 +553,7 @@ TEST(Conversion, i4202rgb_upper_right_diagonal)
     { "format", "rgba" },
     { "flip_method", "upper-right-diagonal" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
@@ -573,8 +584,8 @@ TEST(Conversion, i4202rgb_upper_right_diagonal)
 
   auto out = AxVideoInterface{ { 2, 6, 2 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 2 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -588,7 +599,7 @@ TEST(Conversion, i4202rgb_horizontal_flip)
     { "format", "rgba" },
     { "flip_method", "horizontal-flip" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
@@ -617,8 +628,8 @@ TEST(Conversion, i4202rgb_horizontal_flip)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -631,7 +642,7 @@ TEST(Conversion, i4202rgb_vertical_flip)
     { "format", "rgba" },
     { "flip_method", "vertical-flip" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -660,8 +671,8 @@ TEST(Conversion, i4202rgb_vertical_flip)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -674,7 +685,7 @@ TEST(Conversion, i4202rgb_rotate180)
     { "format", "rgba" },
     { "flip_method", "rotate-180" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
@@ -702,8 +713,8 @@ TEST(Conversion, i4202rgb_rotate180)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -717,7 +728,7 @@ TEST(Conversion, yuyv_rotate180)
     { "format", "rgba" },
     { "flip_method", "rotate-180" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -741,8 +752,8 @@ TEST(Conversion, yuyv_rotate180)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -755,7 +766,7 @@ TEST(Conversion, nv122rgb_rotate180)
     { "format", "rgba" },
     { "flip_method", "rotate-180" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{
     // clang-format off
     0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
@@ -781,8 +792,8 @@ TEST(Conversion, nv122rgb_rotate180)
 
   auto out = AxVideoInterface{ { 6, 2, 6 * 4, 0, AxVideoFormat::RGBA },
     out_buf.data(), { 6 * 4 }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 // Test for BGRA to GRAY conversion
@@ -794,7 +805,7 @@ TEST(Conversion, bgra2gray)
   std::unordered_map<std::string, std::string> input = {
     { "format", "gray" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
   auto in_buf = std::vector<uint8_t>{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255,
     255, 255, 255, 255, 255 };
 
@@ -816,9 +827,8 @@ TEST(Conversion, bgra2gray)
   auto out = AxVideoInterface{ { 4, 1, 4, 0, AxVideoFormat::GRAY8 },
     out_buf.data(), { 4 }, { 0 }, -1 };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-
-  color_convert.transform(in, out);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 
@@ -831,7 +841,7 @@ TEST(Conversion, yuyv2gray)
   std::unordered_map<std::string, std::string> input = {
     { "format", "gray" },
   };
-  Transformer color_convert("libtransform_colorconvert_cl.so", input);
+  auto xform = Ax::LoadTransform("colorconvert_cl", input);
 
   // YUYV format: Y0 U0 Y1 V0
   auto in_buf = std::vector<uint8_t>{
@@ -855,9 +865,9 @@ TEST(Conversion, yuyv2gray)
   auto out = AxVideoInterface{ { 4, 1, 4, 0, AxVideoFormat::GRAY8 },
     out_buf.data(), { 4 }, { 0 }, -1 };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  Ax::MetaMap metadata;
 
-  color_convert.transform(in, out);
+  xform->transform(in, out, 0, 1, metadata);
   ASSERT_EQ(out_buf, expected);
 }
 } // namespace

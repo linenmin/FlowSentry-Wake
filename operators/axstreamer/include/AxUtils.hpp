@@ -5,7 +5,6 @@
 #include "AxDataInterface.h"
 
 #include <optional>
-
 using namespace std::string_literals;
 
 namespace Ax
@@ -229,5 +228,6 @@ video_from_cvmat(const cv::Mat &mat, AxVideoFormat format)
   video.data = mat.data;
   return video;
 }
+
 
 } // namespace Ax

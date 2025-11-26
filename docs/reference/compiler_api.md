@@ -1,4 +1,22 @@
+![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 # Python Compiler API
+
+- [Python Compiler API](#python-compiler-api)
+  - [Importing the API](#importing-the-api)
+  - [Overview](#overview)
+  - [API Reference](#api-reference)
+    - [`quantize()`](#quantize)
+    - [`compile()`](#compile)
+  - [Basic Usage](#basic-usage)
+  - [Configuration](#configuration)
+    - [CompilerConfig](#compilerconfig)
+  - [Usage Examples](#usage-examples)
+    - [Example 1: Raw Image Data with Preprocessing](#example-1-raw-image-data-with-preprocessing)
+    - [Example 2: Pre-processed Data Iterator](#example-2-pre-processed-data-iterator)
+    - [Example 3: PyTorch DataLoader Integration](#example-3-pytorch-dataloader-integration)
+    - [Example 4: Saving and Loading Quantized Models](#example-4-saving-and-loading-quantized-models)
+    - [Example 5: Raw Image Data with Preprocessing](#example-5-raw-image-data-with-preprocessing)
+  - [See Also](#see-also)
 
 The Axelera Python Compiler API provides a streamlined workflow for quantizing and compiling neural networks for optimal inference performance on Axelera hardware.
 

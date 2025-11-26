@@ -1,4 +1,5 @@
 # Copyright Axelera AI, 2025
+import functools
 from pathlib import Path
 
 from .generated import generate_compilation_configs, generate_operators
@@ -454,3 +455,13 @@ def load(schema, path=None, check_required=True, load_compiler_config=False):
     operators = generate_operators(path, base)
     compilation_configs = generate_compilation_configs(load_compiler_config)
     return compile_schema(schema(operators, compilation_configs), check_required)
+
+
+@functools.lru_cache(maxsize=32)
+def load_network(path=None, check_required=True, load_compiler_config=False):
+    return load(network, path, check_required, load_compiler_config)
+
+
+@functools.lru_cache(maxsize=32)
+def load_task(path=None, check_required=True, load_compiler_config=False):
+    return load(task, path, check_required, load_compiler_config)

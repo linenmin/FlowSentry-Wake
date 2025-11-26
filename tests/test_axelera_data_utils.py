@@ -1,9 +1,7 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 
 import itertools
 import os
-from pathlib import Path
-import tempfile
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -403,88 +401,3 @@ def test_download_hint_with_file_extraction(
         # Check that the hint includes both filenames from the val split
         assert 'ILSVRC2012_devkit_t12.tar.gz' in hint_message
         assert 'ILSVRC2012_img_val.tar' in hint_message
-
-
-def test_integration_with_release_model_cards(mock_filesystem, tmp_path):
-    """Test that the release_model_cards.py creates compatible prompt YAML that works with data_utils."""
-    from internal_tools.release_model_cards import create_dataset_prompt_yaml
-
-    # Get the paths
-    private_yaml_path = mock_filesystem / "ax_datasets" / DatasetYamlFile.DATASET_PRIVATE.value
-    prompt_yaml_path = mock_filesystem / "ax_datasets" / DatasetYamlFile.DATASET_PROMPT.value
-
-    # Generate the prompt YAML using our updated function
-    create_dataset_prompt_yaml(private_yaml_path, prompt_yaml_path)
-
-    # Now unlink the private YAML to force using the prompt YAML
-    private_yaml_path.unlink()
-
-    with patch.dict(
-        os.environ, {'AXELERA_FRAMEWORK': str(mock_filesystem), 'AXELERA_S3_AVAILABLE': '0'}
-    ), patch('axelera.app.data_utils._check_dataset_status') as mock_check, patch(
-        'axelera.app.data_utils._print_hint'
-    ) as mock_hint:
-
-        mock_check.return_value = (DatasetStatus.INCOMPLETE, "Dataset is incomplete")
-
-        # Test with ImageNet dataset - default split is 'val'
-        with pytest.raises(RuntimeError):
-            check_and_download_dataset('ImageNet', tmp_path, is_private=True)
-
-        # Verify hint contains the filename from val split
-        mock_hint.assert_called_once()
-        hint_message = mock_hint.call_args[0][0]
-        assert 'ILSVRC2012_devkit_t12.tar.gz' in hint_message
-
-        # Reset mock to test the subset split
-        mock_hint.reset_mock()
-
-        # Test with the 'subset' split specifically
-        with pytest.raises(RuntimeError):
-            check_and_download_dataset('ImageNet', tmp_path, split='subset', is_private=True)
-
-        # Verify hint contains the filename from subset split
-        mock_hint.assert_called_once()
-        subset_hint_message = mock_hint.call_args[0][0]
-        assert 'imagenet_subset.zip' in subset_hint_message
-
-
-def test_customer_filtering():
-    """Test that the create_dataset_prompt_yaml correctly filters customers."""
-    from internal_tools.release_model_cards import create_dataset_prompt_yaml
-
-    # Create a test YAML with multiple customers
-    multi_customer_yaml = {
-        'Customer.Apple.Dataset': {
-            'description': 'Apple dataset',
-            'splits': {'val': [{'url': 's3://bucket/apple.zip', 'md5': 'hash1'}]},
-        },
-        'Customer.Google.Dataset': {
-            'description': 'Google dataset',
-            'splits': {'val': [{'url': 's3://bucket/google.zip', 'md5': 'hash2'}]},
-        },
-        'PublicDataset': {
-            'description': 'Public dataset',
-            'splits': {'val': [{'url': 's3://bucket/public.zip', 'md5': 'hash3'}]},
-        },
-    }
-
-    with tempfile.TemporaryDirectory() as tmpdirname:
-        tmp_dir = Path(tmpdirname)
-        tmp_dir.mkdir(exist_ok=True)
-        source_path = tmp_dir / 'source.yaml'
-
-        with open(source_path, 'w') as f:
-            yaml.dump(multi_customer_yaml, f)
-
-        # Test with specific customer filter
-        apple_dest = tmp_dir / 'apple.yaml'
-        create_dataset_prompt_yaml(source_path, apple_dest, customer_name='Apple')
-
-        with open(apple_dest, 'r') as f:
-            apple_result = yaml.safe_load(f)
-
-        # Should include Apple and PublicDataset, but not Google
-        assert 'Customer.Apple.Dataset' in apple_result
-        assert 'PublicDataset' in apple_result
-        assert 'Customer.Google.Dataset' not in apple_result

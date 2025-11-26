@@ -1,4 +1,5 @@
-#include "unittest_transform_common.h"
+// Copyright Axelera AI, 2025
+#include "unittest_ax_common.h"
 
 #define CL_TARGET_OPENCL_VERSION 210
 #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
@@ -41,10 +42,10 @@ TEST_P(ColorFormatFixture, color_fusing_test)
   }
   std::unordered_map<std::string, std::string> input = {
     { "matrix", "1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0" },
-    { "out_format", std::to_string(format.out_format) },
+    { "format", std::to_string(format.out_format) },
   };
 
-  Transformer perspective("libtransform_perspective_cl.so", input);
+  auto xform = Ax::LoadTransform("perspective_cl", input);
 
   auto out_bbp = (format.out_format == 5) ? 1 : 3;
   auto in_bbp = (format.format == AxVideoFormat::GRAY8) ? 1 : 3;
@@ -83,8 +84,8 @@ TEST_P(ColorFormatFixture, color_fusing_test)
                                                             AxVideoFormat::RGB },
     out_buf.data(), { 1920 * static_cast<size_t>(out_bbp) }, { 0 }, -1 };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
+  Ax::MetaMap metadata;
+  EXPECT_NO_THROW({ xform->transform(in, out, 0, 1, metadata); });
   if (format.format == AxVideoFormat::RGB && format.out_format == 3) {
     EXPECT_EQ(in_buf, out_buf);
   } else if (format.format == AxVideoFormat::BGR && format.out_format == 4) {
@@ -105,7 +106,7 @@ TEST(perspective_cl, identity_test)
     { "matrix", "1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0" },
   };
 
-  Transformer perspective("libtransform_perspective_cl.so", input);
+  auto xform = Ax::LoadTransform("perspective_cl", input);
   std::vector<int8_t> in_buf(16 * 16 * 3);
   std::iota(in_buf.begin(), in_buf.end(), 1);
   std::vector<int8_t> out_buf(16 * 16 * 3, 0);
@@ -113,8 +114,8 @@ TEST(perspective_cl, identity_test)
   auto in = AxVideoInterface{ { 16, 16, 16 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   auto out
       = AxVideoInterface{ { 16, 16, 16 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
+  Ax::MetaMap metadata;
+  EXPECT_NO_THROW({ xform->transform(in, out, 0, 1, metadata); });
 
   EXPECT_TRUE(in_buf == out_buf);
 }
@@ -128,15 +129,15 @@ TEST(perspective_cl, translation_test)
     { "matrix", "1.0,0.0,-2.0,0.0,1.0,-2.0,0.0,0.0,1.0" },
   };
 
-  Transformer perspective("libtransform_perspective_cl.so", input);
+  auto xform = Ax::LoadTransform("perspective_cl", input);
   std::vector<uint8_t> in_buf(4 * 4 * 3);
   std::iota(in_buf.begin(), in_buf.end(), 1);
   std::vector<uint8_t> out_buf(4 * 4 * 3, 0);
 
   auto in = AxVideoInterface{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   auto out = AxVideoInterface{ { 4, 4, 4 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
+  Ax::MetaMap metadata;
+  EXPECT_NO_THROW({ xform->transform(in, out, 0, 1, metadata); });
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
@@ -158,7 +159,7 @@ TEST(perspective_cl, happy_path_test)
     { "matrix", "2.0,0.0,-860,0.0,2.0,-540,0.0,0.0,1.0" },
   };
 
-  Transformer perspective("libtransform_perspective_cl.so", input);
+  auto xform = Ax::LoadTransform("perspective_cl", input);
   std::vector<int8_t> in_buf(16 * 16 * 3);
   std::iota(in_buf.begin(), in_buf.end(), 1);
   std::vector<int8_t> out_buf(16 * 16 * 3, 0);
@@ -166,8 +167,8 @@ TEST(perspective_cl, happy_path_test)
   auto in = AxVideoInterface{ { 16, 16, 16 * 3, 0, AxVideoFormat::RGB }, in_buf.data() };
   auto out
       = AxVideoInterface{ { 16, 16, 16 * 3, 0, AxVideoFormat::RGB }, out_buf.data() };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  EXPECT_NO_THROW({ perspective.transform(in, out, metadata, 0, 1); });
+  Ax::MetaMap metadata;
+  EXPECT_NO_THROW({ xform->transform(in, out, 0, 1, metadata); });
 
   EXPECT_TRUE(in_buf != out_buf);
 }
@@ -181,8 +182,7 @@ TEST(perspective_cl, invalid_matrix_test)
     { "matrix", "1.0,0.0,0.0,0.0,0.0,1.0" },
   };
 
-  EXPECT_THROW(Transformer perspective("libtransform_perspective_cl.so", input),
-      std::runtime_error);
+  EXPECT_THROW(Ax::LoadTransform("perspective_cl", input), std::runtime_error);
 }
 
 } // namespace

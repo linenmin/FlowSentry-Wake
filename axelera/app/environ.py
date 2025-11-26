@@ -15,6 +15,8 @@ import typing
 
 
 class UseDmaBuf(enum.Flag):
+    '''Bitwise flag to determine if dmabufs should be used for inputs and/or outputs.'''
+
     INPUTS = 1
     OUTPUTS = 2
 
@@ -77,13 +79,6 @@ def _var(f):
 
     _vars.append(var)
     return property(getter)
-
-
-class UseDmaBuf(enum.Flag):
-    '''Bitwise flag to determine if dmabufs should be used for inputs and/or outputs.'''
-
-    INPUTS = 1
-    OUTPUTS = 2
 
 
 class Environment:
@@ -396,25 +391,6 @@ class Environment:
         Defaults to "gl,3,3" for OpenGL 3.3.
         '''
         return 'gl,3,3'
-
-    @_var
-    def low_latency(self) -> bool:
-        '''Enable optimisations for lower latency.
-
-        Enabling this option causes the application framework and inference to favor low latency
-        over throughput.
-
-        This option::
-
-         * disables double buffering in OpenCL.
-         * disables double buffering in Metis.
-         * disables batch mode in Metis.
-         * disables output DMA buffers.
-         * reduces the size of all queues in the pipeline to 1.
-         * disables all rendering buffering.
-
-        '''
-        return False
 
     def show_help(self) -> str:
         lines = [

@@ -269,46 +269,17 @@ def _add_alpha(c):
 
 
 @dataclass
-class Canvas:
-    '''A logical canvas defines relationship between image coordinates and the OpenGL GL
-    coordinates.  GL Y direction is inverted (0 is the bottom of the screen) and scaled because
-    the image from the application is compressed to fit the screen.
-
-    For example, the incoming frame may be 1024x768(1.33AR) pixels, but the display window may be
-    600x500.  The image is scaled to fit the window whilst maintaining aspect ratio, and so the
-    image is squashed to (600, 600/1.33=450) pixels. (With 25 pixels top and bottom). In this case
-    Canvas will be Canvas(0, 25, 600, 450, 600/1024=0.5859, ).
+class GLCanvas(display.Canvas):
+    '''
+    GLCanvas uses the information from display.Canvas to scale and position
+    image coordinates correctly in the OpenGL GL coordinate system. GL Y direction
+    is inverted (0 is the bottom of the screen).
 
     A bounding box of (100, 100, 200, 200) in the image space will be drawn as a rectangle in the
     GL space at
-    (0 + 100*0.5859, 475 - 100*0.5859, 200*0.5859, 200*0.5859) = (58.59, 416.41, 117.18, 117.18)
+    (0 + 100*0.5859, 475 - 100*0.5859, 200*0.5859, 200*0.5859) = (59, 416, 117, 117)
+    Given a scale factor of 0.5859, and rounding to integer pixel values.
     '''
-
-    left: int
-    '''Left of the canvas in the gl coordinate system.'''
-    bottom: int
-    '''Bottom of the canvas in the gl coordinate system.'''
-    width: int
-    '''Width of the canvas in gl coordinate pixels.'''
-    height: int
-    '''Height of the canvas in gl coordinate pixels.'''
-    scale: float
-    '''Conversion factor from logical (image) coordinates to gl coordinate space.'''
-
-    window_width: int
-    '''Width of the window in gl coordinate pixels.'''
-    window_height: int
-    '''Height of the window in gl coordinate pixels.'''
-
-    @property
-    def size(self) -> Tuple[int, int]:
-        '''Size of the canvas in GL pixels.'''
-        return self.width, self.height
-
-    @property
-    def window_size(self) -> Tuple[int, int]:
-        '''Size of the owning window in GL pixels'''
-        return self.window_width, self.window_height
 
     def glp(self, p: Tuple[int, int]) -> Tuple[int, int]:
         '''Convert a logical point to a gl point.'''
@@ -320,8 +291,8 @@ class Canvas:
 
 class ProgressDraw:
     def __init__(self, stream_id, num_streams, window_size):
-        self._stream_id = stream_id
-        self._canvas = _create_canvas(stream_id, num_streams, window_size, window_size)
+        self._source_id = stream_id
+        self._canvas = _create_canvas(self._source_id, num_streams, window_size, window_size)
         self._p = ProgressBar(
             *self._canvas.glp((window_size[0] / 2, window_size[1] - 14)),
             100,
@@ -331,7 +302,7 @@ class ProgressDraw:
         )
 
     def resize(self, num_streams: int, window_size: Tuple[int, int]):
-        self._canvas = _create_canvas(self._stream_id, num_streams, window_size, window_size)
+        self._canvas = _create_canvas(self._source_id, num_streams, window_size, window_size)
         self._p.move(*self._canvas.glp((window_size[0] / 2, window_size[1] - 14)))
 
     def set_position(self, value):
@@ -343,7 +314,7 @@ class ProgressDraw:
 
 def _new_sprite_from_image(
     image: types.Image,
-    canvas: Canvas,
+    canvas: GLCanvas,
     batch=None,
     group=None,
     grayscale=False,
@@ -361,7 +332,7 @@ def _new_sprite_from_image(
         return sprite
 
 
-def _move_sprite(sprite: pyglet.sprite.Sprite, canvas: Canvas):
+def _move_sprite(sprite: pyglet.sprite.Sprite, canvas: GLCanvas):
     sprite.scale_x = canvas.scale
     sprite.scale_y = -canvas.scale
     sprite.x, sprite.y = canvas.glp((0, 0))
@@ -372,67 +343,20 @@ def _load_image_from_file(filename: str):
     return pyglet.image.load(filename)
 
 
-def _load_sprite_from_file(filename: str, scale, batch, group) -> pyglet.sprite.Sprite:
+def _load_sprite_from_file(
+    filename: str, scale, canvas_size, batch, group
+) -> pyglet.sprite.Sprite:
     i = _load_image_from_file(filename)
     s = pyglet.sprite.Sprite(i, 0, 0, batch=batch, group=group)
-    if scale is None:
-        scale = 1.0, 1.0
-    elif isinstance(scale, float):
-        scale = (scale, scale)
-    s.scale_x = scale[0]
-    s.scale_y = scale[1]
+    s.scale = display.canvas_scale_to_img_scale(scale, (s.width, s.height), canvas_size)
     return s
 
 
-def _get_layout(
-    stream_id: int, num_streams: int, aspect: float
-) -> Tuple[float, float, float, float]:
-    layouts = {
-        3: (0.5, 0.5, [(0.0, 0.0), (0.5, 0.25), (0.0, 0.5)]),
-        5: (0.4, 0.4, [(0.0, 0.0), (0.6, 0.0), (0.3, 0.3), (0.0, 0.6), (0.6, 0.6)]),
-    }
-    try:
-        w, h, positions = layouts[num_streams]
-        return positions[stream_id] + (w, h)
-    except KeyError:
-        cols = math.ceil(math.sqrt(num_streams))
-        rows = math.ceil(num_streams / cols)
-        if aspect < 1.0:
-            cols, rows = rows, cols
-        x, y = (stream_id % cols) / cols, (stream_id // cols) / rows
-        return x, y, 1 / cols, 1 / rows
-
-
-def _fit_within_rect(image: Tuple[int, int], bounding: Tuple[int, int]):
-    imgr = image[0] / image[1]
-    wndr = bounding[0] / bounding[1]
-    if imgr > wndr:
-        new_width = bounding[0]
-        new_height = int(new_width / imgr)
-    else:
-        new_height = bounding[1]
-        new_width = int(new_height * imgr)
-    return new_width, new_height
-
-
-def _pane_position(
-    stream_id: int, num_streams: int, image: Tuple[int, int], window: Tuple[int, int]
-) -> Tuple[int, int, int, int]:
-    x, y, w, h = _get_layout(stream_id, num_streams, window[0] / window[1])
-    x *= window[0]
-    y *= window[1]
-    bounding_box = w * window[0], h * window[1]
-    w, h = _fit_within_rect(image, bounding_box)
-    x += (bounding_box[0] - w) / 2
-    y += (bounding_box[1] - h) / 2
-    return x, y, w, h
-
-
 def _create_canvas(
-    stream_id: int, num_streams: int, image_size: Tuple[int, int], window_size: Tuple[int, int]
+    source_id: int, num_sources: int, image_size: Tuple[int, int], window_size: Tuple[int, int]
 ):
-    (x, y, w, h) = _pane_position(stream_id, num_streams, image_size, window_size)
-    return Canvas(x, y, w, h, w / image_size[0], *window_size)
+    (x, y, w, h) = display.pane_position(source_id, num_sources, image_size, window_size)
+    return GLCanvas(x, y, w, h, w / image_size[0], *window_size)
 
 
 class MasterDraw:
@@ -448,12 +372,12 @@ class MasterDraw:
         self._options: dict[int, GLOptions] = collections.defaultdict(GLOptions)
         self._layers: dict[uuid.UUID, display._Layer] = collections.defaultdict()
 
-    def _num_streams(self, new_stream_id: int) -> int:
+    def _num_sources(self, new_source_id: int) -> int:
         return (
             max(
                 max(self._draws.keys(), default=0),
                 max(self._progresses.keys(), default=0),
-                new_stream_id,
+                new_source_id,
             )
             + 1
         )
@@ -467,32 +391,23 @@ class MasterDraw:
         for p in self._progresses.values():
             p.draw()
 
-    def _get_layers(self, stream_id):
-        '''
-        Delete any layers if necessary, and return the layers to be rendered by the
-        requested stream_id.
-
-        Stream 0 will render window layers, as well as stream 0 layers.
-        '''
-        _stream_ids = (stream_id, -1) if stream_id == 0 else (stream_id,)
-        layers, expired = display._get_visible_and_expired_layers(self._layers, _stream_ids)
-        for k in expired:
-            self._layers.pop(k)
-        return layers
+    def pop_source(self, source_id: int):
+        self._draws.pop(source_id, None)
+        self._progresses.pop(source_id, None)
 
     def new_frame(
         self, stream_id: int, image: types.Image, axmeta: Optional[meta.AxMeta], buf_state: float
     ):
         cached, meta_map = self._meta_cache.get(stream_id, axmeta)
         cached  # TODO we should optimise by updating the image and leaving the rest of the draw
-        layers = self._get_layers(stream_id)
+        layers = display.get_layers(self._layers, stream_id)
         speedometer_smoothing = (
             self._speedometer_smoothing if self._options[-1].speedometer_smoothing else None
         )
 
         self._draws[stream_id] = GLDraw(
             stream_id,
-            self._num_streams(stream_id),
+            self._num_sources(stream_id),
             self._window.size,
             self._label_pool,
             self._batch,
@@ -518,47 +433,25 @@ class MasterDraw:
     def set_buffering(self, stream_id: int, buf_state: float):
         try:
             p = self._progresses[stream_id]
-            p.resize(self._num_streams(stream_id), self._window.size)
+            p.resize(self._num_sources(stream_id), self._window.size)
         except KeyError:
             p = self._progresses[stream_id] = ProgressDraw(
-                stream_id, self._num_streams(stream_id), self._window.size
+                stream_id, self._num_sources(stream_id), self._window.size
             )
         p.set_position(buf_state)
 
     def on_resize(self, width: int, height: int):
-        num_streams = self._num_streams(0)
+        num_sources = self._num_sources(0)
         window_size = (width, height)
         for draw in self._draws.values():
-            draw.resize(num_streams, window_size)
+            draw.resize(num_sources, window_size)
         for p in self._progresses.values():
-            p.resize(num_streams, window_size)
+            p.resize(num_sources, window_size)
 
     def new_label_pool(self, label_pool: LabelPool):
         self._label_pool = label_pool
         for draw in self._draws.values():
             draw.new_label_pool(label_pool)
-
-
-def _gen_title_message(stream_id, options):
-    if isinstance(options.title_position, str):
-        position = display.Coords(options.title_position)
-    else:
-        position = display.Coords(*options.title_position)
-    return display._Text(
-        stream_id,
-        uuid.uuid4(),
-        position,
-        options.title_anchor_x,
-        options.title_anchor_y,
-        None,
-        None,
-        None,
-        None,
-        options.title,
-        options.title_color,
-        options.title_bgcolor,
-        options.title_size,
-    )
 
 
 class GLDraw(display.Draw):
@@ -577,18 +470,18 @@ class GLDraw(display.Draw):
         layers: list[display._Layer],
         speedometer_smoothing: display.SpeedometerSmoothing = None,
     ):
-        self._stream_id = stream_id
+        self._source_id = stream_id
         self._window_size = window_size
         self._label_pool = label_pool
         self._batch = batch
         self._keypoint_cache = keypoint_cache
         self._shapes = []
-        self._canvas = _create_canvas(self._stream_id, num_streams, image.size, window_size)
-        self._back = pyglet.graphics.Group(GR_BACK_OFFSET + stream_id)
-        self._fore = pyglet.graphics.Group(GR_FORE_OFFSET + stream_id)
+        self._canvas = _create_canvas(self._source_id, num_streams, image.size, window_size)
+        self._back = pyglet.graphics.Group(GR_BACK_OFFSET + self._source_id)
+        self._fore = pyglet.graphics.Group(GR_FORE_OFFSET + self._source_id)
         self._speedo0 = pyglet.graphics.Group(GR_SPEEDO_OFFSET + 0)
         self._speedo1 = pyglet.graphics.Group(GR_SPEEDO_OFFSET + 1)
-        self._layer_gr = pyglet.graphics.Group(GR_LAYER_OFFSET + stream_id)
+        self._layer_gr = pyglet.graphics.Group(GR_LAYER_OFFSET + self._source_id)
         self._sprite = _new_sprite_from_image(
             image, self._canvas, self._batch, self._back, options.grayscale, options.grayscale_area
         )
@@ -596,24 +489,25 @@ class GLDraw(display.Draw):
         self._meta_map = meta_map
         self._speedometer_smoothing = speedometer_smoothing
         self._options = options
+        self._image_size = image.size
         self._render_meta()
 
         if options.title:
-            layers.append(_gen_title_message(self._stream_id, options))
-        if window_options.title:
-            layers.append(_gen_title_message(-1, window_options))
+            layers.append(display.gen_title_message(self._source_id, options))
+        if window_options.title and self._source_id == 0:
+            layers.append(display.gen_title_message(-1, window_options))
 
         for x in layers:
             if x.stream_id == -1:
                 pt_transform = lambda pt: (pt[0], window_size[1] - pt[1])
-                image_size = window_size
+                canvas_size = window_size
             else:
                 pt_transform = self._canvas.glp
-                image_size = image.size
+                canvas_size = image.size
             opacity = int(255 * x.visibility)  # TODO: 255 should be x.opacity once added
             if isinstance(x, display._Text):
                 self._text(
-                    pt_transform(x.position.as_px(image_size)),
+                    pt_transform(x.position.as_px(canvas_size)),
                     x.text,
                     self._layer_gr,
                     x.color,
@@ -624,8 +518,10 @@ class GLDraw(display.Draw):
                     opacity,
                 )
             elif isinstance(x, display._Image):
-                s = _load_sprite_from_file(x.path, x.scale, self._batch, self._layer_gr)
-                s.x, s.y = pt_transform(x.position.as_px(image_size))
+                s = _load_sprite_from_file(
+                    x.path, x.scale, canvas_size, self._batch, self._layer_gr
+                )
+                s.x, s.y = pt_transform(x.position.as_px(canvas_size))
                 s.opacity = opacity
                 if x.anchor_x == 'center':
                     s.x -= s.width / 2
@@ -653,7 +549,7 @@ class GLDraw(display.Draw):
         self._window_size = window_size
         tex = self._sprite.image
         self._canvas = _create_canvas(
-            self._stream_id, num_streams, (tex.width, tex.height), window_size
+            self._source_id, num_streams, (tex.width, tex.height), window_size
         )
         _move_sprite(self._sprite, self._canvas)
         self._render_meta()
@@ -665,6 +561,11 @@ class GLDraw(display.Draw):
     @property
     def canvas_size(self) -> display.Point:
         return self._canvas.size
+
+    @property
+    def image_size(self) -> display.Point:
+        '''Return the original, unscaled size of the input image'''
+        return self._image_size
 
     def polylines(
         self,
@@ -829,7 +730,7 @@ class GLDraw(display.Draw):
         sprite.scale_y = -self._canvas.scale
         self._shapes.append(sprite)
 
-    def segmentation_mask(self, mask_data: SegmentationMask, color: Tuple[int]) -> None:
+    def segmentation_mask(self, mask_data, color: Tuple[int]) -> None:
         mask, mbox = mask_data[-1], mask_data[4:8]
         mid_point = np.iinfo(np.uint8).max // 2
         bool_array = mask > mid_point
@@ -953,28 +854,12 @@ class GLOptions(display.Options):
     the screen for example.
     '''
 
-    title_size: int = 20
-    '''Size of the title text in points'''
-
-    title_position: str | tuple[str, str] = '0%, 0%'
-    '''Position of title. '0%, 0%' top left. '100%, 100%' bottom right.'''
-
-    title_color: tuple[int, int, int, int] = (244, 190, 24, 255)
-    '''Text color of title, RGBA (0-255)'''
-
-    title_bgcolor: tuple[int, int, int, int] = (0, 0, 0, 192)
-    '''Background color of title, RGBA (0-255)'''
-
-    title_anchor_x: str = 'left'
-    '''Anchor pos, one of left/center/right'''
-    title_anchor_y: str = 'top'
-    '''Anchor pos, one of top/center/bottom'''
-
 
 class GLWindow(pyglet.window.Window):
-    def __init__(self, q: queue.Queue, title, size, buffering):
+    def __init__(self, q: queue.Queue, title, size, buffering, frame_sink):
         self._master = None
         self._gles = False
+        self._frame_sink = frame_sink
         w, h = (None, None) if size == display.FULL_SCREEN else size
 
         _display = pyglet.display.get_display()
@@ -993,6 +878,7 @@ class GLWindow(pyglet.window.Window):
             fullscreen=size == display.FULL_SCREEN,
             resizable=True,
             config=gl_config,
+            visible=bool(title),
         )
         w = w or self.width
         h = h or self.height
@@ -1015,6 +901,8 @@ class GLWindow(pyglet.window.Window):
         pyglet.clock.schedule_interval(self.on_update, 1 / _RENDER_FPS)
         self._fps_counter = pyglet.window.FPSDisplay(self)
         self.buffering = buffering
+        self._closed_sources = set()
+        self._pending_blocking_capture = False
 
     def on_key_press(self, symbol, modifiers):
         del modifiers
@@ -1035,7 +923,25 @@ class GLWindow(pyglet.window.Window):
                         return
                     if msg is display.THREAD_COMPLETED:
                         continue  # ignore, just wait for user to close
-                    if isinstance(msg, display._SetOptions):
+                    if isinstance(msg, display._OpenSource):
+                        self._closed_sources.discard(msg.stream_id)
+                        continue
+                    blocking = isinstance(msg, display._BlockingFrame)
+                    if (
+                        isinstance(msg, display._StreamMessage)
+                        and msg.stream_id in self._closed_sources
+                    ):
+                        if blocking:
+                            LOG.error(
+                                f"Received blocking frame from closed source {msg.stream_id}"
+                            )
+                        continue  # ignore messages from closed sources
+                    if isinstance(msg, display._CloseSource):
+                        if not msg.reopen:
+                            self._closed_sources.add(msg.stream_id)
+                        self._stream_queues.pop(msg.stream_id, None)
+                        self._master.pop_source(msg.stream_id)
+                    elif isinstance(msg, display._SetOptions):
                         self._master.options(msg.stream_id, msg.options)
                     elif isinstance(msg, display._Layer):
                         self._master.layer(msg)
@@ -1050,26 +956,32 @@ class GLWindow(pyglet.window.Window):
                                 else _STREAM_QUEUE_SIZE
                             )
                             q = self._stream_queues[msg.stream_id] = HighLowQueue(maxlen=maxlen)
-                        q.append((msg.image, msg.meta))
+                        q.append((msg.image, msg.meta, blocking))
                     else:
                         LOG.debug(f"Unexpected render message {msg}")
             except queue.Empty:
                 pass
 
             self.invalid = False
-            for stream_id, q in self._stream_queues.items():
+            for source_id, q in self._stream_queues.items():
                 self.invalid = True
                 if q.low_water_reached or len(q) > q.low:
                     q.low_water_reached = True
                     if len(q) > q.high:
                         # we're falling behind, drop an extra frame
-                        q.popleft()
+                        image, axmeta, blocking_flag = q.popleft()
+                        if blocking_flag:
+                            # never drop a blocking frame
+                            self._pending_blocking_capture = True
+                            self._master.new_frame(source_id, image, axmeta, len(q) / q.maxlen)
                     if len(q):
-                        image, axmeta = q.popleft()
-                        self._master.new_frame(stream_id, image, axmeta, len(q) / q.maxlen)
+                        image, axmeta, blocking_flag = q.popleft()
+                        if blocking_flag:
+                            self._pending_blocking_capture = True
+                        self._master.new_frame(source_id, image, axmeta, len(q) / q.maxlen)
                 else:
                     # still buffering don't pop anything but do redraw progress
-                    self._master.set_buffering(stream_id, len(q) / q.maxlen)
+                    self._master.set_buffering(source_id, len(q) / q.maxlen)
 
             self._redraw()
 
@@ -1106,6 +1018,22 @@ class GLWindow(pyglet.window.Window):
             self._show_logo()
         if _SHOW_RENDER_FPS:
             self._fps_counter.draw()
+        if self._frame_sink:
+            color_buf = pyglet.image.get_buffer_manager().get_color_buffer()
+            img_data = color_buf.get_image_data()
+            row_stride = self.width * 4
+            raw = img_data.get_data('RGBA', row_stride)
+            arr = np.frombuffer(raw, dtype=np.uint8).reshape(self.height, self.width, 4)
+            arr = np.flipud(arr)
+            rgb = arr[:, :, :3]
+            try:
+                self._frame_sink.push(
+                    types.Image.fromarray(rgb), block=self._pending_blocking_capture
+                )
+            except RuntimeError as e:
+                LOG.error(f"Blocking frame sink not updated: {e}")
+            finally:
+                self._pending_blocking_capture = False
 
     def _show_logo(self):
         # silly bit of code to make the logo pulsate during startup whilst we warm up pipelines
@@ -1137,8 +1065,18 @@ class GLApp(display.App):
         if self.has_thread_completed:
             pyglet.app.exit()
 
-    def _create_new_window(self, q, title, size):
-        return GLWindow(q, title, size, self.buffering)
+    def _create_new_window(self, q, frame_sink, title, size):
+        return GLWindow(q, title, size, self.buffering, frame_sink)
+
+    def _run_background(self, interval=1 / 30):
+        del interval
+        if self._running_in_main:
+            return
+        raise RuntimeError(
+            "Implicit OpenGL rendering in the background is not supported. Either: "
+            "1. Start the renderer in your application with `display.App.run()` or "
+            "2. Use OpenCV rendering with `display.App(renderer='opencv')`"
+        )
 
     def _run(self, interval=1 / 60):
         pyglet.clock.schedule_interval(self._idle, 0.3)

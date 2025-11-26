@@ -2,13 +2,46 @@
 
 # Firmware Update Guide
 
+## Contents
 - [Firmware Update Guide](#firmware-update-guide)
+  - [Contents](#contents)
+  - [Prerequisites (Listed Below)](#prerequisites-listed-below)
+  - [Level](#level)
+  - [Overview](#overview)
   - [Prerequisites](#prerequisites)
   - [Update Process Overview](#update-process-overview)
   - [Single Metis Device Update](#single-metis-device-update)
+    - [Run the Interactive Firmware Update Tool](#run-the-interactive-firmware-update-tool)
+    - [Verify the Update](#verify-the-update)
   - [Multiple Metis Devices Update](#multiple-metis-devices-update)
+    - [Option 1: Automatic Update (Recommended)](#option-1-automatic-update-recommended)
+    - [Option 2: Manual Individual Updates](#option-2-manual-individual-updates)
+      - [Step 1: Identify All Device IDs](#step-1-identify-all-device-ids)
+      - [Step 2: Update Each Device Individually](#step-2-update-each-device-individually)
+      - [Step 3: Verify All Updates](#step-3-verify-all-updates)
   - [Safety and Recovery](#safety-and-recovery)
+    - [Stage 1 Update - Metis Firmware Update](#stage-1-update---metis-firmware-update)
+    - [Stage 2 Update - Board Controller Firmware Update](#stage-2-update---board-controller-firmware-update)
+    - [Safety Recommendations](#safety-recommendations)
   - [Troubleshooting](#troubleshooting)
+    - [Common Issues](#common-issues)
+  - [Next Steps](#next-steps)
+  - [Related Documentation](#related-documentation)
+  - [Further support](#further-support)
+
+## Prerequisites (Listed Below)
+- Board must be enabled for updates (see Enable Updates guide)
+- Voyager SDK installed and virtual environment activated
+- Linux system (Windows users must use Linux temporarily)
+- Administrative privileges
+
+## Level
+**Intermediate** - Comprehensive update procedure with multiple device support
+
+## Overview
+> ** WHICH FIRMWARE GUIDE DO YOU NEED?**
+> See the [Firmware Update Decision Tree](firmware_update_decision_tree.md) to determine which firmware guide to follow.
+
 
 > [!TIP]
 > **Shorter Guide if you've already flashed your current board before**: If you've previously enabled firmware updates on this board and just need to update to a newer version, see the [Quick Firmware Update Guide](/docs/tutorials/quick_firmware_update.md) for simplified instructions.
@@ -42,6 +75,8 @@ source venv/bin/activate
 
 The interactive flash update script automatically handles all firmware update stages. Simply run the script as instructed below and follow the on-screen instructions - the process is fully guided and will prompt you when power cycling is needed.
 
+For systems with multiple devices, the script can automatically detect and update all connected cards when run without the `--device` option. It will continue checking and updating until all devices are fully updated, requiring you to re-run the script after each power cycle.
+
 ## Single Metis Device Update
 
 For systems with a single Metis device connected, follow these steps:
@@ -56,6 +91,8 @@ For systems with a single Metis device connected, follow these steps:
 ```bash
 $AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh
 ```
+
+The script may request a second power-off and rerun of this script depending on your setup. Please follow the console messages carefully.
 
 ### Verify the Update
 
@@ -72,9 +109,30 @@ Device 0: metis-0:1:0 4GiB pcie flver=1.4.0 bcver=7.0 clock=800MHz(0-3:800MHz) m
 
 ## Multiple Metis Devices Update
 
-For systems with multiple Metis cards or Axelera® AI's PCIe card with 4 Metis® AIPU cores, each Metis must be programmed individually. Follow these specific steps:
+For systems with multiple Metis cards or Axelera® AI's PCIe card with 4 Metis® AIPU cores, you have two options: automatic update of all devices or individual device updates.
 
-### Step 1: Identify All Device IDs
+### Option 1: Automatic Update (Recommended)
+
+Run the script without specifying a device to automatically detect and update all connected cards:
+
+```bash
+$AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh
+```
+
+The script will:
+- Automatically detect all connected Metis devices
+- Update firmware for all devices that need updates
+- Prompt you to power cycle when required
+- Continue updating all devices until everything is fully updated
+
+> [!IMPORTANT]
+> **After each power cycle, you must re-run the script** to continue the update process. The script will check all devices and update any that still need updates. Keep running the script after each power cycle until it reports "ALL DEVICES ARE FULLY UPDATED!"
+
+### Option 2: Manual Individual Updates
+
+If you prefer to update devices individually, follow these steps:
+
+#### Step 1: Identify All Device IDs
 
 First, identify the device IDs of all Metis® AIPU cores:
 
@@ -90,34 +148,34 @@ Device 2: metis-0:6e:0 board_type=pcie fwver='1.3.2' clock=800MHz(0-3:800MHz) mv
 Device 3: metis-0:6f:0 board_type=pcie fwver='1.3.2' clock=800MHz(0-3:800MHz) mvm=0-3:100%
 ```
 
-### Step 2: Update Each Device Individually
+#### Step 2: Update Each Device Individually
 
 Update the firmware for each device ID individually using the `--device` option:
 
 ```bash
-./interactive_flash_update.sh --device <device-id>
+$AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh --device <device-id>
 ```
 
 For example, using the device IDs from step 1:
 
 ```bash
-./interactive_flash_update.sh --device metis-0:6c:0
+$AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh --device metis-0:6c:0
 ```
 Go through all rounds. Then continue with each one by one:
 ```bash
-./interactive_flash_update.sh --device metis-0:6d:0
+$AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh --device metis-0:6d:0
 ```
 ```bash
-./interactive_flash_update.sh --device metis-0:6e:0
+$AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh --device metis-0:6e:0
 ```
 ```bash
-./interactive_flash_update.sh --device metis-0:6f:0
+$AXELERA_DEVICE_DIR/firmware/interactive_flash_update.sh --device metis-0:6f:0
 ```
 
 > [!IMPORTANT]
 > You must execute the firmware update command for each of the 4 device IDs to ensure all Metis® AIPU cores on the PCIe card are properly updated.
 
-### Step 3: Verify All Updates
+#### Step 3: Verify All Updates
 
 After updating all devices, verify that all firmware updates were successful:
 
@@ -134,9 +192,9 @@ Firmware updates carry significant risks. Understanding the safety mechanisms an
 
 ### Stage 1 Update - Metis Firmware Update
 
-- **Failsafe Mechanism**: Not available for this release. The update uses dual-boot regions in flash memory and updates the entire safety mechanism
-- **Recovery**: If power is lost during update, the board may become unresponsive. There is no mechanism for recovery. Contact Axelera AI for assistance
-- **Bricking Risk**: **HIGH** - Ensure uninterrupted power supply throughout the process
+- **Failsafe Mechanism**: The update uses dual-boot regions in flash memory and updates the entire safety mechanism
+- **Recovery**: If power is lost during update, the previous firmware version will be still available and can be used to retry the update process
+- **Bricking Risk**: **LOW** 
 
 ### Stage 2 Update - Board Controller Firmware Update
 
@@ -162,8 +220,28 @@ If you encounter issues during the firmware update process:
 2. **Verify Environment**: Confirm the Voyager SDK environment is properly activated
 3. **Review Logs**: Check for any error messages in the terminal output
 
-### Getting Help
 
-- **Community Support**: Visit the [Axelera AI Community](https://community.axelera.ai/)
-- **Technical Support**: Contact your FAE or Axelera AI support team
-- **Documentation**: Review related documentation in the [tutorials section](/docs/tutorials/)
+## Next Steps
+- **After successful update**: Verify with `axdevice` command
+- **For future updates**: Use [Quick Firmware Update Guide](quick_firmware_update.md) if single device
+- **Continue development**: Return to [Quick Start Guide](quick_start_guide.md)
+- **If issues persist**: Check Troubleshooting section or contact support
+
+## Related Documentation
+**Firmware Guides:**
+- **[Firmware Update Decision Tree](firmware_update_decision_tree.md)** - START HERE to choose the right guide
+- [Enable Updates](enable_updates.md) - REQUIRED FIRST for new boards
+- [Quick Firmware Update](quick_firmware_update.md) - Simpler alternative for single-device routine updates
+
+**Tutorials:**
+- [Installation Guide](install.md) - SDK must be installed
+- [Quick Start Guide](quick_start_guide.md) - Verify functionality after update
+
+**References:**
+- [AxDevice API](../reference/axdevice.md) - Verify firmware version after update
+
+## Further support
+
+For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+
+For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

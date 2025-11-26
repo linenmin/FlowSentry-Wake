@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,27 +34,6 @@ uchar4 convert_to_rgba(float y, float u, float v, char bgr) {
                     convert_uchar_sat(g * 255.0f),
                     convert_uchar_sat(b * 255.0f),
                     255);
-}
-
-__kernel void nv12_to_rgb_image(read_only image2d_t y_plane, read_only image2d_t uv_plane,
-    __global uchar4 *rgb_out, int width, int stride, int height, char is_bgr) {
-
-    int col = get_global_id(0);
-    int row = get_global_id(1);
-
-    if (row >= width || col >= height) {
-      return;
-    }
-
-    int x = col * 2;
-    int y = row * 2;
-    int2 coord = (int2)(x , y);
-    int2 uv_coord = (int2)(col, row);
-    int2 y_coord = (int2)(x, y);
-    float2 UV = read_imagef(uv_plane, CLK_NORMALIZED_COORDS_FALSE | CLK_FILTER_NEAREST, uv_coord).xy;
-    float Y = read_imagef(y_plane, CLK_NORMALIZED_COORDS_FALSE | CLK_FILTER_NEAREST, y_coord).x;
-    int idx = y * stride + x;
-    rgb_out[idx] = convert_to_rgba(Y, UV.x, UV.y, is_bgr);
 }
 
 __kernel void nv12_planes_to_rgba(int width, int height, int strideInY, int strideUV, int strideOut,
@@ -230,6 +209,23 @@ __kernel void bgra_to_rgba(int width, int height, int strideIn, int strideOut,
     prgb[col] = i.zyxw;
 }
 
+__kernel void rgba_to_rgba(int width, int height, int strideIn, int strideOut,
+    __global const uchar4 *in, __global uchar4 *rgb) {
+
+    int col = get_global_id(0);
+    int row = get_global_id(1);
+
+    if (row >= height || col >= width) {
+        return;
+    }
+
+    int2 top_left = get_input_coords(row, col, width, height);
+    int strideI = strideIn / 4;   //  Stride is in bytes, but pointer is uchar4
+    __global uchar4* prgb = advance_uchar4_ptr(rgb, row * strideOut);
+    uchar4 i = in[top_left.y * strideI + top_left.x];
+    prgb[col] = i;
+}
+
 __kernel void bgr_to_rgb(int width, int height, int strideIn, int strideOut,
     __global const uchar *in, __global uchar *rgb) {
 
@@ -246,6 +242,24 @@ __kernel void bgr_to_rgb(int width, int height, int strideIn, int strideOut,
     uchar3 i = vload3(top_left.x, p_in);
     vstore3(i.zyx, col, prgb);
 }
+
+__kernel void rgb_to_rgb(int width, int height, int strideIn, int strideOut,
+    __global const uchar *in, __global uchar *rgb) {
+
+    int col = get_global_id(0);
+    int row = get_global_id(1);
+
+    if (row >= height || col >= width) {
+        return;
+    }
+
+    int2 top_left = get_input_coords(row, col, width, height);
+    __global uchar *p_in = advance_uchar_ptr(in, top_left.y * strideIn);
+    __global uchar* prgb = advance_uchar_ptr(rgb, row * strideOut);
+    uchar3 i = vload3(top_left.x, p_in);
+    vstore3(i, col, prgb);
+}
+
 
 __kernel void rgba_to_bgr(int width, int height, int strideIn, int strideOut,
     __global const uchar4 *in, __global uchar *rgb) {
@@ -363,18 +377,27 @@ __kernel void bgra_to_gray(int width, int height, int strideIn, int strideOut,
 
 )##";
 
+class CLColorConvert;
+struct cc_properties {
+  std::string format{ "rgba" };
+  std::string flip_method{ "none" };
+  mutable std::unique_ptr<CLColorConvert> color_convert;
+  mutable int total_time{};
+  mutable int num_calls{};
+  bool downstream_supports_opencl{};
+};
+
 using ax_utils::buffer_details;
 using ax_utils::CLProgram;
-
+using ax_utils::opencl_details;
 class CLColorConvert
 {
   public:
   using buffer = CLProgram::ax_buffer;
   using kernel = CLProgram::ax_kernel;
 
-  CLColorConvert(std::string source, int flip_type, void *display, Ax::Logger &logger)
+  CLColorConvert(std::string source, int flip_type, opencl_details *display, Ax::Logger &logger)
       : program(ax_utils::get_kernel_utils(flip_type) + source, display, logger),
-        nv12_to_rgba_image{ program.get_kernel("nv12_to_rgb_image") },
         nv12_to_rgba{ program.get_kernel("nv12_to_rgba") },
         i420_to_rgba{ program.get_kernel("i420_to_rgba") },
         YUYV_to_rgba{ program.get_kernel("YUYV_to_rgba") }, //
@@ -384,17 +407,19 @@ class CLColorConvert
         bgra_to_rgba{ program.get_kernel("bgra_to_rgba") }, //
         rgba_to_rgb{ program.get_kernel("rgba_to_rgb") }, //
         rgba_to_bgr{ program.get_kernel("rgba_to_bgr") }, //
-        bgr_to_rgb{ program.get_kernel("bgr_to_rgb") }, rgb_to_gray{ program.get_kernel(
-                                                            "rgb_to_gray") },
-        rgba_to_gray{ program.get_kernel("rgba_to_gray") }, bgr_to_gray{ program.get_kernel(
-                                                                "bgr_to_gray") },
-        bgra_to_gray{ program.get_kernel("bgra_to_gray") }, yuyv_to_gray{
-          program.get_kernel("yuyv_to_gray")
-        }
+        bgr_to_rgb{ program.get_kernel("bgr_to_rgb") }, //
+        rgb_to_gray{ program.get_kernel("rgb_to_gray") }, //
+        rgba_to_gray{ program.get_kernel("rgba_to_gray") }, //
+        bgr_to_gray{ program.get_kernel("bgr_to_gray") }, //
+        bgra_to_gray{ program.get_kernel("bgra_to_gray") }, //
+        yuyv_to_gray{ program.get_kernel("yuyv_to_gray") }, //
+        rgb_to_rgb{ program.get_kernel("rgb_to_rgb") }, //
+        rgba_to_rgba{ program.get_kernel("rgba_to_rgba") }
   {
   }
 
-  CLProgram::flush_details run_kernel(kernel &k, const buffer_details &out, buffer &outbuf)
+  ax_utils::CLProgram::flush_details run_kernel(
+      kernel &k, const buffer_details &out, buffer &outbuf, bool start_flush)
   {
     size_t global_work_size[3] = { 1, 1, 1 };
     const int numpix_per_kernel = 1;
@@ -402,67 +427,58 @@ class CLColorConvert
     global_work_size[1] = out.height;
     error = program.execute_kernel(k, 2, global_work_size);
     if (error != CL_SUCCESS) {
-      return {};
+      throw std::runtime_error("Unable to execute kernel. Error code: "
+                               + ax_utils::cl_error_to_string(error));
     }
-    return program.flush_output_buffer_async(outbuf, ax_utils::determine_buffer_size(out));
+    if (start_flush) {
+      //  Here the downstream does not support OpenCL buffers, so start the
+      //  mapping now.
+      return program.start_flush_output_buffer(outbuf, out.stride * out.height);
+    }
+    return {};
   }
 
-  std::function<void()> run_kernel(
-      kernel &k, const buffer_details &out, buffer &inbuf, buffer &outbuf)
+  int run_kernel(kernel &k, const buffer_details &out, buffer &inbuf,
+      buffer &outbuf, bool start_flush)
   {
-    auto [error, event, mapped] = run_kernel(k, out, outbuf);
-    if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Unable to map output buffer, error = " + std::to_string(error));
+    auto details = run_kernel(k, out, outbuf, start_flush);
+    if (details.event) {
+      // The downstream does not support OpenCL buffers so the buffer has begun
+      //  mapping to system memory. The event will be signalled when complete.
+      //  Store this away so that when the buffer is mapped we just wait on the
+      //  event.
+      if (auto *p = std::get_if<opencl_buffer *>(&out.data)) {
+        (*p)->event = details.event;
+        (*p)->mapped = details.mapped;
+      } else {
+        clWaitForEvents(1, &details.event);
+        clReleaseEvent(details.event);
+      }
     }
-    return [this, event, mapped, inbuf, outbuf]() {
-      program.unmap_buffer(event, outbuf, mapped);
-    };
+    return 0;
   }
 
-  std::function<void()> run_kernel(kernel &k, const buffer_details &out,
-      buffer &inbuf1, buffer &inbuf2, buffer &outbuf, const cl_extensions extensions)
-  {
-    std::array input_buffers = { *inbuf1, *inbuf2 };
-    program.acquireva(input_buffers);
-    auto [error, event, mapped] = run_kernel(k, out, outbuf);
-    if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Unable to map output buffer, error = " + std::to_string(error));
-    }
-    return [this, extensions, event, mapped, inbuf1, inbuf2, outbuf]() {
-      program.unmap_buffer(event, outbuf, mapped);
-      std::array input_buffers = { *inbuf1, *inbuf2 };
-      program.releaseva(input_buffers);
-    };
-  }
 
-  std::function<void()> run_nv12_to_rgba(const buffer_details &in,
-      const buffer_details &out, cl_char is_bgr, const cl_extensions &extensions)
+  int run_nv12_to_rgba(const buffer_details &in, const buffer_details &out,
+      cl_char is_bgr, const cl_extensions &extensions, bool start_flush)
   {
     const int rgba_size = 4;
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
     auto inpbuf = program.create_buffers(1, ax_utils::determine_buffer_size(in),
         CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, in.data, in.offsets.size());
 
-    if (inpbuf.size() == 1) {
-      cl_int y_stride = in.strides[0];
-      cl_int uv_stride = in.strides[1];
-      cl_int uv_offset = in.offsets[1];
-      //  Set the kernel arguments
-      auto kernel = AxVideoFormatNumChannels(out.format) == 3 ? nv12_to_rgb : nv12_to_rgba;
-      program.set_kernel_args(kernel, 0, out.width, out.height, y_stride,
-          uv_stride, out.stride, uv_offset, is_bgr, *inpbuf[0], *outbuf);
-      return run_kernel(kernel, out, inpbuf[0], outbuf);
-    }
-
-    program.set_kernel_args(nv12_to_rgba_image, 0, *inpbuf[0], *inpbuf[1],
-        *outbuf, in.width, out.stride / rgba_size, in.height, is_bgr);
-    return run_kernel(nv12_to_rgba_image, out, inpbuf[0], inpbuf[1], outbuf, extensions);
+    cl_int y_stride = in.strides[0];
+    cl_int uv_stride = in.strides[1];
+    cl_int uv_offset = in.offsets[1];
+    //  Set the kernel arguments
+    auto kernel = AxVideoFormatNumChannels(out.format) == 3 ? nv12_to_rgb : nv12_to_rgba;
+    program.set_kernel_args(kernel, 0, out.width, out.height, y_stride,
+        uv_stride, out.stride, uv_offset, is_bgr, *inpbuf[0], *outbuf);
+    return run_kernel(kernel, out, inpbuf[0], outbuf, start_flush);
   }
 
-  std::function<void()> run_i420_to_rgba(
-      const buffer_details &in, const buffer_details &out, cl_char is_bgr)
+  int run_i420_to_rgba(const buffer_details &in, const buffer_details &out,
+      cl_char is_bgr, bool start_flush)
   {
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
@@ -476,11 +492,11 @@ class CLColorConvert
     auto kernel = AxVideoFormatNumChannels(out.format) == 3 ? i420_to_rgb : i420_to_rgba;
     program.set_kernel_args(kernel, 0, out.width, out.height, y_stride, u_stride,
         v_stride, out.stride, u_offset, v_offset, is_bgr, *inpbuf, *outbuf);
-    return run_kernel(kernel, out, inpbuf, outbuf);
+    return run_kernel(kernel, out, inpbuf, outbuf, start_flush);
   }
 
-  std::function<void()> run_YUYV_to_rgba(
-      const buffer_details &in, const buffer_details &out, cl_char is_bgr)
+  int run_YUYV_to_rgba(const buffer_details &in, const buffer_details &out,
+      cl_char is_bgr, bool start_flush)
   {
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
@@ -490,10 +506,10 @@ class CLColorConvert
     auto kernel = AxVideoFormatNumChannels(out.format) == 3 ? YUYV_to_rgb : YUYV_to_rgba;
     program.set_kernel_args(kernel, 0, out.width, out.height, y_stride,
         out.stride, is_bgr, *inpbuf, *outbuf);
-    return run_kernel(kernel, out, inpbuf, outbuf);
+    return run_kernel(kernel, out, inpbuf, outbuf, start_flush);
   }
 
-  std::function<void()> run_bgra_to_rgba(const buffer_details &in, const buffer_details &out)
+  int run_bgra_to_rgba(const buffer_details &in, const buffer_details &out, bool start_flush)
   {
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
@@ -510,51 +526,72 @@ class CLColorConvert
     //  Set the kernel arguments
     program.set_kernel_args(kernel, 0, out.width, out.height, y_stride,
         out.stride, *inpbuf, *outbuf);
-    return run_kernel(kernel, out, inpbuf, outbuf);
+    return run_kernel(kernel, out, inpbuf, outbuf, start_flush);
   }
 
-  std::function<void()> run_rgb_to_gray(const buffer_details &in, const buffer_details &out)
+  int run_rgba_to_rgba(const buffer_details &in, const buffer_details &out, bool start_flush)
+  {
+    auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
+    auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
+
+    auto kernel = bgra_to_rgba;
+    if ((in.format == AxVideoFormat::RGB && out.format == AxVideoFormat::RGB)
+        || (in.format == AxVideoFormat::BGR && out.format == AxVideoFormat::BGR)) {
+      kernel = rgb_to_rgb;
+    } else if ((in.format == AxVideoFormat::RGBA && out.format == AxVideoFormat::RGBA)
+               || (in.format == AxVideoFormat::BGRA && out.format == AxVideoFormat::BGRA)) {
+      kernel = rgba_to_rgba;
+    }
+    cl_int y_stride = in.stride;
+    //  Set the kernel arguments
+    program.set_kernel_args(kernel, 0, out.width, out.height, y_stride,
+        out.stride, *inpbuf, *outbuf);
+    return run_kernel(kernel, out, inpbuf, outbuf, start_flush);
+  }
+
+
+  int run_rgb_to_gray(const buffer_details &in, const buffer_details &out, bool start_flush)
   {
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
 
     program.set_kernel_args(rgb_to_gray, 0, out.width, out.height, in.stride,
         out.stride, *inpbuf, *outbuf);
-    return run_kernel(rgb_to_gray, out, inpbuf, outbuf);
+    return run_kernel(rgb_to_gray, out, inpbuf, outbuf, start_flush);
   }
 
-  std::function<void()> run_rgba_to_gray(const buffer_details &in, const buffer_details &out)
+  int run_rgba_to_gray(const buffer_details &in, const buffer_details &out, bool start_flush)
   {
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
 
     program.set_kernel_args(rgba_to_gray, 0, out.width, out.height, in.stride,
         out.stride, *inpbuf, *outbuf);
-    return run_kernel(rgba_to_gray, out, inpbuf, outbuf);
+    return run_kernel(rgba_to_gray, out, inpbuf, outbuf, start_flush);
   }
 
 
-  std::function<void()> run_bgr_to_gray(const buffer_details &in, const buffer_details &out)
+  int run_bgr_to_gray(const buffer_details &in, const buffer_details &out, bool start_flush)
   {
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
 
     program.set_kernel_args(bgr_to_gray, 0, out.width, out.height, in.stride,
         out.stride, *inpbuf, *outbuf);
-    return run_kernel(bgr_to_gray, out, inpbuf, outbuf);
+    return run_kernel(bgr_to_gray, out, inpbuf, outbuf, start_flush);
   }
 
-  std::function<void()> run_bgra_to_gray(const buffer_details &in, const buffer_details &out)
+  int run_bgra_to_gray(const buffer_details &in, const buffer_details &out, bool start_flush)
   {
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
 
     program.set_kernel_args(bgra_to_gray, 0, out.width, out.height, in.stride,
         out.stride, *inpbuf, *outbuf);
-    return run_kernel(bgra_to_gray, out, inpbuf, outbuf);
+    return run_kernel(bgra_to_gray, out, inpbuf, outbuf, start_flush);
   }
 
-  std::function<void()> run_yuyv_to_gray(const buffer_details &in, const buffer_details &out)
+  int run_yuyv_to_gray(const buffer_details &in, const buffer_details &out, bool start_flush)
   {
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
@@ -563,12 +600,13 @@ class CLColorConvert
     //  Set the kernel arguments
     program.set_kernel_args(yuyv_to_gray, 0, out.width, out.height, y_stride,
         out.stride, *inpbuf, *outbuf);
-    return run_kernel(yuyv_to_gray, out, inpbuf, outbuf);
+    return run_kernel(yuyv_to_gray, out, inpbuf, outbuf, start_flush);
   }
 
-  std::function<void()> run(const buffer_details &in, const buffer_details &out,
-      const std::string &format)
+  int run(const buffer_details &in, const buffer_details &out,
+      const std::string &format, const cc_properties *prop)
   {
+    bool start_flush = prop && prop->downstream_supports_opencl == 0;
     cl_char is_bgr = format == "bgra" || format == "bgr";
 
     if (out.format == AxVideoFormat::GRAY8) {
@@ -576,28 +614,39 @@ class CLColorConvert
       if (in.format == AxVideoFormat::I420 || in.format == AxVideoFormat::NV12) {
         throw std::runtime_error("I420 or NV12 to gray, should pass through instead");
       } else if (in.format == AxVideoFormat::RGB) {
-        return run_rgb_to_gray(in, out);
+        return run_rgb_to_gray(in, out, start_flush);
       } else if (in.format == AxVideoFormat::RGBA) {
-        return run_rgba_to_gray(in, out);
+        return run_rgba_to_gray(in, out, start_flush);
       } else if (in.format == AxVideoFormat::BGR) {
-        return run_bgr_to_gray(in, out);
+        return run_bgr_to_gray(in, out, start_flush);
       } else if (in.format == AxVideoFormat::BGRA) {
-        return run_bgra_to_gray(in, out);
+        return run_bgra_to_gray(in, out, start_flush);
       } else if (in.format == AxVideoFormat::YUY2) {
-        return run_yuyv_to_gray(in, out);
+        return run_yuyv_to_gray(in, out, start_flush);
       }
       throw std::runtime_error("Unsupported format");
     } else {
       if (in.format == AxVideoFormat::NV12) {
-        return run_nv12_to_rgba(in, out, is_bgr, program.extensions);
+        return run_nv12_to_rgba(in, out, is_bgr, program.cl_details.extensions, start_flush);
       } else if (in.format == AxVideoFormat::I420) {
-        return run_i420_to_rgba(in, out, is_bgr);
+        return run_i420_to_rgba(in, out, is_bgr, start_flush);
       } else if (in.format == AxVideoFormat::YUY2) {
-        return run_YUYV_to_rgba(in, out, is_bgr);
+        return run_YUYV_to_rgba(in, out, is_bgr, start_flush);
+      } else if (in.format == AxVideoFormat::RGB && out.format == AxVideoFormat::RGB) {
+        return run_rgba_to_rgba(in, out, start_flush);
+      } else if (in.format == AxVideoFormat::BGR && out.format == AxVideoFormat::BGR) {
+        return run_rgba_to_rgba(in, out, start_flush);
+      } else if (in.format == AxVideoFormat::BGRA && out.format == AxVideoFormat::BGRA) {
+        return run_rgba_to_rgba(in, out, start_flush);
+      } else if (in.format == AxVideoFormat::RGBA && out.format == AxVideoFormat::RGBA) {
+        return run_rgba_to_rgba(in, out, start_flush);
       } else if (in.format == AxVideoFormat::RGBA || in.format == AxVideoFormat::BGRA) {
-        return run_bgra_to_rgba(in, out);
+        return run_bgra_to_rgba(in, out, start_flush);
       }
-      return {};
+      auto error = "Unsupported formats in color conversion: "s
+                   + AxVideoFormatToString(in.format) + " to "s
+                   + AxVideoFormatToString(out.format);
+      throw std::runtime_error(error);
     }
   }
 
@@ -606,17 +655,9 @@ class CLColorConvert
     return program.can_use_dmabuf();
   }
 
-  bool can_use_vaapi() const
-  {
-    //  Once we enable this, just replace the return false with the following
-    //  return program.can_use_va();
-    return false;
-  }
-
   private:
   CLProgram program;
   int error{};
-  kernel nv12_to_rgba_image;
   kernel nv12_to_rgba;
   kernel i420_to_rgba;
   kernel YUYV_to_rgba;
@@ -632,14 +673,8 @@ class CLColorConvert
   kernel bgr_to_gray;
   kernel bgra_to_gray;
   kernel yuyv_to_gray;
-};
-
-struct cc_properties {
-  std::string format{ "rgba" };
-  std::string flip_method{ "none" };
-  mutable std::unique_ptr<CLColorConvert> color_convert;
-  mutable int total_time{};
-  mutable int num_calls{};
+  kernel rgb_to_rgb;
+  kernel rgba_to_rgba;
 };
 
 std::string_view flips[] = {
@@ -671,10 +706,9 @@ allowed_properties()
 }
 
 extern "C" std::shared_ptr<void>
-init_and_set_static_properties(
-    const std::unordered_map<std::string, std::string> &input, Ax::Logger &logger)
+init_and_set_static_properties_with_context(
+    const std::unordered_map<std::string, std::string> &input, void *context, Ax::Logger &logger)
 {
-  void *display = nullptr;
   auto prop = std::make_shared<cc_properties>();
   prop->format = Ax::get_property(input, "format", "ColorConvertProperties", prop->format);
   prop->flip_method = Ax::get_property(
@@ -685,15 +719,17 @@ init_and_set_static_properties(
                      << " defaulting to none" << std::endl;
     flip_type = 0;
   }
-  prop->color_convert
-      = std::make_unique<CLColorConvert>(kernel_cl, flip_type, display, logger);
+  prop->color_convert = std::make_unique<CLColorConvert>(kernel_cl, flip_type,
+      static_cast<ax_utils::opencl_details *>(context), logger);
   return prop;
 }
 
 extern "C" void
-set_dynamic_properties(const std::unordered_map<std::string, std::string> & /*input*/,
-    cc_properties * /*prop*/, Ax::Logger & /*logger*/)
+set_dynamic_properties(const std::unordered_map<std::string, std::string> &input,
+    cc_properties *prop, Ax::Logger & /*logger*/)
 {
+  prop->downstream_supports_opencl = Ax::get_property(input, "downstream_supports_opencl",
+      "ColorConvertProperties", prop->downstream_supports_opencl);
 }
 
 bool
@@ -781,22 +817,27 @@ can_passthrough(const AxDataInterface &input, const AxDataInterface &output,
                          && (output_details[0].format == AxVideoFormat::GRAY8
                              && input_details[0].width == output_details[0].width
                              && input_details[0].height == output_details[0].height);
-  return (input_details[0].format == output_details[0].format
+
+  auto flip_type = determine_flip_type(prop->flip_method);
+  if (flip_type == -1) {
+    flip_type = 0;
+  }
+
+  return (flip_type == 0 && input_details[0].format == output_details[0].format
              && input_details[0].width == output_details[0].width
              && input_details[0].height == output_details[0].height)
          || gray_out_bypass;
 }
 
 
-extern "C" std::function<void()>
-transform_async(const AxDataInterface &input, const AxDataInterface &output,
+extern "C" void
+transform(const AxDataInterface &input, const AxDataInterface &output,
     const cc_properties *prop, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)
 {
   //  These must be video interfaces as we have already checked in can_passthrough
   auto in_info = std::get<AxVideoInterface>(input);
   auto out_info = std::get<AxVideoInterface>(output);
-
   //  Validate input and output formats
 
   auto input_details = ax_utils::extract_buffer_details(input);
@@ -816,30 +857,17 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
       logger(AX_DEBUG) << "Input buffer is not page aligned" << std::endl;
     }
   }
-
-  return prop->color_convert->run(input_details[0], output_details[0], prop->format);
-}
-
-extern "C" void
-transform(const AxDataInterface &input, const AxDataInterface &output,
-    const cc_properties *prop, unsigned int, unsigned int,
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map,
-    Ax::Logger &logger)
-{
-  logger(AX_WARN) << "Running in synchronous mode, possible performance degradation"
-                  << std::endl;
-  auto completer = transform_async(input, output, prop, 0, 0, meta_map, logger);
-  completer();
+  prop->color_convert->run(input_details[0], output_details[0], prop->format, prop);
 }
 
 extern "C" bool
-can_use_dmabuf(const cc_properties *prop, Ax::Logger &logger)
+query_supports(Ax::PluginFeature feature, const cc_properties *prop, Ax::Logger &logger)
 {
-  return prop->color_convert->can_use_dmabuf();
-}
-
-extern "C" bool
-can_use_vaapi(const cc_properties *prop, Ax::Logger &logger)
-{
-  return prop->color_convert->can_use_vaapi();
+  if (feature == Ax::PluginFeature::opencl_buffers) {
+    return true;
+  }
+  if (feature == Ax::PluginFeature::dmabuf_buffers) {
+    return prop->color_convert->can_use_dmabuf();
+  }
+  return Ax::PluginFeatureDefaults(feature);
 }

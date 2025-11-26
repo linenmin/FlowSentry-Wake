@@ -22,10 +22,10 @@ else
   $(error Unknown LOGLEVEL: $(LOGLEVEL) (must be trace, debug, info, warning, or error))
 endif
 
+ifdef NN
 # do var assignments for the specified network, if any
 $(foreach ASSIGN,$(shell python3 -c 'from axelera.app import yaml_parser; yaml_parser.gen_model_envs("$(NN)")'),$(eval $(subst _SP_, ,$(ASSIGN))))
 
-ifdef NN
 ifeq ($(NN_SET),0)
 $(error NN=$(NN) does not specify a valid model. Try 'make help' to print available models)
 endif
@@ -34,7 +34,7 @@ ifneq (,$(filter clean info,$(MAKECMDGOALS)))
   $(error "'$(MAKECMDGOALS)' requires a network to be specified with NN=<network>")
 else
 ifneq (,$(MAKECMDGOALS))
-ifeq (,$(filter clobber-libs clean-libs gst-operators operators trackers examples help,$(MAKECMDGOALS)))
+ifeq (,$(filter clear-cmake-cache operators-docker clobber-libs clean-libs gst-operators operators trackers examples help,$(MAKECMDGOALS)))
   $(error Type '$(MAKE) help' to get help)
 endif
 endif
@@ -77,16 +77,16 @@ info:  _check-activated-runtime
 
 .PHONY: operators gst-operators
 operators: _check-activated-runtime
-	make -C operators
+	$(MAKE) -C operators
 gst-operators: operators
 
 .PHONY: trackers
 trackers: _check-activated-runtime
-	make -C trackers
+	$(MAKE) -C trackers
 
 .PHONY: examples
 examples: _check-activated-runtime operators
-	make -C examples
+	$(MAKE) -C examples
 
 $(NN_BIN_SRV): $(NN_BIN_DIR)/server.o $(MODELS)
 	@mkdir -p "$(@D)"
@@ -110,6 +110,10 @@ ifeq ($(AXELERA_FRAMEWORK),)
 	$(error Please set AXELERA_FRAMEWORK variable e.g 'source venv/bin/activate')
 endif
 
+.PHONY: clear-cmake-cache
+clear-cmake-cache:
+	$(Q)$(MAKE) -C operators clear-cmake-cache
+
 .PHONY: clean
 clean:
 	$(Q)$(RM) -r $(NN_BUILD)
@@ -125,3 +129,10 @@ clobber-libs:
 	$(Q)$(MAKE) -C operators clobber
 	$(Q)$(MAKE) -C trackers clobber
 	$(Q)$(MAKE) -C examples clobber
+
+.PHONY: operators-docker
+operators-docker:
+	$(Q)if ! $(MAKE) -sq operators; then \
+		echo building operators...; \
+		($(MAKE) clear-cmake-cache operators &> _operators.log) || echo "Failed to build operators, see _operators.log"; \
+	fi

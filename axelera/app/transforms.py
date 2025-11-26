@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,7 +29,6 @@ class Transformer:
 
     def __call__(self, ops):
         n = 0
-        matched = False
         trace = LOG.trace
 
         def out(ops):
@@ -38,7 +37,6 @@ class Transformer:
         while n < len(ops) - len(self.classes) + 1:
             if all(isinstance(o, cls) for o, cls in zip(ops[n:], self.classes)):
                 m = n + len(self.classes)
-                matched = True
                 got = self.func(*ops[n:m])
                 if got != ops[n:m]:
                     trace(f"{self.func.__name__} transformed:\n{out(ops[n:m])}\n to:\n{out(got)}")
@@ -150,7 +148,9 @@ def opencl_colorconvert_with_perspective(
     '''Mega operators for opencl perspective transformation'''
     return [
         operators.mega.OpenCLPerspectiveTransform(
-            camera_matrix=perspective.camera_matrix, format=convert.format.name.lower()
+            camera_matrix=perspective.camera_matrix,
+            invert=perspective.invert,
+            format=convert.format,
         )
     ]
 
@@ -176,7 +176,47 @@ def opencl_colorconvert_with_cameraundistort(
             )
         ]
     else:
-        return [barrel, convert]
+        return [convert, barrel]
+
+
+@builtin
+@transformer(priority=60, hardware_caps=['opencl'])
+def opencl_cameraundistort_with_colorconvert(
+    barrel: operators.custom_preprocessing.CameraUndistort,
+    convert: operators.ConvertColorInput,
+):
+    transformed = opencl_colorconvert_with_cameraundistort(convert, barrel)
+    if transformed != [convert, barrel]:
+        return transformed
+    return [barrel, convert]
+
+
+@builtin
+@transformer(priority=30, hardware_caps=['opencl'])
+def opencl_colorconvert_with_cameraundistort_and_resize(
+    convert: operators.ConvertColorInput,
+    barrel: operators.custom_preprocessing.CameraUndistort,
+    resize: operators.Resize,
+):
+    '''Mega operator for OpenCL barrel distortion correction'''
+    # Fusing possible only if output format is rgb or bgr
+    if convert.format in [types.ColorFormat.RGB, types.ColorFormat.BGR, types.ColorFormat.GRAY]:
+        return [
+            operators.mega.OpenCLBarrelDistortionCorrectionResize(
+                fx=barrel.fx,
+                fy=barrel.fy,
+                cx=barrel.cx,
+                cy=barrel.cy,
+                distort_coefs=barrel.distort_coefs,
+                normalized=barrel.normalized,
+                format=convert.format.name.lower(),
+                width=resize.width,
+                height=resize.height,
+                size=resize.size,
+            )
+        ]
+    else:
+        return [convert, barrel, resize]
 
 
 @builtin
@@ -319,7 +359,7 @@ def opencl_resize_with_2norms(
                 std=norm2.std,
             )
         ]
-    return [resize, totensor, permute, type_cast, norm]
+    return [resize, totensor, permute, type_cast, norm1, norm2]
 
 
 @builtin

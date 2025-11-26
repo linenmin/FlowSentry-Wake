@@ -1,8 +1,8 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <memory>
 #include <stdexcept>
@@ -112,7 +112,7 @@ TEST(yolov8_errors, no_zero_points_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolov8.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolov8", properties), std::runtime_error);
 }
 
 
@@ -121,7 +121,7 @@ TEST(yolov8_errors, no_scales_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "zero_points", "0" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolov8.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolov8", properties), std::runtime_error);
 }
 
 TEST(yolov8_errors, different_scale_and_zero_point_sizes_throws)
@@ -133,7 +133,7 @@ TEST(yolov8_errors, different_scale_and_zero_point_sizes_throws)
     { "zero_points", "0, 0" },
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolov8.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolov8", properties), std::runtime_error);
 }
 
 TEST(yolov8_decode_scores, all_filtered_at_max_confidence)
@@ -156,7 +156,7 @@ TEST(yolov8_decode_scores, all_filtered_at_max_confidence)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolov8.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -164,7 +164,7 @@ TEST(yolov8_decode_scores, all_filtered_at_max_confidence)
   auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 64 });
   score_tensors.push_back(box_tensors[0]);
 
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   EXPECT_EQ(actual_classes, std::vector<int32_t>{});
@@ -188,7 +188,7 @@ TEST(yolov8_decode_scores, none_filtered_at_min_confidence_with_multiclass)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolov8.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -196,7 +196,7 @@ TEST(yolov8_decode_scores, none_filtered_at_min_confidence_with_multiclass)
   auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 64 });
   score_tensors.push_back(box_tensors[0]);
 
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 0, 1, 2, 3 };
@@ -223,14 +223,14 @@ TEST(yolov8_decode_scores, all_but_first_highest_filtered_at_min_confidence_with
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolov8.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 4 });
   auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 64 });
   score_tensors.push_back(box_tensors[0]);
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 0 };
@@ -259,14 +259,14 @@ TEST(yolov8_decode_scores, with_multiclass_all_below_threshold_are_filtered)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolov8.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 4 });
   auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 64 });
   score_tensors.push_back(box_tensors[0]);
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 1, 3 };
@@ -294,7 +294,7 @@ TEST(yolov8_decode_kpts, decode_kpts)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolov8.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -304,7 +304,7 @@ TEST(yolov8_decode_kpts, decode_kpts)
   score_tensors.push_back(box_tensors[0]);
   score_tensors.push_back(kpts_tensors[0]);
 
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
   auto [actual_boxes, actual_kpts, actual_scores, kpts_per_box]
       = get_kpts_meta(map, meta_identifier);
   EXPECT_EQ(kpts_per_box, 17);
@@ -331,19 +331,143 @@ TEST(yolov8_decode_scores, dequantize_with_sigmoid)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolov8.so", properties);
+  auto decoder = Ax::LoadDecode("yolov8", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 4 });
   auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 64 });
   score_tensors.push_back(box_tensors[0]);
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 1 };
   auto expected_scores = std::vector<float>{ 0.88079703 };
   ASSERT_EQ(actual_classes, expected_classes);
   EXPECT_FLOAT_EQ(actual_scores[0], expected_scores[0]);
+}
+
+TEST(yolov8_focal_loss, detects_focal_loss_from_box_depth_64)
+{
+  // Test focal loss detection when box_depth = weights_size * 4 (64)
+  auto boxes = std::vector<int8_t>(64);
+  auto scores = std::vector<int8_t>{ 1 };
+  std::string meta_identifier = "yolov8";
+
+  std::unordered_map<std::string, std::string> properties = {
+    { "meta_key", meta_identifier },
+    { "zero_points", "0, 0" },
+    { "scales", "1.0, 1.0" },
+    { "confidence_threshold", "0.20" },
+    { "classes", "1" },
+    { "multiclass", "0" },
+    { "model_width", "640" },
+    { "model_height", "640" },
+    { "scale_up", "1" },
+  };
+  auto decoder = Ax::LoadDecode("yolov8", properties);
+
+  AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
+  auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 1 });
+  auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 64 });
+  score_tensors.push_back(box_tensors[0]);
+
+  // Should not throw - focal loss should be detected from box depth = 64
+  EXPECT_NO_THROW(decoder->decode_to_meta(score_tensors, 0, 1, map, video_info));
+}
+
+TEST(yolov8_focal_loss, detects_no_focal_loss_from_box_depth_4)
+{
+  // Test no focal loss detection when box_depth = 4
+  auto boxes = std::vector<int8_t>(4);
+  auto scores = std::vector<int8_t>{ 1 };
+  std::string meta_identifier = "yolov8";
+
+  std::unordered_map<std::string, std::string> properties = {
+    { "meta_key", meta_identifier },
+    { "zero_points", "0, 0" },
+    { "scales", "1.0, 1.0" },
+    { "confidence_threshold", "0.20" },
+    { "classes", "1" },
+    { "multiclass", "0" },
+    { "model_width", "640" },
+    { "model_height", "640" },
+    { "scale_up", "1" },
+  };
+  auto decoder = Ax::LoadDecode("yolov8", properties);
+
+  AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
+  auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 1 });
+  auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 4 });
+  score_tensors.push_back(box_tensors[0]);
+
+  // Should not throw - no focal loss should be detected from box depth = 4
+  EXPECT_NO_THROW(decoder->decode_to_meta(score_tensors, 0, 1, map, video_info));
+}
+
+TEST(yolov8_focal_loss, throws_error_on_invalid_box_depth)
+{
+  // Test error thrown for invalid box depth (not 4 and not weights_size*4)
+  auto boxes = std::vector<int8_t>(8); // Invalid depth
+  auto scores = std::vector<int8_t>{ 1 };
+  std::string meta_identifier = "yolov8";
+
+  std::unordered_map<std::string, std::string> properties = {
+    { "meta_key", meta_identifier },
+    { "zero_points", "0, 0" },
+    { "scales", "1.0, 1.0" },
+    { "confidence_threshold", "0.20" },
+    { "classes", "1" },
+    { "multiclass", "0" },
+    { "model_width", "640" },
+    { "model_height", "640" },
+    { "scale_up", "1" },
+  };
+  auto decoder = Ax::LoadDecode("yolov8", properties);
+
+  AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
+  auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 1 });
+  auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 8 });
+  score_tensors.push_back(box_tensors[0]);
+
+  // Should throw runtime error for invalid box depth
+  EXPECT_THROW(decoder->decode_to_meta(score_tensors, 0, 1, map, video_info), std::runtime_error);
+}
+
+TEST(yolov8_focal_loss, dequantize_tables_used_for_non_focal_loss)
+{
+  // Test that dequantize_tables are used when focal_loss=false (box_depth=4)
+  auto boxes = std::vector<int8_t>{ 10, 20, 30, 40 }; // Simple box values
+  auto scores = std::vector<int8_t>{ 1 };
+  std::string meta_identifier = "yolov8";
+
+  std::unordered_map<std::string, std::string> properties = {
+    { "meta_key", meta_identifier },
+    { "zero_points", "0, 5" }, // Different zero points for scores and boxes
+    { "scales", "1.0, 2.0" }, // Different scales
+    { "confidence_threshold", "0.20" },
+    { "classes", "1" },
+    { "multiclass", "0" },
+    { "model_width", "640" },
+    { "model_height", "640" },
+    { "scale_up", "1" },
+  };
+  auto decoder = Ax::LoadDecode("yolov8", properties);
+
+  AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
+  auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 1 });
+  auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 4 });
+  score_tensors.push_back(box_tensors[0]);
+
+  // Should decode successfully with dequantization
+  EXPECT_NO_THROW(decoder->decode_to_meta(score_tensors, 0, 1, map, video_info));
+
+  auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
+  EXPECT_EQ(actual_classes.size(), 1);
+  EXPECT_EQ(actual_boxes.size(), 4);
 }
 } // namespace

@@ -16,6 +16,7 @@ pipeline:
             - perspective:
                 stream_match: 0
                 camera_matrix: [1.019,-0.697,412.602,0.918,1.361,-610.083,0.0,0.0,1.0]
+                invert: true
             - camera-undistort:
                 stream_match: 1
                 fx: 0.614

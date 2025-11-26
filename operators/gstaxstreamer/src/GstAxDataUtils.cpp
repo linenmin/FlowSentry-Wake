@@ -1,13 +1,16 @@
+// Copyright Axelera AI, 2025
 #include "GstAxDataUtils.hpp"
-#include <algorithm>
-#include <span>
+#include "AxLog.hpp"
 #include "AxStreamerUtils.hpp"
 
 #include <gst/allocators/gstfdmemory.h>
 #include <gst/video/video.h>
+
+#include <algorithm>
+#include <span>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
-#include "AxLog.hpp"
 
 std::string
 gst_format_to_string(GstVideoFormat fmt)
@@ -259,6 +262,34 @@ assign_vaapi_ptrs_to_interface(const std::vector<GstMapInfo> &info, AxDataInterf
     auto &video = std::get<AxVideoInterface>(interface);
     video.vaapi = reinterpret_cast<VASurfaceID_proxy *>(info[0].data);
     video.data = nullptr;
+    video.ocl_buffer = nullptr;
+    video.fd = -1;
+  } else {
+    throw std::logic_error("Tensor interface passed to assign_vaapi_ptrs_to_interface.");
+  }
+}
+
+void
+assign_opencl_ptrs_to_interface(AxDataInterface &input, GstBuffer *buffer)
+{
+  auto *mem = gst_buffer_peek_memory(buffer, 0);
+  if (!gst_is_opencl_memory(mem)) {
+    throw std::runtime_error(
+        "Buffer does not contain OpenCL memory in assign_opencl_ptrs_to_interface");
+  }
+  if (auto *video = std::get_if<AxVideoInterface>(&input)) {
+    video->ocl_buffer = gst_opencl_mem_get_opencl_buffer(mem);
+    video->data = nullptr;
+    video->vaapi = nullptr;
+    video->fd = -1;
+  } else if (auto *tensors = std::get_if<AxTensorsInterface>(&input)) {
+    auto &tensor = (*tensors)[0];
+    if (tensors->size() != 1) {
+      throw std::runtime_error("OpenCL tensors interface must have exactly one tensor");
+    }
+    tensor.ocl_buffer = gst_opencl_mem_get_opencl_buffer(mem);
+    tensor.data = nullptr;
+    tensor.fd = -1;
   } else {
     throw std::logic_error("Tensor interface passed to assign_vaapi_ptrs_to_interface.");
   }
@@ -275,6 +306,8 @@ assign_fds_to_interface(AxDataInterface &input, GstBuffer *buffer)
       auto &tensor = (*tensors)[i];
       auto *mem = gst_buffer_peek_memory(buffer, i);
       tensor.fd = gst_fd_memory_get_fd(mem);
+      tensor.data = nullptr;
+      tensor.fd = -1;
     }
   } else {
     throw std::logic_error("No tensor or video interface in assign_fds_to_interface");
@@ -431,113 +464,6 @@ unmap_mem(std::vector<GstMapInfo> &mapInfoVec)
   std::for_each(mapInfoVec.begin(), mapInfoVec.end(),
       [](GstMapInfo &info) { gst_memory_unmap(info.memory, &info); });
   mapInfoVec = std::vector<GstMapInfo>();
-}
-
-static std::vector<std::string_view>
-split(std::string_view s, char delim)
-{
-  return Ax::Internal::split(s, delim);
-}
-
-static std::string_view
-trim(std::string_view s)
-{
-  return Ax::Internal::trim(s);
-}
-
-static std::unordered_map<std::string, std::string>
-extract_options(GObject *self, const std::string &opts)
-{
-  std::unordered_map<std::string, std::string> properties;
-
-  auto options = split(opts, ';');
-  properties.reserve(options.size());
-  for (const auto &op : options) {
-    if (op.empty()) {
-      continue;
-    }
-    auto option = split(op, ':');
-    if (option.size() != 2) {
-      GST_ELEMENT_ERROR(self, LIBRARY, FAILED, (NULL),
-          ("Options must be specified as a semicolon separated list of colon separated pairs. Given: %s",
-              opts.c_str()));
-    } else {
-      auto key = std::string(trim(option[0]));
-      if (properties.count(key) != 0) {
-        GST_ELEMENT_ERROR(self, LIBRARY, FAILED, (NULL),
-            ("Option is specified more than once."));
-      }
-      auto value = std::string(trim(option[1]));
-      properties[key] = value;
-    }
-  }
-  return properties;
-}
-
-static std::unordered_map<std::string, std::string>
-parse_and_validate_options(GObject *self, const std::string &options_string,
-    const Ax::V1Plugin::Base &fns)
-{
-  std::unordered_map<std::string, std::string> opts{};
-  if (options_string.empty()) {
-    return opts;
-  }
-
-  if (!fns.allowed_properties) {
-    throw std::runtime_error("Module symbol: allowed_properties, could not be loaded: "
-                             + std::string(g_module_error()));
-  }
-
-  opts = extract_options(self, options_string);
-  for (const auto &opt : opts) {
-    if (fns.allowed_properties().count(opt.first) == 0) {
-      GST_ELEMENT_ERROR(self, RESOURCE, NOT_FOUND,
-          ("Property not allowed - %s.", opt.first.c_str()), (NULL));
-    }
-  }
-  return opts;
-}
-
-void
-init_options(GObject *self, const std::string &options_string,
-    const Ax::V1Plugin::Base &fns, Ax::Logger &logger,
-    std::shared_ptr<void> &options, bool &initialized, void *display)
-{
-  if (initialized) {
-    return;
-  }
-  if (!fns.init_and_set_static_properties) {
-    if (options_string.empty()) {
-      return;
-    }
-    throw std::runtime_error("Function -init_and_set_static_properties- not found but assigned following options: "
-                             + options_string);
-  }
-  (void) display;
-  // We do not use display yet, we need to extend the plugin system by either:
-  // 1. Change all plugins to have the extra param
-  // 2. Add a new api `init_and_set_static_properties_with_va` or similar
-  // 3. Pass the va via the options array, encoding the ptr as uintptr_t in hex.
-  auto opts = parse_and_validate_options(self, options_string, fns);
-  options = fns.init_and_set_static_properties(opts, logger);
-  if (fns.set_dynamic_properties) {
-    fns.set_dynamic_properties(opts, options.get(), logger);
-  }
-  initialized = true;
-}
-
-void
-update_options(GObject *self, const std::string &options_string,
-    const Ax::V1Plugin::Base &fns, Ax::Logger &logger,
-    std::shared_ptr<void> &options, bool &initialized)
-{
-  if (!initialized) {
-    return;
-  }
-  if (fns.set_dynamic_properties) {
-    auto opts = parse_and_validate_options(self, options_string, fns);
-    fns.set_dynamic_properties(opts, options.get(), logger);
-  }
 }
 
 namespace

@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMetaKptsDetection.hpp"
@@ -33,6 +33,7 @@ allowed_properties()
     "location",
     "master_meta",
     "flatten_meta",
+    "merge",
   };
   return allowed_properties;
 }
@@ -83,23 +84,51 @@ run_on_cpu_or_gpu(T &meta, const nms_properties *details, Ax::Logger &logger)
       details->class_agnostic, details->max_boxes, details->flatten);
 }
 
+std::unique_ptr<AxMetaObjDetection>
+make_new_meta(const AxMetaObjDetection &meta)
+{
+  return std::make_unique<AxMetaObjDetection>();
+}
+
+std::unique_ptr<AxMetaKptsDetection>
+make_new_meta(const AxMetaKptsDetection &meta)
+{
+  return std::make_unique<AxMetaKptsDetection>(std::vector<box_xyxy>{},
+      KptXyvVector{}, std::vector<float>{}, std::vector<int>{},
+      meta.get_kpts_shape(), meta.get_decoder_name());
+}
+
 template <typename T>
 std::unique_ptr<T>
-flatten_metadata(const std::vector<AxMetaBase *> &meta)
+flatten_metadata_t(std::span<AxMetaBase *const> meta)
 {
-  auto result = std::make_unique<T>();
+  auto result = make_new_meta(*dynamic_cast<T *>(meta[0]));
   bool found = false;
   for (auto m : meta) {
     if (auto obj = dynamic_cast<T *>(m)) {
       result->extend(*obj);
       found = true;
-    } else if (m) {
-      throw std::runtime_error("flatten_metadata : Metadata type not supported yet: "
-                               + std::string(typeid(T).name()));
     }
   }
   if (found) {
     return result;
+  }
+  return {};
+}
+
+std::unique_ptr<AxMetaBase>
+flatten_metadata(const std::vector<AxMetaBase *> &meta)
+{
+  if (meta.empty()) {
+    return nullptr;
+  }
+  if (auto *m = dynamic_cast<AxMetaObjDetection *>(meta[0])) {
+    return flatten_metadata_t<AxMetaObjDetection>(meta);
+  } else if (auto *m = dynamic_cast<AxMetaKptsDetection *>(meta[0])) {
+    return flatten_metadata_t<AxMetaKptsDetection>(meta);
+  } else {
+    throw std::runtime_error("flatten_metadata : Metadata type not supported yet: "
+                             + std::string(typeid(*meta[0]).name()));
   }
   return nullptr;
 }
@@ -126,7 +155,7 @@ inplace(const AxDataInterface &, const nms_properties *details, unsigned int,
     metas = master_itr->second->get_submetas(details->meta_key);
   }
 
-  auto flattened = details->flatten ? flatten_metadata<AxMetaObjDetection>(metas) : nullptr;
+  auto flattened = details->flatten ? flatten_metadata(metas) : nullptr;
   if (flattened) {
     for (auto m : metas) {
       if (m) {
@@ -151,6 +180,8 @@ inplace(const AxDataInterface &, const nms_properties *details, unsigned int,
     } else if (auto meta = dynamic_cast<AxMetaSegmentsDetection *>(m)) {
       run_on_cpu_or_gpu(*meta, details, logger);
     } else if (auto meta = dynamic_cast<AxMetaPoseSegmentsDetection *>(m)) {
+      run_on_cpu_or_gpu(*meta, details, logger);
+    } else if (auto meta = dynamic_cast<AxMetaObjDetectionOBB *>(m)) {
       run_on_cpu_or_gpu(*meta, details, logger);
     } else {
       throw std::runtime_error("inplace_nms : Metadata type not supported");

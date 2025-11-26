@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
 
 from fractions import Fraction
 
@@ -61,6 +61,33 @@ def test_barrel_and_convert():
             cy=0.5,
             normalized=True,
             format='rgb',
+        )
+    ]
+
+
+def test_barrel_and_convert_resize():
+    ops = [
+        operators.custom_preprocessing.ConvertColorInput(format='rgb'),
+        operators.custom_preprocessing.CameraUndistort(
+            fx=1.0, fy=1.0, cx=0.5, cy=0.5, distort_coefs=[1.0, 1.0, 1.0, 0.0, 0.0]
+        ),
+        operators.Resize(width=640, height=480),
+    ]
+
+    got = ops.copy()
+    transforms.opencl_colorconvert_with_cameraundistort_and_resize(ops)
+    assert got != ops
+    assert ops == [
+        operators.mega.OpenCLBarrelDistortionCorrectionResize(
+            distort_coefs=[1.0, 1.0, 1.0, 0.0, 0.0],
+            fx=1.0,
+            fy=1.0,
+            cx=0.5,
+            cy=0.5,
+            normalized=True,
+            format='rgb',
+            width=640,
+            height=480,
         )
     ]
 

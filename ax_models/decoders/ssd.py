@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
 # Operators that convert model-specific tensor output to
 # generalized metadata representation
 from __future__ import annotations
@@ -41,18 +41,6 @@ class DecodeSsdMobilenet(AxOperator):
     nms_top_k: int = 300
     overwrite_labels: bool = False
 
-    @classmethod
-    def handles_dequantization_and_depadding(cls):
-        return True
-
-    @classmethod
-    def handles_transpose(cls):
-        return True
-
-    @classmethod
-    def handles_postamble(cls):
-        return True
-
     def _post_init(self):
         if self.box_format not in ["xyxy", "xywh", "ltwh"]:
             raise ValueError(f"Unknown box format {self.box_format}")
@@ -72,7 +60,7 @@ class DecodeSsdMobilenet(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(

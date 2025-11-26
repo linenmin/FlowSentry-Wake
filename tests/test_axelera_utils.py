@@ -1,14 +1,18 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from __future__ import annotations
 
 import builtins
+import contextlib
 import logging
+import os
 import pathlib
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
 import time
+import types
 from unittest.mock import MagicMock, call, patch
 import zipfile
 
@@ -690,17 +694,6 @@ def test_is_opengl_available(fail_on):
         assert utils.is_opengl_available("gl,3,3") == expected
 
 
-def test_is_compiler_available_import_error():
-    with patch.object(builtins, '__import__') as m:
-        m.side_effect = ImportError('spam')
-        assert not utils.is_compiler_available()
-
-
-def test_is_compiler_available_import_ok():
-    with patch.dict(sys.modules, {'axelera.compiler': object()}):
-        assert utils.is_compiler_available()
-
-
 def create_test_files(tmp_path):
     (tmp_path / 'file1.txt').write_text("This is file 1.")
     (tmp_path / 'file2.txt').write_text("This is file 2.")
@@ -825,3 +818,59 @@ def test_yaml_bool():
     assert yaml.yamlBool("TRUE") == 1
     assert yaml.yamlBool(1) == 1
     assert yaml.yamlBool(yaml.yamlBool("true")) == yaml.yamlBool("true")
+
+
+@pytest.fixture
+def autopatch():
+    # helper for using ExitStack+patch in tests
+    with contextlib.ExitStack() as s:
+        _p = lambda *a, **kw: s.enter_context(patch(*a, **kw))
+        _p.object = lambda *a, **kw: s.enter_context(patch.object(*a, **kw))
+        _p.dict = lambda *a, **kw: s.enter_context(patch.dict(*a, **kw))
+        yield _p
+
+
+def _fake_ioctl(*array_args):
+    def _ioctl(fileno, cmd, arg):  # unusually, ioctl mutates its arg:
+        for i, a in enumerate(array_args):
+            arg[i] = array_args[i]
+
+    return _ioctl
+
+
+def test_get_terminal_size_ex_ioctl_success(autopatch):
+    termios = types.SimpleNamespace(TIOCGWINSZ=0x40087468)
+    autopatch.object(sys.stdin, 'fileno', return_value=0)
+    autopatch("fcntl.ioctl", _fake_ioctl(24, 80, 911, 399))
+    autopatch.dict("sys.modules", {"termios": termios})
+    sz = utils.get_terminal_size_ex()
+    assert sz.lines == 24
+    assert sz.columns == 80
+    assert sz.width == 911
+    assert sz.height == 399
+
+
+def test_get_terminal_size_ex_zero_wh(autopatch):
+    termios = types.SimpleNamespace(TIOCGWINSZ=0x40087468)
+    autopatch.object(sys.stdin, 'fileno', return_value=0)
+    autopatch("fcntl.ioctl", _fake_ioctl(24, 80, 0, 384))
+    autopatch.dict("sys.modules", {"termios": termios})
+    autopatch("os.get_terminal_size", return_value=os.terminal_size((80, 24)))
+    sz = utils.get_terminal_size_ex()
+    assert sz.lines == 24
+    assert sz.columns == 80
+    assert sz.width == 640
+    assert sz.height == 384
+
+
+def test_get_terminal_size_ex_ioctl_failure(autopatch):
+    termios = types.SimpleNamespace(TIOCGWINSZ=0x40087468)
+    autopatch.object(sys.stdin, 'fileno', return_value=0)
+    autopatch("fcntl.ioctl", side_effect=OSError("fail ioctl"))
+    autopatch.dict("sys.modules", {"termios": termios})
+    autopatch("os.get_terminal_size", return_value=os.terminal_size((100, 30)))
+    sz = utils.get_terminal_size_ex()
+    assert sz.lines == 30
+    assert sz.columns == 100
+    assert sz.width == 800
+    assert sz.height == 480

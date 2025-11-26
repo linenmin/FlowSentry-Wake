@@ -10,15 +10,22 @@ if not os.environ.get('AXELERA_FRAMEWORK'):
 
 from tqdm import tqdm
 
-from axelera.app import config, display, inf_tracers, logging_utils, statistics, yaml_parser
-from axelera.app.stream import create_inference_stream
+from axelera.app import (
+    config,
+    create_inference_stream,
+    display,
+    inf_tracers,
+    logging_utils,
+    statistics,
+    yaml_parser,
+)
 
 LOG = logging_utils.getLogger(__name__)
 PBAR = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
 
-LOGO0 = os.path.join(config.env.framework, "axelera/app/axelera-ai-logo-logo-only.png")
 LOGO1 = os.path.join(config.env.framework, "axelera/app/voyager-sdk-logo-white.png")
-LOGO2 = os.path.join(config.env.framework, "axelera/app/axelera-ai-logo-text-only.png")
+LOGO2 = os.path.join(config.env.framework, "axelera/app/axelera-ai-logo.png")
+LOGO_POS = '95%, 95%'
 
 
 def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
@@ -27,25 +34,29 @@ def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
             wnd.options(sid, title=f"#{sid} - {source}")
 
     wnd.options(-1, speedometer_smoothing=args.speedometer_smoothing)
-    logo0 = wnd.image('52%, 88%', LOGO0, anchor_x='right', anchor_y='center', scale=0.4)
-    logo1 = wnd.image('52%, 88%', LOGO1, anchor_x='left', anchor_y='center', scale=0.45)
+    logo1 = wnd.image(LOGO_POS, LOGO1, anchor_x='right', anchor_y='bottom', scale=0.3)
     logo2 = wnd.image(
-        '52%, 88%', LOGO2, anchor_x='left', anchor_y='center', scale=0.4, fadeout_from=0.0
+        LOGO_POS, LOGO2, anchor_x='right', anchor_y='bottom', scale=0.3, fadeout_from=0.0
     )
-    supported = logo0 and logo1 and logo2
+    supported = logo1 and logo2
     logo_start = save_start = time.time()
     logo_period = 10.0
 
     savef, save_period = None, 10.0  # don't save until we have enough data to be meaningful
 
-    for frame_result in tqdm(
-        stream,
+    for event in tqdm(
+        stream.with_events(),
         desc=f"Detecting... {' ':>30}",
         unit='frames',
         leave=False,
         bar_format=PBAR,
         disable=None,
     ):
+        if not event.result:
+            LOG.warning(f"Unknown event received: {event!r}")
+            continue
+        frame_result = event.result
+
         now = time.time()
         if supported and ((now - logo_start) > logo_period):
             logo1.hide(now, 1.0)
@@ -77,7 +88,6 @@ def inference_loop(args, log_file_path, stream, app, wnd, tracers=None):
 
         if wnd.is_closed:
             break
-
     if stream.is_single_image() and args.display:
         LOG.debug("stream has a single frame, close the window or press Q to exit...")
         wnd.wait_for_close()
@@ -121,7 +131,7 @@ if __name__ == "__main__":
         )
 
         with display.App(
-            visible=args.display,
+            renderer=args.display,
             opengl=stream.hardware_caps.opengl,
             buffering=not stream.is_single_image(),
         ) as app:

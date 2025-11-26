@@ -1,3 +1,16 @@
+DOTAv1DetectionOBBDataset:
+  description: DOTAv1 for oriented bounding box (OBB) detection
+  download_hint: "Download and setup DOTA-v1.0 dataset (run from voyager-sdk directory):\n\
+    \nwget https://github.com/ultralytics/assets/releases/download/v0.0.0/DOTAv1.zip\
+    \ && \\\nmkdir -p data/detection_obb && \\\nunzip -q DOTAv1.zip -d data/detection_obb\
+    \ && \\\nrm DOTAv1.zip\n\nExpected structure:\n  data/detection_obb/DOTAv1/\n\
+    \    images/train/  (1411 .jpg files)\n    images/val/    (458 .jpg files)\n \
+    \   labels/train/  (1411 .txt files)\n    labels/val/    (458 .txt files)\n"
+  splits:
+    val:
+    - drop_dirs: 0
+      file: DOTAv1.zip
+      name: val
 DanceTrack:
   description: DanceTrack multi-object tracking dataset
   download_hint: Dataset is downloaded automatically into the ./data/dancetrack folder.

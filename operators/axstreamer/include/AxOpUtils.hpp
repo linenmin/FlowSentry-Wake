@@ -71,7 +71,7 @@ struct buffer_details {
   cl_int crop_y;
   cl_int channels{};
   cl_int stride{};
-  std::variant<void *, int, VASurfaceID_proxy *> data{};
+  std::variant<void *, int, VASurfaceID_proxy *, opencl_buffer *> data{};
   std::vector<size_t> offsets;
   std::vector<size_t> strides;
   AxVideoFormat format{};
@@ -97,10 +97,19 @@ int determine_size(const buffer_details &info, int which_channel);
 int determine_buffer_size(const buffer_details &info);
 
 using lookups = std::array<float, 256>;
+using sin_cos_lookups = std::array<float, 512>;
 
 float to_sigmoid(float value);
 
 float dequantize(int value, float scale, int32_t zero_point);
+
+struct fobox {
+  float x;
+  float y;
+  float w;
+  float h;
+  float angle;
+};
 
 struct fbox {
   float x1;
@@ -126,6 +135,7 @@ using segment_func
     = std::function<ax_utils::segment(const std::vector<float> &, size_t, size_t)>;
 struct inferences {
   std::vector<fbox> boxes;
+  std::vector<fobox> obb;
   std::vector<fkpt> kpts;
   std::vector<segment> segments;
   std::vector<segment_func> seg_funcs;
@@ -148,6 +158,7 @@ struct inferences {
   {
     boxes.reserve(amount);
     scores.reserve(amount);
+    obb.reserve(amount);
     class_ids.reserve(amount);
     kpts.reserve(amount_kpts);
   }
@@ -194,6 +205,9 @@ std::vector<lookups> build_exponential_tables_with_zero_point(
 
 std::vector<lookups> build_dequantization_tables(
     const std::vector<float> &zero_points, const std::vector<float> &scales);
+
+std::vector<sin_cos_lookups> build_trigonometric_tables(const std::vector<float> &zero_points,
+    const std::vector<float> &scales, float add, float mul);
 
 struct tensor_dims {
   int width;
@@ -351,7 +365,7 @@ decode_scores(const input_type *first, const float *sigmoids, int z_stride,
     const std::vector<int> &filter, float confidence, float object_score,
     inferences &outputs, float objectness_score = 1.0F)
 {
-
+  const auto initial_size = outputs.scores.size();
   if (multiclass) {
     for (auto i : filter) {
       auto score = sigmoid(first[i * z_stride], sigmoids) * object_score * objectness_score;
@@ -376,7 +390,7 @@ decode_scores(const input_type *first, const float *sigmoids, int z_stride,
     }
   }
 
-  return outputs.scores.size() - outputs.boxes.size();
+  return outputs.scores.size() - initial_size;
 }
 
 template <typename input_type>
@@ -397,9 +411,23 @@ std::vector<BboxXyxy> scale_boxes(const std::vector<fbox> &norm_boxes, int video
 std::vector<BboxXyxy> scale_boxes(const std::vector<ax_utils::fbox> &norm_boxes,
     const AxVideoInterface &vinfo, int model_width, int model_height,
     bool scale_up, bool letterbox);
+std::vector<BboxXywhr> scale_boxes(const std::vector<ax_utils::fobox> &norm_boxes,
+    int video_width, int video_height, int tensor_width, int tensor_height,
+    bool scale_up, bool letterbox);
+
+std::vector<BboxXywhr> scale_boxes(const std::vector<ax_utils::fobox> &norm_boxes,
+    const AxVideoInterface &vinfo, int model_width, int model_height,
+    bool scale_up, bool letterbox);
 
 std::vector<BboxXyxy> scale_shift_boxes(const std::vector<ax_utils::fbox> &norm_boxes,
     BboxXyxy master_box, int tensor_width, int tensor_height, bool scale_up, bool letterbox);
+
+std::vector<BboxXywhr> scale_shift_boxes(const std::vector<ax_utils::fobox> &norm_boxes,
+    BboxXyxy master_box, int tensor_width, int tensor_height, bool scale_up, bool letterbox);
+
+std::vector<BboxXywhr> scale_boxes(const std::vector<fobox> &norm_boxes,
+    const AxVideoInterface &vinfo, int model_width, int model_height,
+    bool scale_up, bool letterbox);
 
 std::vector<KptXyv> scale_kpts(const std::vector<fkpt> &norm_kpts, int video_width,
     int video_height, int tensor_width, int tensor_height, bool scale_up, bool letterbox);
@@ -504,7 +532,9 @@ insert_meta(std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
   } else {
     auto *master_meta = get_meta<AxMetaBase>(master_key, map, "insert_meta");
     if (number_of_subframes != master_meta->get_number_of_subframes()) {
-      throw std::runtime_error("insert_meta : number_of_subframes mismatch");
+      throw std::runtime_error(
+          "insert_meta : number_of_subframes mismatch " + std::to_string(number_of_subframes)
+          + " vs " + std::to_string(master_meta->get_number_of_subframes()));
     }
     auto submeta = std::make_shared<T>(std::forward<Args>(args)...);
     T *submeta_ptr = submeta.get();
@@ -552,27 +582,6 @@ insert_and_associate_meta(std::unordered_map<std::string, std::unique_ptr<AxMeta
   master_meta->insert_submeta(key, unfiltered_subframe_index,
       unfiltered_number_of_subframes, std::move(submeta));
   return submeta_ptr;
-}
-
-template <typename T>
-void
-insert_flattened_meta(std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
-    const std::string &key, const std::string &master_key, int subframe_index,
-    int number_of_subframes, std::vector<BboxXyxy> boxes,
-    std::vector<float> scores, std::vector<int> class_ids)
-{
-  auto master_meta = ax_utils::get_meta<T>(master_key, map, "insert_flattened_meta");
-
-  if (subframe_index > master_meta->num_elements()) {
-    throw std::runtime_error("Subframe index must be less than number of subframes");
-  }
-  auto &meta = map[key];
-  if (!meta) {
-    meta = std::make_unique<T>(std::move(boxes), std::move(scores), std::move(class_ids));
-    return;
-  }
-  auto *pobjs = dynamic_cast<T *>(meta.get());
-  pobjs->extend(boxes, scores, class_ids);
 }
 
 } // namespace ax_utils

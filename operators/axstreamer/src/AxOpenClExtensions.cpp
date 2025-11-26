@@ -14,6 +14,13 @@
 
 #include <sys/sysmacros.h>
 
+using namespace std::string_literals;
+
+namespace ax_utils
+{
+std::string cl_error_to_string(cl_int code);
+}
+
 bool
 has_extension(cl_platform_id platform, const std::string &name)
 {
@@ -53,10 +60,63 @@ init_extensions(cl_platform_id platform, void *display)
   return extensions;
 }
 
+bool
+is_aligned(void *ptr, size_t alignment)
+{
+  return (reinterpret_cast<uintptr_t>(ptr) % alignment) == 0;
+}
+
+cl_mem
+create_buffer(void *ptr, cl_context ctx, cl_extensions extensions,
+    int elem_size, int num_elems, int flags, int plane, int &error)
+{
+  if ((flags & CL_MEM_READ_ONLY) != 0) {
+    flags &= ~(CL_MEM_USE_HOST_PTR | CL_MEM_ALLOC_HOST_PTR | CL_MEM_COPY_HOST_PTR);
+    if (extensions.unified_memory) {
+      flags |= CL_MEM_USE_HOST_PTR;
+    } else {
+      flags |= CL_MEM_COPY_HOST_PTR;
+    }
+  }
+  if ((flags & CL_MEM_WRITE_ONLY) != 0) {
+    //  Output buffers are best allocated in device memory
+    flags &= ~(CL_MEM_USE_HOST_PTR | CL_MEM_ALLOC_HOST_PTR | CL_MEM_COPY_HOST_PTR);
+    flags |= CL_MEM_ALLOC_HOST_PTR;
+    ptr = nullptr;
+  }
+
+  const auto unaligned_size = elem_size * num_elems;
+  constexpr size_t cache_size = 64;
+  if (extensions.clImportMemoryARM_host && is_aligned(ptr, cache_size)) {
+    if ((flags & CL_MEM_WRITE_ONLY) == 0) {
+      cl_import_properties_arm properties[] = {
+        CL_IMPORT_TYPE_ARM,
+        CL_IMPORT_TYPE_HOST_ARM,
+        0,
+      };
+      auto buffer = extensions.clImportMemoryARM_host(
+          ctx, CL_MEM_READ_ONLY, properties, ptr, unaligned_size, &error);
+      if (error == CL_SUCCESS) {
+        return { buffer };
+      }
+    }
+  }
+  const int page_size = 4096;
+  const auto aligned_size = (elem_size * num_elems + page_size - 1) & ~(page_size - 1);
+  const auto size = ptr != 0 ? unaligned_size : aligned_size;
+  auto buffer = clCreateBuffer(ctx, flags, size, ptr, &error);
+  if (error != CL_SUCCESS) {
+    throw std::runtime_error("Failed to create OpenCL buffer, error = " + std::to_string(error)
+                             + ", flags = " + std::to_string(flags));
+  }
+  return buffer;
+}
+
 std::vector<cl_mem>
 create_optimal_buffer(cl_context ctx, cl_extensions extensions, int elem_size,
     int num_elems, int flags,
-    const std::variant<void *, int, VASurfaceID_proxy *> &ptr, int plane, int &error)
+    const std::variant<void *, int, VASurfaceID_proxy *, opencl_buffer *> &ptr,
+    int plane, int &error)
 {
   if (std::holds_alternative<int>(ptr)) {
     auto fd = std::get<int>(ptr);
@@ -66,27 +126,39 @@ create_optimal_buffer(cl_context ctx, cl_extensions extensions, int elem_size,
       auto buffer = extensions.clImportMemoryARM_dmabuf(
           ctx, flags, properties, &fd, elem_size * num_elems, &error);
       if (error != CL_SUCCESS) {
-        throw std::runtime_error(
-            "Failed to create buffer, error = " + std::to_string(error));
+        throw std::runtime_error("Failed to create buffer, error: "
+                                 + ax_utils::cl_error_to_string(error));
       }
       return { buffer };
     } else {
       throw std::runtime_error("Import of dmabuf is not supported");
     }
   }
-  if (extensions.clImportMemoryARM_host) {
-    if ((flags & CL_MEM_WRITE_ONLY) == 0) {
-      cl_import_properties_arm properties[] = { CL_IMPORT_TYPE_HOST_ARM, 0 };
-      auto size = elem_size * num_elems;
-      auto buffer = extensions.clImportMemoryARM_host(
-          ctx, flags, nullptr, std::get<void *>(ptr), size, &error);
-      if (error == CL_SUCCESS) {
-        return { buffer };
+
+  if (std::holds_alternative<opencl_buffer *>(ptr)) {
+    //  If we have an opencl buffer, then we can use it directly
+    auto *ocl_buffer = std::get<opencl_buffer *>(ptr);
+    if (!ocl_buffer->buffer) {
+      ocl_buffer->buffer = create_buffer(ocl_buffer->data.data(), ctx,
+          extensions, elem_size, num_elems, flags, plane, error);
+      //  Here we currently do not have a buffer so we create one.
+      if (error != CL_SUCCESS) {
+        throw std::runtime_error("Failed to create OpenCL buffer, error: "
+                                 + ax_utils::cl_error_to_string(error)
+                                 + ", flags = " + std::to_string(flags));
       }
     }
+    //  This ensures that the buffer lasts after its final use in this element
+    clRetainMemObject(ocl_buffer->buffer);
+    return { ocl_buffer->buffer };
   }
-  //  If we fail to import, then fall back to creating a buffer
-  return { clCreateBuffer(ctx, flags, elem_size * num_elems, std::get<void *>(ptr), &error) };
+  auto buffer = create_buffer(std::get<void *>(ptr), ctx, extensions, elem_size,
+      num_elems, flags, plane, error);
+  if (error != CL_SUCCESS) {
+    throw std::runtime_error("Failed to create OpenCL buffer, error = " + std::to_string(error)
+                             + ", flags = " + std::to_string(flags));
+  }
+  return { buffer };
 }
 
 int
@@ -121,8 +193,8 @@ create_context(cl_platform_id platform, cl_device_id device, const cl_extensions
 
   auto context = clCreateContext(props, 1, &device, NULL, NULL, &error);
   if (error != CL_SUCCESS) {
-    throw std::runtime_error(
-        "Failed to create OpenCL context, error = " + std::to_string(error));
+    throw std::runtime_error("Failed to create OpenCL context, error: "
+                             + ax_utils::cl_error_to_string(error));
   }
   return context;
 }
@@ -168,6 +240,14 @@ init_extensions(cl_platform_id platform, void *display)
   return extensions;
 }
 
+bool
+should_check_cpu(const std::string_view platform_name)
+{
+  // For Intel and POCL platforms, prefer CPU devices
+  return platform_name.find("Intel") != std::string::npos
+         || platform_name.find("Portable Computing Language") != std::string::npos;
+}
+
 int
 get_device_id(cl_platform_id platform, cl_device_id *device_id,
     cl_uint *num_devices, const cl_extensions &extensions)
@@ -182,39 +262,27 @@ get_device_id(cl_platform_id platform, cl_device_id *device_id,
   // Check platform type for intelligent device selection
   char platform_name[256];
   clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(platform_name), platform_name, nullptr);
-  std::string platform_str(platform_name);
 
-  // For Intel and POCL platforms, prefer CPU devices
-  if (platform_str.find("Intel") != std::string::npos
-      || platform_str.find("Portable Computing Language") != std::string::npos) {
-    // Try CPU first for these platforms
-    int result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 1, device_id, num_devices);
+  auto device_types = should_check_cpu(platform_name) ?
+                          std::array<cl_device_type, 3>{
+                            CL_DEVICE_TYPE_CPU,
+                            CL_DEVICE_TYPE_GPU,
+                            CL_DEVICE_TYPE_ALL,
+                          } :
+                          std::array<cl_device_type, 3>{
+                            CL_DEVICE_TYPE_GPU,
+                            CL_DEVICE_TYPE_CPU,
+                            CL_DEVICE_TYPE_ALL,
+                          };
+
+  cl_int result = CL_DEVICE_NOT_AVAILABLE;
+  for (const auto &device_type : device_types) {
+    result = clGetDeviceIDs(platform, device_type, 1, device_id, num_devices);
     if (result == CL_SUCCESS) {
-      return result;
+      break;
     }
-    // Fallback to GPU if CPU not available
-    result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, device_id, num_devices);
-    if (result == CL_SUCCESS) {
-      return result;
-    }
-    // Final fallback to any device
-    return clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 1, device_id, num_devices);
   }
-
-  // For other platforms (e.g., NVIDIA), prefer GPU devices
-  int result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, device_id, num_devices);
-  if (result == CL_SUCCESS) {
-    return result;
-  }
-
-  // Fallback to CPU if GPU not available
-  result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 1, device_id, num_devices);
-  if (result == CL_SUCCESS) {
-    return result;
-  }
-
-  // Final fallback to any device type
-  return clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 1, device_id, num_devices);
+  return result;
 }
 
 cl_context
@@ -231,8 +299,8 @@ create_context(cl_platform_id platform, cl_device_id device, const cl_extensions
     };
     auto context = clCreateContext(props, 1, &device, NULL, NULL, &error);
     if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Failed to create OpenCL context, error = " + std::to_string(error));
+      throw std::runtime_error("Failed to create OpenCL context, error: "s
+                               + ax_utils::cl_error_to_string(error));
     }
     return context;
   }
@@ -247,8 +315,8 @@ create_context(cl_platform_id platform, cl_device_id device, const cl_extensions
 
   auto context = clCreateContext(props, 1, &device, NULL, NULL, &error);
   if (error != CL_SUCCESS) {
-    throw std::runtime_error(
-        "Failed to create OpenCL context, error = " + std::to_string(error));
+    throw std::runtime_error("Failed to create OpenCL context, error: "
+                             + ax_utils::cl_error_to_string(error));
   }
   return context;
 #else
@@ -260,8 +328,8 @@ create_context(cl_platform_id platform, cl_device_id device, const cl_extensions
   };
   auto context = clCreateContext(props, 1, &device, NULL, NULL, &error);
   if (error != CL_SUCCESS) {
-    throw std::runtime_error(
-        "Failed to create OpenCL context, error = " + std::to_string(error));
+    throw std::runtime_error("Failed to create OpenCL context, error: "
+                             + ax_utils::cl_error_to_string(error));
   }
   return context;
 
@@ -270,7 +338,8 @@ create_context(cl_platform_id platform, cl_device_id device, const cl_extensions
 
 std::vector<cl_mem>
 create_optimal_buffer(cl_context ctx, cl_extensions extensions, int elem_size,
-    int num_elems, int flags, const std::variant<void *, int, VASurfaceID_proxy *> &ptr,
+    int num_elems, int flags,
+    const std::variant<void *, int, VASurfaceID_proxy *, opencl_buffer *> &ptr,
     int num_planes, int &error)
 {
 #if defined(HAS_VAAPI_MEDIA_SHARING)
@@ -282,8 +351,8 @@ create_optimal_buffer(cl_context ctx, cl_extensions extensions, int elem_size,
       for (int i = 0; i != num_planes; ++i) {
         auto buffer = extensions.clCreateFromVA(ctx, flags, surface, i, &error);
         if (error != CL_SUCCESS) {
-          throw std::runtime_error(
-              "Failed to create buffer, error = " + std::to_string(error));
+          throw std::runtime_error("Failed to create buffer, error: "
+                                   + ax_utils::cl_error_to_string(error));
         }
         cl_image_format format;
         clGetImageInfo(buffer, CL_IMAGE_FORMAT, sizeof(cl_image_format), &format, NULL);
@@ -295,6 +364,37 @@ create_optimal_buffer(cl_context ctx, cl_extensions extensions, int elem_size,
     }
   }
 #endif
+  if ((flags & CL_MEM_READ_ONLY) != 0) {
+    flags &= ~(CL_MEM_USE_HOST_PTR | CL_MEM_ALLOC_HOST_PTR | CL_MEM_COPY_HOST_PTR);
+    if (extensions.unified_memory) {
+      flags |= CL_MEM_USE_HOST_PTR;
+    } else {
+      flags |= CL_MEM_COPY_HOST_PTR;
+    }
+  }
+  if (std::holds_alternative<opencl_buffer *>(ptr)) {
+    //  If we have an opencl buffer, then we can use it directly
+    auto *ocl_buffer = std::get<opencl_buffer *>(ptr);
+    if (!ocl_buffer->buffer) {
+      //  Here we currently do not have a buffer so we create one.
+      void *buffer = ocl_buffer->data.data();
+      if ((flags & CL_MEM_WRITE_ONLY) != 0) {
+        flags |= CL_MEM_HOST_READ_ONLY;
+      }
+      cl_int error = CL_SUCCESS;
+      const int page_size = 4096;
+      auto size = (elem_size * num_elems + page_size - 1) & ~(page_size - 1);
+      ocl_buffer->buffer = clCreateBuffer(ctx, flags, size, buffer, &error);
+      if (error != CL_SUCCESS) {
+        throw std::runtime_error("Failed to create OpenCL buffer, error: "
+                                 + ax_utils::cl_error_to_string(error)
+                                 + ", flags = " + std::to_string(flags));
+      }
+    }
+    //  This ensures that the buffer lasts after its final use in this element
+    clRetainMemObject(ocl_buffer->buffer);
+    return { ocl_buffer->buffer };
+  }
   return { clCreateBuffer(ctx, flags, elem_size * num_elems, std::get<void *>(ptr), &error) };
 }
 

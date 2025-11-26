@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from typing import Any
 
 import numpy as np
@@ -9,6 +9,7 @@ from axelera import types
 from axelera.app import data_utils, eval_interfaces, logging_utils
 
 LOG = logging_utils.getLogger(__name__)
+
 
 # The dataset implementation is taken from
 # https://github.com/biubug6/Pytorch_Retinaface/blob/master/data/wider_face.py

@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Bounding boxes for object detection task
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import numpy as np
 
 from axelera import types
 
-from .. import logging_utils, plot_utils, utils
+from .. import logging_utils, utils
 from ..model_utils.box import convert
 from .base import AxTaskMeta, MetaObject, draw_bounding_boxes
 from .gst_decode_utils import decode_bbox

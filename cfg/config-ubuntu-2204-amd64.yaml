@@ -13,14 +13,15 @@ vars:
   AX_PYPI_DEVELOPMENT_URL: https://software.axelera.ai/artifactory/axelera-dev-pypi/
   AX_PIP_EXTRA_ARGS: ""
   AX_CFG_DIR: cfg
-  AX_VERSION: 1.4.2
-  AX_DKMS_VERSION: 1.2.4
+  AX_VERSION: 1.5.1
+  AX_DKMS_VERSION: 1.4.4
+  AX_MULTI_DEVICE_VERSION: 1.0.0
 
 installer_dependencies:
   - git
   - kmod
-  - llvm
-  - llvm-dev
+  - llvm-14
+  - llvm-14-dev
   - make
   - wget
 
@@ -28,7 +29,7 @@ common:
   description: Common
   libs:
     - libgstreamer-plugins-base1.0-dev
-    - axelera-runtime-1.4.2
+    - axelera-runtime-1.5.1
     - systemd
 
 penv:
@@ -47,23 +48,23 @@ penv:
       url: ${AX_PYPI_DEVELOPMENT_URL}
       ssl: false
       requires_auth: false
-      pip_extra_args: ${AX_PIP_EXTRA_ARGS}
     - name: axelera_runtime
       url: ${AX_PYPI_RUNTIME_URL}
       ssl: false
-      pip_extra_args: ${AX_PIP_EXTRA_ARGS}
   common:
     index_url: https://pypi.org/simple
     requires_auth: false
     libs:
+    - accelerate: "*"
     - alive-progress: "*"
     - argparse: "*"
     - boto3: "*"
     - cityscapesscripts: "*"
     - climage: "*"
-    - cmake: "{version = \"<4.0.0\"}"
+    - cmake: "{version = \">=3.24,<4.0.0\"}"
     - cython: "*"
     - ftfy: "6.2.0"
+    - gradio: "{version = \">=5.9.0\"}"
     - grpcio: "*"
     - h5py: "*"
     - jinja2: "*"
@@ -80,6 +81,7 @@ penv:
     - opencv-python: "*"
     - pillow: "*"
     - protobuf: "*"
+    - pyclipper: "*"
     - pycocotools: "*"
     - pyglet: "2.1.3"
     - pytest: "*"
@@ -88,9 +90,11 @@ penv:
     - rich: "*"
     - scipy: "*"
     - sewar: "*"
+    - shapely: "*"
     - siphash24: "*"
     - strictyaml: "*"
     - tqdm: "*"
+    - transformers: "{version = \">=4.45.1\"}"
     - typer: "*"
   development:
     index_url: https://pypi.org/simple
@@ -105,42 +109,38 @@ penv:
     index_url: https://download.pytorch.org/whl/cpu
     requires_auth: false
     libs:
-    - torch: "{index = \"pytorch\", version = \"==1.13.1\"}"
-    - torchvision: "{index = \"pytorch\", version = \"==0.14.1\"}"
+    - torch: "{index = \"pytorch\", version = \">=2.6.0,<3.0.0\"}"
+    - torchvision: "{index = \"pytorch\", version = \">=0.22.0,<1.0.0\"}"
   axelera_common:
     index_url: ${AX_PYPI_RUNTIME_URL}
+    pip_extra_args: ${AX_PIP_EXTRA_ARGS}
     requires_auth: false
     libs:
     - axelera-types: "{index = \"axelera_runtime\" }"
     - axelera-runtime: "{index = \"axelera_runtime\" }"
   axelera_development:
     index_url: ${AX_PYPI_DEVELOPMENT_URL}
+    pip_extra_args: ${AX_PIP_EXTRA_ARGS}
     requires_auth: false
     libs:
-    - axelera-compiler: "{index = \"axelera_development\" }"
-    - axelera-qtoolsv2: "{index = \"axelera_development\" }"
+    - ax-pytest-helpers: "{index = \"axelera_development\" }"
     - axelera-onnx2torch: "{index = \"axelera_development\" }"
+    - axelera-qtoolsv2: "{index = \"axelera_development\" }"
     - axelera-onnx-graph-cleaner: "{index = \"axelera_development\" }"
     - axelera-qtools-tvm-interface: "{index = \"axelera_development\" }"
-    - axelera-tvm: "{index = \"axelera_development\" }"
     - axelera-aipu-api: "{index = \"axelera_development\" }"
-    - axelera-aipu-aingine-api: "{index = \"axelera_development\" }"
+    - axelera-package-lib: "{index = \"axelera_development\" }"
     - axelera-miraculix: "{index = \"axelera_development\" }"
+    - axelera-aipu-aingine-api: "{index = \"axelera_development\" }"
     - axelera-codegen: "{index = \"axelera_development\" }"
-    - package-lib: "{index = \"axelera_development\" }"
-    - ax-pytest-helpers: "{index = \"axelera_development\" }"
+    - axelera-tvm: "{index = \"axelera_development\" }"
+    - axelera-compiler: "{index = \"axelera_development\" }"
   axelera_runtime:
     index_url: ${AX_PYPI_RUNTIME_URL}
-    requires_auth: false
-    libs: []
-
-  llm:
-    index_url: https://pypi.org/simple
+    pip_extra_args: ${AX_PIP_EXTRA_ARGS}
     requires_auth: false
     libs:
-    - gradio: "{version = \">=5.9.0\"}"
-    - transformers: "{version = \">=4.45.1\"}"
-    - accelerate: "*"
+    - axelera-llm: "{index = \"axelera_runtime\" }"
 
   requirements: ${AX_CFG_DIR}/requirements-ubuntu-2204-amd64.txt
 
@@ -192,6 +192,7 @@ docker:
     - nano
     - pciutils
     - sudo
+    - systemd
     - udev
     - vim
   system-dependencies:
@@ -252,16 +253,15 @@ runtime:
 
   envs:
     - name: AXELERA_RUNTIME_DIR
-      value: "/opt/axelera/runtime-1.4.2-1"
+      value: "/opt/axelera/runtime-1.5.1-1"
     - name: AXELERA_DEVICE_DIR
-      value: "/opt/axelera/device-1.4.2-1/omega"
+      value: "/opt/axelera/device-1.5.1-1/omega"
     - name: AXELERA_RISCV_TOOLCHAIN_DIR
       value: "/opt/axelera/riscv-gnu-newlib-toolchain-409b951ba662-7"
     - name: PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION
       value: python
     - name: AXELERA_FRAMEWORK
       value: $PWD
-    # FIXME Revert before release, see INF-1088
     - name: AIPU_FIRMWARE_OMEGA
       value: "${AXELERA_DEVICE_DIR}/bin/start_axelera_runtime.elf"
     - name: AIPU_RUNTIME_STAGE0_OMEGA
@@ -282,7 +282,8 @@ runtime:
 driver:
   description: PCIe driver
   libs:
-    - metis-dkms == 1.2.4
+    - metis-dkms == 1.4.4
+    - axelera-multi-device == 1.0.0
 
 repositories:
   - list: /etc/apt/sources.list.d/docker.list
@@ -314,16 +315,17 @@ repositories:
       - https://packages.microsoft.com/repos/code stable main
   - list: /etc/apt/sources.list.d/axelera.list
     packages:
-      - axelera-device-1.4.2
-      - axelera-runtime-1.4.2
+      - axelera-device-1.5.1
+      - axelera-runtime-1.5.1
       - axelera-riscv-gnu-newlib-toolchain-409b951ba662-7
       - axelera-riscv-openocd
       - metis-dkms
+      - axelera-multi-device
       # platform specific
     gpg-url: https://software.axelera.ai/artifactory/api/security/keypair/axelera/public
     gpg-key: /etc/apt/keyrings/axelera.gpg
     sources:
-      - ${AX_DEBIAN_URL} stable main
+      - ${AX_DEBIAN_URL} ubuntu22 main
 
 media:
   - url: ${AX_RELEASE_URL}/artifacts/test_videos/h265/traffic1_480p.mp4

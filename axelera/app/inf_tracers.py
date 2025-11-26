@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from __future__ import annotations
 
 import abc
@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Dict, List, Sequence
 
 import numpy as np
 
-from . import config, device_manager, logging_utils, torch_utils, utils
+from . import config, device_manager, logging_utils, utils
 
 if TYPE_CHECKING:
     from . import config, display
@@ -311,7 +311,7 @@ class _TritonTrace:
 
     def stop(self) -> str:
         try:
-            LOG.trace(f"Waiting for triton_trace process")
+            LOG.trace("Waiting for triton_trace process")
             try:
                 out, _ = self._p.communicate(timeout := 2)
 
@@ -461,7 +461,7 @@ class CoreTempTracer(Tracer):
             _TritonTrace(
                 d,
                 ["--slog-level", 'err'],
-                ["--slog-level", f'inf:collector'],
+                ["--slog-level", 'inf:collector'],
                 ["--slog"],
                 ["--slog-level", 'err'],
             )
@@ -479,7 +479,7 @@ class CoreTempTracer(Tracer):
         if not self._last:
             max_value = 0.0
         else:
-            max_value = float(max(max(l) for l in self._last.values()))
+            max_value = float(max(max(x) for x in self._last.values()))
             self._max = max(max_value, self._max)
         m = [TraceMetric(self.key, self.title, max_value, self._max, '°C')]
         if LOG.isEnabledFor(logging_utils.DEBUG):

@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 // collection of utils taken from axstreamer
 #pragma once
 #include <functional>
@@ -44,6 +44,7 @@ enum {
   AXINFERENCE_PROP_META_STRING,
   AXINFERENCE_PROP_DEVICES,
   AXINFERENCE_PROP_STREAM_SELECT,
+  AXINFERENCE_PROP_WHICH_CL,
   AXINFERENCE_PROP_NEXT_AVAILABLE,
 };
 
@@ -54,7 +55,10 @@ bool set_inference_property(InferenceProperties &props, int prop_id, const GValu
 bool get_inference_property(const InferenceProperties &props, int prop_id, GValue *value);
 void add_string_property(GObjectClass *object_class, int id,
     const std::string &name, const std::string &blurb);
-
+void add_uint_property(GObjectClass *object_klass, int id, const std::string &name,
+    const std::string &blurb, uint32_t min, uint32_t max, uint32_t def);
+void add_boolean_property(GObjectClass *object_class, int id,
+    const std::string &name, const std::string &blurb);
 
 void add_inference_properties(GObjectClass *object_class,
     bool include_dmabuf_outputs, bool include_inference_skip_rate);

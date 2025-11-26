@@ -11,6 +11,11 @@
 #define USE_AVX2
 #endif
 
+#if defined __ARM_NEON
+#define USE_NEON
+#include <arm_neon.h>
+#endif
+
 struct normalize_properties {
   std::string simd{};
   std::vector<float> mul{};
@@ -120,7 +125,7 @@ round_to_even(float val)
 int8_t
 clamp_and_round(float val)
 {
-  return static_cast<int8_t>(round_to_even(std::clamp(val, -128.0f, 127.0f)));
+  return static_cast<int8_t>(std::round(std::clamp(val, -128.0f, 127.0f)));
 }
 
 extern "C" void
@@ -266,6 +271,105 @@ inplace(const AxDataInterface &data, const normalize_properties *details,
                     << std::endl;
   }
 
+  if (details->simd == "neon") {
+#ifdef USE_NEON
+    if (tensor.bytes != 1) {
+      throw std::runtime_error("inplace_normalize with NEON works on (u)int8 tensors only");
+    }
+    if (ch_dim != 3) {
+      throw std::runtime_error(
+          "inplace_normalize with NEON works on channel as most contiguous dimension only");
+    }
+    if (num_ch != 4) {
+      throw std::runtime_error("inplace_normalize with NEON works on 4 channels only");
+    }
+
+    // Pre-compute the multiplication and addition vectors
+    float32x4_t mul_neon = vld1q_f32(muls.data());
+    float32x4_t add_neon = vld1q_f32(adds.data());
+
+    // Process 16 pixels (64 bytes) at a time for better vectorization
+    size_t total_elements = tensor.total();
+    size_t vec_size = 16;
+    size_t vec_count = total_elements / vec_size;
+
+    uint8_t *input_ptr = static_cast<uint8_t *>(tensor.data);
+    int8_t *output_ptr = static_cast<int8_t *>(tensor.data);
+
+    // Constants for clamping
+    float32x4_t min_val = vdupq_n_f32(-128.0f);
+    float32x4_t max_val = vdupq_n_f32(127.0f);
+
+    for (size_t i = 0; i < vec_count; ++i) {
+      // Process first 8 bytes (2 pixels with 4 channels each)
+      uint8x8_t input1 = vld1_u8(input_ptr);
+      uint16x8_t input1_u16 = vmovl_u8(input1);
+
+      // Process first 4 elements (first pixel)
+      uint16x4_t pixel0_u16 = vget_low_u16(input1_u16);
+      uint32x4_t pixel0_u32 = vmovl_u16(pixel0_u16);
+      float32x4_t pixel0_f32 = vcvtq_f32_u32(pixel0_u32);
+      float32x4_t result0_f32 = vmlaq_f32(add_neon, pixel0_f32, mul_neon);
+      result0_f32 = vminq_f32(vmaxq_f32(result0_f32, min_val), max_val);
+      int32x4_t result0_s32 = vcvtnq_s32_f32(result0_f32);
+
+      // Process next 4 elements (second pixel)
+      uint32x4_t pixel1_u32 = vmovl_high_u16(input1_u16);
+      float32x4_t pixel1_f32 = vcvtq_f32_u32(pixel1_u32);
+      float32x4_t result1_f32 = vmlaq_f32(add_neon, pixel1_f32, mul_neon);
+      result1_f32 = vminq_f32(vmaxq_f32(result1_f32, min_val), max_val);
+      int32x4_t result1_s32 = vcvtnq_s32_f32(result1_f32);
+
+      // Narrow and combine first 8 results
+      int16x8_t result1_s16
+          = vcombine_s16(vmovn_s32(result0_s32), vmovn_s32(result1_s32));
+      int8x8_t result1 = vmovn_s16(result1_s16);
+
+      // Process next 8 bytes (2 more pixels with 4 channels each)
+      uint8x8_t input2 = vld1_u8(input_ptr + 8);
+      uint16x8_t input2_u16 = vmovl_u8(input2);
+
+      // Process next 4 elements (third pixel)
+      uint16x4_t pixel2_u16 = vget_low_u16(input2_u16);
+      uint32x4_t pixel2_u32 = vmovl_u16(pixel2_u16);
+      float32x4_t pixel2_f32 = vcvtq_f32_u32(pixel2_u32);
+      float32x4_t result2_f32 = vmlaq_f32(add_neon, pixel2_f32, mul_neon);
+      result2_f32 = vminq_f32(vmaxq_f32(result2_f32, min_val), max_val);
+      int32x4_t result2_s32 = vcvtnq_s32_f32(result2_f32);
+
+      // Process next 4 elements (fourth pixel)
+      uint32x4_t pixel3_u32 = vmovl_high_u16(input2_u16);
+      float32x4_t pixel3_f32 = vcvtq_f32_u32(pixel3_u32);
+      float32x4_t result3_f32 = vmlaq_f32(add_neon, pixel3_f32, mul_neon);
+      result3_f32 = vminq_f32(vmaxq_f32(result3_f32, min_val), max_val);
+      int32x4_t result3_s32 = vcvtnq_s32_f32(result3_f32);
+
+      // Narrow and combine second 8 results
+      int16x8_t result2_s16
+          = vcombine_s16(vmovn_s32(result2_s32), vmovn_s32(result3_s32));
+      int8x8_t result2 = vmovn_s16(result2_s16);
+
+      // Store results
+      vst1_s8(output_ptr, result1);
+      vst1_s8(output_ptr + 8, result2);
+
+      // Advance pointers
+      input_ptr += vec_size;
+      output_ptr += vec_size;
+    }
+
+    // Handle remaining elements
+    for (size_t i = vec_count * vec_size; i < total_elements; ++i) {
+      uint8_t val = static_cast<uint8_t *>(tensor.data)[i];
+      int8_t *ptr = static_cast<int8_t *>(tensor.data);
+      ptr[i] = clamp_and_round(val * muls[i % 4] + adds[i % 4]);
+    }
+
+    return;
+#endif
+    logger(AX_WARN) << "inplace_normalize is not compiled with NEON, defaulting to non SIMD implementation"
+                    << std::endl;
+  }
 
   int inner = 1;
   int outer = 1;
@@ -276,21 +380,33 @@ inplace(const AxDataInterface &data, const normalize_properties *details,
     inner *= tensor.sizes[i];
   }
 
-  int ind = 0;
-  for (int i = 0; i < outer; ++i) {
-    for (int ch = 0; ch < tensor.sizes[ch_dim]; ++ch) {
-      for (int j = 0; j < inner; ++j) {
-        if (tensor.bytes == 4) {
-          float *ptr = static_cast<float *>(tensor.data);
-          ptr[ind] = ptr[ind] * muls[ch] + adds[ch];
-        } else if (tensor.bytes == 1) {
-          uint8_t val = static_cast<uint8_t *>(tensor.data)[ind];
-          int8_t *ptr = static_cast<int8_t *>(tensor.data);
-          ptr[ind] = clamp_and_round(val * muls[ch] + adds[ch]);
-        } else {
-          throw std::runtime_error("inplace_normalize works on (u)int8 or float32");
+  if (inner == 1 && tensor.bytes == 1 && tensor.sizes[ch_dim] == 4) {
+    // Special case for 4-channel NHWC uint8 tensors
+    int ind = 0;
+    uint8_t *p_in = static_cast<uint8_t *>(tensor.data);
+    int8_t *p_out = static_cast<int8_t *>(tensor.data);
+    for (int i = 0; i < 4 * outer; ++i) {
+      auto v = p_in[ind] * muls[ind & 3] + adds[ind & 3];
+      p_out[ind] = std::round(std::clamp(v, -128.0f, 127.0f));
+      ++ind;
+    }
+  } else {
+    int ind = 0;
+    for (int i = 0; i < outer; ++i) {
+      for (int ch = 0; ch < tensor.sizes[ch_dim]; ++ch) {
+        for (int j = 0; j < inner; ++j) {
+          if (tensor.bytes == 4) {
+            float *ptr = static_cast<float *>(tensor.data);
+            ptr[ind] = ptr[ind] * muls[ch] + adds[ch];
+          } else if (tensor.bytes == 1) {
+            uint8_t val = static_cast<uint8_t *>(tensor.data)[ind];
+            int8_t *ptr = static_cast<int8_t *>(tensor.data);
+            ptr[ind] = clamp_and_round(val * muls[ch] + adds[ch]);
+          } else {
+            throw std::runtime_error("inplace_normalize works on (u)int8 or float32");
+          }
+          ++ind;
         }
-        ++ind;
       }
     }
   }

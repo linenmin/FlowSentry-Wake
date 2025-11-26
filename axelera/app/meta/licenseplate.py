@@ -23,6 +23,9 @@ class LicensePlateMeta(AxTaskMeta):
 
     label: str = None
 
+    def __len__(self):
+        return 1 if self.label is not None else 0
+
     def add_result(self, label: str):
         object.__setattr__(self, "label", label)
 

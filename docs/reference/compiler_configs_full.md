@@ -1,17 +1,16 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-
 # CompilerConfig
 
 - [CompilerConfig](#compilerconfig)
   - [Properties](#properties)
   - [Definitions](#definitions)
-      - [CompilerMode](#compilermode)
-      - [DPUAllocationAlgorithm](#dpuallocationalgorithm)
-      - [GraphCleanerCondition](#graphcleanercondition)
-      - [GraphCleanerNode](#graphcleanernode)
-      - [MulticoreMode](#multicoremode)
-      - [ProfilingLevel](#profilinglevel)
-      - [QuantizationScheme](#quantizationscheme)
+    - [CompilerMode](#compilermode)
+    - [DPUAllocationAlgorithm](#dpuallocationalgorithm)
+    - [GraphCleanerCondition](#graphcleanercondition)
+    - [GraphCleanerNode](#graphcleanernode)
+    - [MulticoreMode](#multicoremode)
+    - [ProfilingLevel](#profilinglevel)
+    - [QuantizationScheme](#quantizationscheme)
 
 
 *The Configuration for the Axelera AI Compiler.*
@@ -286,26 +285,25 @@
 
 ## Definitions
 
-
-#### CompilerMode
+### CompilerMode
   *(string)*: The operational mode of the compiler. Must be one of: `["quantize_and_lower", "quantize_only", "lower_only"]`.
 
-#### DPUAllocationAlgorithm
+### DPUAllocationAlgorithm
   *(string)*: The DPU register-allocation algorithm to use. Must be one of: `["graph", "lazy", "backjump_recursive", "try_all"]`.
 
-#### GraphCleanerCondition
+### GraphCleanerCondition
   *(string)*: Available conditions for ONNX graph cleaning. Must be one of: `["maximum_weight_tensor_size", "maximum_weight_tensor_first_dimension_size"]`.
 
-#### GraphCleanerNode
+### GraphCleanerNode
   *(string)*: Available node types for graph cleaning. Must be one of: `["MatMul", "Gemm", "Clip"]`.
 
-#### MulticoreMode
+### MulticoreMode
   *(string)*: Multicore mode for multicore execution. Must be one of: `["multiprocess", "multithread", "batch", "cooperative", "pipeline"]`.
 
-#### ProfilingLevel
+### ProfilingLevel
   *(string)*: Levels used to identify the type of trace line in the trace file. Must be one of: `["[?]", "[B]", "[PB]", "[PE]", "[K]", "[M]", "[T]"]`.
 
-#### QuantizationScheme
+### QuantizationScheme
   *(string)*: Symbolic names for the quantization scheme.<br>  Attributes:
     - PER_TENSOR_HISTOGRAM: Quantizes activations per-tensor with a histogram observer,
         and weights per-channel with a minmax observer.

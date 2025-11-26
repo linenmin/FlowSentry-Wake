@@ -9,6 +9,7 @@ from . import (
     licenseplate,
     multihead,
     object_detection,
+    object_detection_obb,
     pair_validation,
     segmentation,
     tensor,
@@ -16,7 +17,7 @@ from . import (
 )
 from .base import AxMeta, AxTaskMeta, MetaObject, NoMasterDetectionsError
 from .bbox_state import BBoxState
-from .gst import GstDecoder, GstMetaInfo
+from .gst import GstDecoder, GstMetaAssembler, GstMetaInfo, ModelInfoProvider
 from .registry import MetaRegistry
 
 __all__ = [
@@ -25,8 +26,21 @@ __all__ = [
     'BBoxState',
     'GstDecoder',
     'GstMetaInfo',
+    'GstMetaAssembler',
+    'ModelInfoProvider',
     'NoMasterDetectionsError',
     'MetaRegistry',
+    'classification',
+    'image',
+    'keypoint',
+    'licenseplate',
+    'multihead',
+    'object_detection',
+    'object_detection_obb',
+    'pair_validation',
+    'segmentation',
+    'tensor',
+    'tracker',
 ]
 __all__.extend(AxTaskMeta._subclasses.keys())
 __all__.extend(MetaObject._subclasses.keys())

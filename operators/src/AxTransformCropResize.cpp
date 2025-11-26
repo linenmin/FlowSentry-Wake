@@ -1,10 +1,12 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <unordered_map>
 #include <unordered_set>
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMetaBBox.hpp"
 #include "AxUtils.hpp"
+
+#include <opencv2/core/ocl.hpp>
 
 struct cropresize_properties {
   std::string meta_key;
@@ -57,6 +59,7 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     const cropresize_properties *prop, unsigned int subframe_index, unsigned int subframe_number,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map, Ax::Logger &logger)
 {
+  cv::ocl::setUseOpenCL(false);
   auto &input_video = std::get<AxVideoInterface>(input);
   cv::Mat input_mat(cv::Size(input_video.info.width, input_video.info.height),
       Ax::opencv_type_u8(input_video.info.format), input_video.data,

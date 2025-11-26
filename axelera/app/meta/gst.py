@@ -4,24 +4,254 @@ from __future__ import annotations
 import ctypes
 import dataclasses
 import importlib
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import warnings
 
 import numpy as np
 
 warnings.filterwarnings("ignore", category=ImportWarning, module="importlib")
 
+
+from .. import logging_utils  # noqa : E402 not at top of file. But we must ignore the warnings
+from .base import AxTaskMeta  # noqa : E402 not at top of file. But we must ignore the warnings
+from .gst_decode_utils import (  # noqa : E402 not at top of file. But we must ignore the warnings
+    decode_bbox,
+)
+
 try:
     from gi.repository import Gst
-except ModuleNotFoundError as e:
+except ModuleNotFoundError:
     pass
 
-from .. import logging_utils
-from .base import AxTaskMeta
-from .gst_decode_utils import decode_bbox
-from .tracker import TrackerMeta
-
 LOG = logging_utils.getLogger(__name__)
+
+
+class ModelInfoProvider:
+    """Lightweight access layer for model metadata required during GST assembly."""
+
+    def __init__(
+        self,
+        labels_dict: dict[str, Any] | None = None,
+        num_classes_dict: dict[str, int] | None = None,
+        softmax_lookup: Callable[[str], bool] | None = None,
+    ) -> None:
+        self._labels_dict = labels_dict or {}
+        self._num_classes_dict = num_classes_dict or {}
+        self._softmax_lookup = softmax_lookup or (lambda _task: False)
+
+    def labels_for(self, task_name: str) -> Any:
+        return self._labels_dict.get(task_name)
+
+    def num_classes_for(self, task_name: str) -> int:
+        return self._num_classes_dict.get(task_name, 0)
+
+    def has_softmax(self, task_name: str) -> bool:
+        try:
+            return bool(self._softmax_lookup(task_name))
+        except Exception as exc:  # pragma: no cover - defensive logging path
+            LOG.debug("Softmax lookup failed for %s: %s", task_name, exc)
+            return False
+
+    @property
+    def labels_dict(self) -> dict[str, Any]:
+        return self._labels_dict
+
+
+class GstMetaAssembler:
+    """Helper that builds AxMeta structures directly from GST decoded metadata."""
+
+    def __init__(self, model_info: ModelInfoProvider) -> None:
+        self._model_info = model_info
+        self._meta_module = importlib.import_module('axelera.app.meta')
+        self._seen_types: set[type] = set()
+        self._normalisers: dict[type, Callable[[Any, str], AxTaskMeta]] = {}
+        self._register_default_normalisers()
+
+    def process(
+        self,
+        ax_meta,
+        decoded_meta,
+        task_graph=None,
+        result_view=None,
+    ) -> None:
+        for gst_meta_info, task_meta in (decoded_meta or {}).items():
+            expected_master = (
+                task_graph.get_master(gst_meta_info.task_name, view=result_view)
+                if task_graph is not None and result_view is not None
+                else None
+            )
+            actual_master = gst_meta_info.master
+
+            if expected_master and actual_master and actual_master != expected_master:
+                raise ValueError(
+                    "From the YAML, the master of %s is expected to be %s, "
+                    "but GST is sending it as %s."
+                    % (gst_meta_info.task_name, expected_master, actual_master)
+                )
+            if expected_master and not actual_master:
+                LOG.warning(
+                    "GST is treating %s as a master meta, but from the YAML it is expected to "
+                    "be a submeta of %s.",
+                    gst_meta_info.task_name,
+                    expected_master,
+                )
+            if not expected_master and actual_master:
+                LOG.warning(
+                    "GST is treating %s as a submeta of %s, but from the YAML it is expected "
+                    "to be a master meta.",
+                    gst_meta_info.task_name,
+                    actual_master,
+                )
+
+            self.add_meta(ax_meta, gst_meta_info, task_meta, actual_master)
+
+    def add_meta(self, ax_meta, gst_meta_info, task_meta, master_meta_name: Optional[str]) -> None:
+        instance = self._create_meta_instance(gst_meta_info.task_name, task_meta)
+        subframe_index = (
+            gst_meta_info.subframe_index if gst_meta_info.subframe_index is not None else -1
+        )
+        ax_meta.add_instance(
+            gst_meta_info.task_name,
+            instance,
+            master_meta_name or '',
+            subframe_index,
+        )
+
+        tracker_cls = getattr(self._meta_module, 'TrackerMeta', None)
+        if tracker_cls and isinstance(instance, tracker_cls):
+            self._attach_tracker_cascades(ax_meta, gst_meta_info, instance)
+
+    def _create_meta_instance(self, task_name: str, task_meta):
+        mm = self._meta_module
+
+        if normaliser := self._normalisers.get(type(task_meta)):
+            return normaliser(task_meta, task_name)
+
+        if isinstance(
+            task_meta,
+            (
+                mm.CocoBodyKeypointsMeta,
+                mm.FaceLandmarkLocalizationMeta,
+                mm.FaceLandmarkTopDownMeta,
+                mm.SemanticSegmentationMeta,
+                mm.LicensePlateMeta,
+                mm.ImageMeta,
+            ),
+        ):
+            return task_meta
+
+        meta_type = type(task_meta)
+        if meta_type not in self._seen_types:
+            self._seen_types.add(meta_type)
+            LOG.debug("Directly registering %s into ax_meta", meta_type)
+        return task_meta
+
+    def _register_default_normalisers(self) -> None:
+        mm = self._meta_module
+        self._normalisers = {
+            mm.ClassificationMeta: self._normalise_classification,
+            mm.ObjectDetectionMeta: self._normalise_detection,
+            mm.ObjectDetectionMetaOBB: self._normalise_detection,
+            mm.TrackerMeta: self._normalise_tracker,
+            mm.InstanceSegmentationMeta: self._normalise_instance_segmentation,
+            mm.PoseInsSegMeta: self._normalise_pose_instance_segmentation,
+        }
+
+    def _attach_tracker_cascades(self, ax_meta, tracker_info: GstMetaInfo, tracker_meta):
+        # Merge cascades: object_meta (aggregated) takes precedence over frame_object_meta (current frame)
+        cascades_by_task = {}
+        for source in (
+            getattr(tracker_meta, 'frame_object_meta', {}) or {},
+            getattr(tracker_meta, 'object_meta', {}) or {},
+        ):
+            for task_name, track_map in source.items():
+                if isinstance(track_map, dict):
+                    cascades_by_task.setdefault(task_name, {}).update(track_map)
+
+        for task_name, track_map in cascades_by_task.items():
+            for track_id, raw_meta in track_map.items():
+                if raw_meta is None:
+                    continue
+                try:
+                    subframe_index = int(track_id)
+                except (TypeError, ValueError):
+                    subframe_index = track_id
+
+                child_meta = self._create_meta_instance(task_name, raw_meta)
+                tracker_meta.add_secondary_frame_index(task_name, subframe_index)
+
+                child_meta.set_container_meta(ax_meta)
+                child_meta.set_master_meta(tracker_info.task_name, subframe_index)
+                tracker_meta.add_secondary_meta(task_name, child_meta)
+
+    def _normalise_classification(self, meta_obj, task_name: str):
+        labels = self._model_info.labels_for(task_name)
+        num_classes_hint = self._model_info.num_classes_for(task_name)
+        softmax = self._model_info.has_softmax(task_name)
+
+        updated_labels = meta_obj.labels if labels is None else labels
+        updated_num_classes = meta_obj.num_classes
+        if num_classes_hint:
+            updated_num_classes = num_classes_hint
+
+        extra_info = meta_obj.extra_info
+        if (
+            extra_info.get('softmax') == softmax
+            and labels is None
+            and num_classes_hint in (None, meta_obj.num_classes)
+        ):
+            return meta_obj
+
+        extra_info = meta_obj.extra_info
+        if extra_info.get('softmax') != softmax:
+            extra_info = dict(extra_info)
+            extra_info['softmax'] = softmax
+
+        mm = self._meta_module
+        clone = mm.ClassificationMeta(
+            labels=updated_labels,
+            num_classes=updated_num_classes,
+            extra_info=extra_info,
+        )
+        clone.transfer_data(meta_obj)
+        return clone
+
+    def _normalise_detection(self, meta_obj, task_name: str):
+        labels = self._model_info.labels_for(task_name)
+        if labels is None or getattr(meta_obj, 'labels', None) == labels:
+            return meta_obj
+        return dataclasses.replace(meta_obj, labels=labels)
+
+    def _normalise_tracker(self, meta_obj, task_name: str):
+        labels = self._model_info.labels_for(task_name)
+        if (
+            getattr(meta_obj, 'labels', None) == labels
+            and meta_obj.labels_dict == self._model_info.labels_dict
+        ):
+            return meta_obj
+        return dataclasses.replace(
+            meta_obj,
+            labels=labels,
+            labels_dict=self._model_info.labels_dict,
+        )
+
+    def _normalise_instance_segmentation(self, meta_obj, task_name: str):
+        mm = self._meta_module
+        labels = self._model_info.labels_for(task_name)
+        if labels is None or labels == getattr(meta_obj, 'labels', None):
+            return meta_obj
+        clone = mm.InstanceSegmentationMeta(labels=labels)
+        clone.transfer_data(meta_obj)
+        return clone
+
+    def _normalise_pose_instance_segmentation(self, meta_obj, task_name: str):
+        mm = self._meta_module
+        labels = self._model_info.labels_for(task_name)
+        if labels is None or labels == getattr(meta_obj, 'labels', None):
+            return meta_obj
+        clone = mm.PoseInsSegMeta(labels=labels)
+        clone.transfer_data(meta_obj)
+        return clone
 
 
 def decode_landmarks(data):
@@ -34,117 +264,6 @@ def decode_landmarks(data):
     landmarks = data.get("facial_landmarks", b"")
     boxes3d = np.frombuffer(landmarks, dtype=np.float32).reshape(-1, num_landmarks, point_size)
     return boxes3d
-
-
-def decode_tracking(data):
-    meta_module = importlib.import_module('axelera.app.meta')
-    tracking_history = {}
-    class_ids = []
-    frame_object_meta: dict[str, dict[int, AxTaskMeta]] = {}
-    object_meta: dict[str, dict[int, AxTaskMeta]] = {}
-    objmeta_key_to_string = dict()
-    for key in data.keys():
-        if key == 'objmeta_keys':
-            key_data = data[key]
-            key_data_size = len(key_data)
-            while key_data_size > 0:
-                objmeta_key = np.frombuffer(key_data[:1], dtype=np.uint8)[0]
-                objmeta_string_size = int(np.frombuffer(key_data[1:9], dtype=np.uint64)[0])
-                objmeta_string = key_data[9 : 9 + objmeta_string_size].decode("utf-8")
-                objmeta_key_to_string[objmeta_key] = objmeta_string
-                key_data = key_data[9 + objmeta_string_size :]
-                key_data_size = len(key_data)
-    for key in data.keys():
-        if key.startswith('track_'):
-            track_id = int(key[6:])
-            track_data = data[key]
-            class_ids.append(np.frombuffer(track_data[:4], dtype=np.int32)[0])
-            num_boxes = np.frombuffer(track_data[4:8], dtype=np.int32)[0]
-            bbox_data = {"bbox": track_data[8 : num_boxes * 16 + 8]}
-            tracking_history[track_id] = decode_bbox(bbox_data)
-            ind_track_data = num_boxes * 16 + 8
-            ind_track_data = process_object_metadata(
-                track_id,
-                meta_module,
-                frame_object_meta,
-                objmeta_key_to_string,
-                track_data,
-                ind_track_data,
-            )
-            ind_track_data = process_object_metadata(
-                track_id,
-                meta_module,
-                object_meta,
-                objmeta_key_to_string,
-                track_data,
-                ind_track_data,
-            )
-
-    return TrackerMeta(
-        tracking_history=tracking_history,
-        class_ids=class_ids,
-        object_meta=object_meta,
-        frame_object_meta=frame_object_meta,
-    )
-
-
-def process_object_metadata(
-    track_id, meta_module, object_meta, objmeta_key_to_string, track_data, ind_track_data
-):
-    results_objmeta: dict[GstMetaInfo, Any] = {}
-    num_objmeta = np.frombuffer(track_data[ind_track_data : ind_track_data + 4], dtype=np.int32)[0]
-    ind_track_data += 4
-    for i in range(num_objmeta):
-        objmeta_key = np.frombuffer(
-            track_data[ind_track_data : ind_track_data + 1], dtype=np.uint8
-        )[0]
-        ind_track_data += 1
-        objmeta_string = objmeta_key_to_string.get(objmeta_key, f"key_{objmeta_key}")
-        metavec_size = np.frombuffer(
-            track_data[ind_track_data : ind_track_data + 4], dtype=np.int32
-        )[0]
-        ind_track_data += 4
-        for j in range(metavec_size):
-            objmeta_type_stringsize = np.frombuffer(
-                track_data[ind_track_data : ind_track_data + 4], dtype=np.int32
-            )[0]
-            ind_track_data += 4
-            objmeta_type_string = track_data[
-                ind_track_data : ind_track_data + objmeta_type_stringsize
-            ].decode("utf-8")
-            ind_track_data += objmeta_type_stringsize
-            objmeta_subtype_stringsize = np.frombuffer(
-                track_data[ind_track_data : ind_track_data + 4], dtype=np.int32
-            )[0]
-            ind_track_data += 4
-            objmeta_subtype_string = track_data[
-                ind_track_data : ind_track_data + objmeta_subtype_stringsize
-            ].decode("utf-8")
-            ind_track_data += objmeta_subtype_stringsize
-            objmeta_size = np.frombuffer(
-                track_data[ind_track_data : ind_track_data + 4], dtype=np.int32
-            )[0]
-            ind_track_data += 4
-            objmeta_data = track_data[ind_track_data : ind_track_data + objmeta_size]
-            ind_track_data += objmeta_size
-            if objmeta_size == 0:
-                continue
-
-            results_key = GstMetaInfo(objmeta_string, objmeta_type_string)
-            entry = results_objmeta.get(results_key, {})
-            if objmeta_subtype_string in entry:
-                objmeta_data = entry[objmeta_subtype_string] + objmeta_data
-            entry[objmeta_subtype_string] = objmeta_data
-            results_objmeta[results_key] = entry
-
-    for results_key, results_data in results_objmeta.items():
-        meta_type = results_key[1]
-        meta_class = getattr(meta_module, meta_type)
-        object_meta.setdefault(results_key[0], {}).update(
-            {track_id: meta_class.decode(results_data)}
-        )
-
-    return ind_track_data
 
 
 def _decode_single(data, field, dtype):
@@ -230,7 +349,12 @@ class GstMetaInfo:
     def __eq__(self, other):
         if not isinstance(other, GstMetaInfo):
             return NotImplemented
-        return (self.task_name, self.meta_type, self.subframe_index, self.master,) == (
+        return (
+            self.task_name,
+            self.meta_type,
+            self.subframe_index,
+            self.master,
+        ) == (
             other.task_name,
             other.meta_type,
             other.subframe_index,
@@ -259,7 +383,6 @@ class GstDecoder:
         self.decoders = {
             "bbox": decode_bbox,
             "landmarks": decode_landmarks,
-            "tracking_meta": decode_tracking,
             "stream_meta": decode_stream_meta,
         }
         self.meta_module = importlib.import_module('axelera.app.meta')
@@ -298,8 +421,8 @@ class GstDecoder:
                     for k in range(submodel_coll.subframe_number):
                         submeta = submodel_coll.meta_indices[k]
                         subframe_index = submeta.subframe_index
-                        for l in range(submeta.num_extern_meta):
-                            meta_entry = submeta.meta_vector[l]
+                        for m in range(submeta.num_extern_meta):
+                            meta_entry = submeta.meta_vector[m]
                             meta_type = str(meta_entry.type, encoding="utf8")
                             subtype = str(meta_entry.subtype, encoding="utf8")
                             key = GstMetaInfo(

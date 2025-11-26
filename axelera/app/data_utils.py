@@ -362,7 +362,7 @@ def _check_dataset_status(
 
     contains = [p.name for p in dataset_root.iterdir() if p.name not in ('.DS_Store', '__MACOSX')]
     if not contains:
-        return DatasetStatus.INCOMPLETE, f"Dataset directory is empty."
+        return DatasetStatus.INCOMPLETE, "Dataset directory is empty."
     else:
         return (
             DatasetStatus.INCOMPLETE,
@@ -515,15 +515,15 @@ def check_dataset_directory(dataset_root: Path) -> Tuple[bool, str]:
         dataset_root = resolved_path  # Use resolved path for further checks
 
     if not dataset_root.exists():
-        text.append(f"\tdoes not exist")
+        text.append("\tdoes not exist")
         return False, '\n'.join(text)
 
     if not dataset_root.is_dir():
-        text.append(f"\tis not a directory")
+        text.append("\tis not a directory")
         return False, '\n'.join(text)
     else:
         if not any(dataset_root.iterdir()):
-            text.append(f"\tis an empty directory")
+            text.append("\tis an empty directory")
             return False, '\n'.join(text)
     return True, '\n'.join(text)
 

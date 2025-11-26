@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import enum
+import os
 from pathlib import Path
 import re
 import subprocess
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 try:
     from gi.repository import GObject, Gst
-except ModuleNotFoundError as e:
+except ModuleNotFoundError:
     pass
 
 from .. import logging_utils
@@ -40,6 +41,38 @@ list_src_pads = _iter_to_list('iterate_src_pads')
 list_sink_pads = _iter_to_list('iterate_sink_pads')
 list_elements = _iter_to_list('iterate_elements')
 list_all_by_element_factory_name = _iter_to_list('iterate_all_by_element_factory_name')
+
+
+def _prefer_nvidia_decoder(decodebin, pad, caps, factories):
+    """
+    Prioritize NVIDIA hardware decoders when hardware decoding is allowed.
+
+    Args:
+        decodebin: The decodebin element
+        pad: The pad that will be linked to the decoder
+        caps: The capabilities for the decoder
+        factories: The list of factory elements to sort
+
+    Returns:
+        The sorted list with NVIDIA decoders at the beginning
+        or None if the default sorting should be used.
+    """
+    if not factories:
+        return factories
+
+    nvidia_decoders = []
+    other_decoders = []
+
+    for plugin in factories:
+        plugin_name = plugin.get_name()
+        if plugin_name.startswith('nv'):
+            nvidia_decoders.append(plugin)
+        else:
+            other_decoders.append(plugin)
+
+    if nvidia_decoders:
+        return nvidia_decoders + other_decoders
+    return None
 
 
 class InitState(enum.IntEnum):
@@ -269,6 +302,14 @@ def _create_element(element: dict[str, Any]) -> Gst.Element:
     LOG.trace(f"Creating {name} {instance}({sprops})")
     for k, v in props:
         _set_element_or_pad_properties(gst_element, k, v)
+
+    # Special handling for decodebin elements to prioritize NVIDIA decoders
+    if instance == "decodebin":
+        # Check if hardware decoding is allowed (force-sw-decoders is not True)
+        force_sw = str(element.get('force-sw-decoders', False)).lower() == 'true'
+        if not force_sw:
+            gst_element.connect("autoplug-sort", _prefer_nvidia_decoder)
+
     return gst_element
 
 
@@ -354,17 +395,80 @@ def add_input(yaml_elements: list[dict], pipeline: Gst.Pipeline) -> str:
     return peer.get_name()
 
 
-def get_agg_pads(pipeline: Gst.Pipeline):
-    agg = pipeline.get_by_name(AGGREGATE_NAME)
-    return [pad.get_name() for pad in list_sink_pads(agg)]
+def _axinplace_source_id(element: Gst.Element) -> int:
+    """Get source_id from axinplace element, or -1 if not found."""
+    try:
+        options = element.get_property('options')
+    except TypeError:
+        return -1
+    if options and isinstance(options, str):
+        if match := re.search(r'stream_id:(\d+)', options):
+            return int(match.group(1))
+    return -1
 
 
-def build_pipeline(yaml_elements: list[dict]):
+def _iter_upstream(elem: Gst.Element) -> Iterable[Gst.Element]:
+    """Iterate upstream, one parent at a time, supports only elements with a single sink."""
+    while elem := list_sink_pads(elem)[0].get_peer().get_parent_element():
+        yield elem
+
+
+def _iter_downstream(elem: Gst.Element) -> Iterable[Gst.Element]:
+    """Iterate downstream, one child at a time, supports only elements with a single src."""
+    while elem := list_src_pads(elem)[0].get_peer().get_parent_element():
+        yield elem
+
+
+def get_stream_id_from_appsrc(appsrc: Gst.Element) -> int:
+    """Get stream_id from the first axinplace element downstream of the appsrc, or -1 if not found."""
+    for down in _iter_downstream(appsrc):
+        if (sid := _axinplace_source_id(down)) >= 0:
+            return sid
+    return -1
+
+
+def _find_agg_pad_source_id(pad: Gst.Pad) -> int:
+    for up in _iter_upstream(pad.get_peer().get_parent_element()):
+        if (sid := _axinplace_source_id(up)) >= 0:
+            return sid
+
+
+def find_source_id_by_src_elem(pipeline: Gst.Pipeline, src: Gst.Element) -> int:
+    '''Search the aggregate element pads to find the source_id for the given source element.'''
+    aggregate = pipeline.get_by_name(AGGREGATE_NAME)
+    for n, pad in enumerate(list_sink_pads(aggregate)):
+        sid = None
+        if peer := pad.get_peer():
+            for up in _iter_upstream(peer.get_parent_element()):
+                if sid is None and (maybe_sid := _axinplace_source_id(up)) >= 0:
+                    sid = maybe_sid
+                if up is src:
+                    return sid if sid is not None else n
+    return -1
+
+
+def get_agg_pads(pipeline: Gst.Pipeline) -> dict[int, str]:
+    '''Get a dict of source_id to pad name for the aggregate element in the pipeline.'''
+    agg_pads = list_sink_pads(pipeline.get_by_name(AGGREGATE_NAME))
+    ids = {_find_agg_pad_source_id(pad): pad.get_name() for pad in agg_pads}
+    if any(sid is None for sid in ids):
+        # this should never happen with one of our pipelines, but just in case
+        # a low level pipeline is used without axinplace/source_id elements
+        LOG.warning("Failed to find source_id for one or more aggregate pads")
+    ids = {n if sid is None else sid: name for n, (sid, name) in enumerate(ids.items())}
+    LOG.debug("Found source_ids to pads mapping: %s", ids)
+    return ids
+
+
+def build_pipeline(yaml_elements: list[dict], loop=False):
     if not Gst.is_initialized():
         Gst.init(None)
 
     gst_pipeline = Gst.Pipeline()
     _add_elements_to_pipeline(yaml_elements, gst_pipeline)
+    gst_pipeline.loop = loop
+    if agg := gst_pipeline.get_by_name(AGGREGATE_NAME):
+        agg.set_property("loop", loop)
     return gst_pipeline
 
 
@@ -379,36 +483,33 @@ def _dump_pipeline_graph(pipeline: Gst.Pipeline, pipeline_dot_file: Path) -> Pat
     return out
 
 
-def on_bus_message(message: Gst.Message, pipeline: Gst.Pipeline, logging_dir: Path = Path.cwd()):
-    '''Callback function for watching the GST pipeline. Dump the pipeline graph to a .dot file
+def log_state_changes(message: Gst.Message, pipeline: Gst.Pipeline, logging_dir: Path) -> None:
+    '''When a pipeline state changes, trace the pipeline graph to a .dot file
     and convert it to a .svg file once the stream starts playing.'''
-    mType = message.type
-    if mType == Gst.MessageType.EOS:
-        LOG.debug("End of stream")
-        exit(0)
-    elif mType == Gst.MessageType.ERROR:
-        err, debug = message.parse_error()
-        LOG.error('%s: %s\n -> %s', message.src.get_name(), err.message, debug)
-        try:
-            pipeline.set_state(Gst.State.NULL)
-        except Exception as e:
-            # we really don't want to propagate any other error here
-            LOG.error("Failed to set pipeline NULL state: %s", str(e))
-        exit(1)
-    elif mType == Gst.MessageType.WARNING:
-        err, debug = message.parse_warning()
-        LOG.warning('%s: %s\n (%s)', message.src.get_name(), err.message, debug)
-    elif mType == Gst.MessageType.STATE_CHANGED:
-        old, new, pending = message.parse_state_changed()
-        if LOG.isEnabledFor(logging_utils.TRACE) and pipeline == message.src:
-            pipeline_dot_file = (
-                logging_dir
-                / f"pipeline_graph_{Gst.Element.state_get_name(old)}_to_{Gst.Element.state_get_name(new)}.dot"
-            )
-            graph = _dump_pipeline_graph(pipeline, pipeline_dot_file)
-            LOG.trace(f"Pipeline state change: {pipeline.get_name()}, written graph to {graph}")
-    elif mType == Gst.MessageType.STREAM_START and LOG.isEnabledFor(logging_utils.TRACE):
-        pipeline_dot_file = logging_dir / "pipeline_graph_STREAM_START.dot"
-        graph = _dump_pipeline_graph(pipeline, pipeline_dot_file)
-        LOG.trace(f"Pipeline playing: {pipeline.get_name()}, written graph to {graph}")
-    return True
+    mtype = message.type
+    mname = Gst.MessageType.get_name(mtype)
+    sname = message.src.get_name()
+    written = ''
+    dot_file: Path | None = None
+    level = logging_utils.TRACE
+    extra = ''
+    if mtype == Gst.MessageType.STATE_CHANGED:
+        old, new, _ = message.parse_state_changed()
+        sold, snew = [Gst.Element.state_get_name(x).lower() for x in [old, new]]
+        extra = f" ({sold} to {snew})"
+        if pipeline == message.src:
+            level = logging_utils.DEBUG
+            dot_file = logging_dir / f"{sname}_{sold}_to_{snew}.dot"
+
+    elif mtype == Gst.MessageType.STREAM_START:
+        dot_file = logging_dir / f"{sname}_stream_start.dot"
+        level = logging_utils.DEBUG
+
+    elif mtype == Gst.MessageType.STREAM_STATUS:
+        return
+
+    written = ''
+    if dot_file is not None and LOG.isEnabledFor(logging_utils.TRACE):
+        graph = _dump_pipeline_graph(pipeline, dot_file)
+        written = f", written graph to {os.path.relpath(str(graph))}"
+    LOG.log(level, f"{sname}: {mname}{extra}{written}")

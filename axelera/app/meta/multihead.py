@@ -27,6 +27,7 @@ LOG = logging_utils.getLogger(__name__)
 _red = (255, 0, 0, 255)
 
 Wh = tuple[int, int]
+XyXy = tuple[int, int, int, int]
 
 
 def _translate_image_space_rect(bbox: XyXy, input_roi: XyXy, mask_size=(160, 160)) -> XyXy:
@@ -214,11 +215,8 @@ class PoseInsSegMeta(AxTaskMeta):
             self.task_render_config.show_labels,
             self.task_render_config.show_annotations,
         )
-        for i, box in enumerate(self.boxes):
-            cls = self.class_ids[i]
-
+        for i, cls in enumerate(self.class_ids):
             color = plot_utils.get_color(int(cls), alpha=125)
-            color_bb = plot_utils.get_color(int(cls))
             for x, y, v in self.kpts[i, :, :]:
                 if v > 0.5:
                     draw.keypoint((x, y), _red, 6)

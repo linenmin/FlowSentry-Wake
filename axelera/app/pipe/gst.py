@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import collections
-import itertools
 import os
 from pathlib import Path
 import pprint
@@ -16,51 +15,25 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, List
 import warnings
 
 try:
-    from gi.repository import GObject, Gst, GstApp, GstVideo
-except ModuleNotFoundError as e:
+    from gi.repository import GObject, Gst, GstApp, GstVideo  # noqa: F401
+except ModuleNotFoundError:
     pass
 
-import numpy as np
 import yaml
 
 from axelera import types
 
-from . import base, frame_data, graph, gst_helper
+from . import base, graph, gst_helper, io
 from .. import config, gst_builder, logging_utils, meta, operators, utils
+from .frame_data import FrameEvent, FrameResult
 from .gst_helper import AGGREGATE_NAME
 
 if TYPE_CHECKING:
-    from . import io
     from .. import config, network, pipeline
 
+    GstTaskMeta = dict[str, Any]
+
 LOG = logging_utils.getLogger(__name__)
-
-
-def _at_eos(pipeline, appsinks, logging_dir: Path):
-    bus = pipeline.get_bus()
-    continue_stream = True
-    while continue_stream:
-        if appsinks:
-            msg = bus.pop()
-        else:
-            msg = bus.timed_pop_filtered(Gst.MSECOND, Gst.MessageType.EOS)
-
-        if msg is None:
-            return False
-        continue_stream = gst_helper.on_bus_message(msg, pipeline, logging_dir)
-
-    return True
-
-
-def _pre_roll_pipeline(pipeline, appsinks, logging_dir):
-    # we send the first frame through the pipeline to ensure all elemnets are
-    # fully constructed, this means errors in the pipeline are detected early
-    while not _at_eos(pipeline, appsinks, logging_dir):
-        for stream_id, sink in enumerate(appsinks):
-            sample = sink.try_pull_sample(Gst.MSECOND)
-            if sample:
-                LOG.debug("Received first frame from gstreamer")
-                return stream_id, sample
 
 
 class GstStream:
@@ -72,57 +45,41 @@ class GstStream:
 
     def __init__(
         self,
-        pipeline,
-        logging_dir,
-        hardware_caps,
-        src=None,
-        loader=None,
-        data_formatter=None,
-        is_pair_validation=False,
+        pipeline: Gst.Pipeline,
+        logging_dir: Path,
+        hardware_caps: config.HardwareCaps,
+        frame_generators: dict[int, io.FrameInputGenerator],
     ):
-        '''
-        pipeline - GStreamer pipeline to run
-        logging_dir - directory to write pipeline debug files (dot/png/yaml) to
-        src - name of the app source to feed the pipeline
-        loader - callable that produces the input
-
-        If sink is None, the pipeline runs without querying for inference
-        metadata.
-        if src is not None, the pipeline is fed from the buffer returned
-        by the loader callable.
-        if src is not None then loader must also be not None
-        '''
         self.pipeline = pipeline
+        self.agg_pads: dict[int, str] = {}
         self.logging_dir = logging_dir
-        self.mqueue = None  # exist only if with measurement
-        self._feeding_thread = None
-        self.is_pair_validation = is_pair_validation
-        if src is not None:
-            loader_iterator = iter(loader)
-            self.initialize_src(self.pipeline, src, loader_iterator, data_formatter)
-            # container for measurement data
-            self.mqueue = queue.Queue()
-        self.pushed_frames, self.received_frames = 0, 0
-        self.stream_meta_key = meta.GstMetaInfo('stream_id', 'stream_meta')
+        self._stop_event = threading.Event()
+        self._handlers: dict[int, _AppSrcHandler] = {}
 
+        for appsrc in gst_helper.list_all_by_element_factory_name(pipeline, 'appsrc'):
+            LOG.debug(f"Found appsrc element {appsrc.name} in pipeline")
+            sid = gst_helper.get_stream_id_from_appsrc(appsrc)
+            loader = iter(frame_generators[sid])
+            self._handlers[sid] = _AppSrcHandler(appsrc, loader, self._stop_event)
+
+        self.stream_meta_key = meta.GstMetaInfo('stream_id', 'stream_meta')
+        self.agg_pads = gst_helper.get_agg_pads(self.pipeline)
         self.hardware_caps = hardware_caps
         self._appsinks = gst_helper.list_all_by_element_factory_name(pipeline, 'appsink')
         self.decoder = meta.GstDecoder()
-        ret = self.pipeline.set_state(Gst.State.READY)
-        if ret == Gst.StateChangeReturn.FAILURE:
-            raise RuntimeError("Unable to set the pipeline to the ready state")
+        self._removed_sources: set[str] = set()
+        self._pending_events: collections.deque[FrameEvent] = collections.deque()
+        gst_helper.set_state_and_wait(self.pipeline, Gst.State.READY)
 
         try:
             ret = self.pipeline.set_state(Gst.State.PLAYING)
             if ret == Gst.StateChangeReturn.FAILURE:
                 raise RuntimeError("Unable to set the pipeline to the playing state")
 
-            # Uncomment to debug if a queue overrun/underrun occurs
-            # self.connect_queue_overrun_signals(pipeline)
-            if self._feeding_thread:
-                self._feeding_thread.start()
+            for t in self._handlers.values():
+                t.start()
 
-            self._pre_sample = _pre_roll_pipeline(self.pipeline, self._appsinks, self.logging_dir)
+            self._pre_sample = self._pre_roll_pipeline()
         except BaseException as e:
             # BaseException because we want to include KeyboardException here. You see this happen
             # when you press Ctrl-C during pipeline setup if we have got the pipeline into READY
@@ -131,38 +88,89 @@ class GstStream:
             self.stop()
             raise
 
-    def connect_queue_overrun_signals(self, pipeline):
-        # Function to be called recursively to search for queue elements
-        def find_queues(element):
-            if isinstance(element, Gst.Bin):  # If the element is a container, look inside
-                for child in element.iterate_elements():
-                    find_queues(child)
-            elif element.get_factory() and element.get_factory().get_name() == 'queue':
-                # If the element is a queue, connect to its 'overrun' and 'underrun' signal
-                element.connect("overrun", self.on_queue_overrun)
-                element.connect("underrun", self.on_queue_underrun)
+    def is_pair_validation(self, sid: int) -> bool:
+        handler = self._handlers.get(sid)
+        return bool(handler) and handler.is_pair_validation
 
-        find_queues(pipeline)
+    def _at_eos(self):
+        if not self.pipeline:
+            return True
+        bus = self.pipeline.get_bus()
+        continue_stream = True
+        while continue_stream:
+            if (msg := bus.pop()) is None:
+                return False
+            continue_stream = self._on_bus_message(msg)
+        return not continue_stream
 
-    def on_queue_underrun(self, queue):
-        LOG.trace("Queue '{}' has underrun (it's nearly empty)!".format(queue.get_name()))
+    def _on_bus_message(self, message: Gst.Message) -> bool:
+        '''Callback function for watching the GST pipeline. Dump the pipeline graph to a .dot file
+        and convert it to a .svg file once the stream starts playing.'''
+        STOP, CONTINUE = False, True
+        mtype, src = message.type, message.src
+        src_name = src.get_name() if src else 'unknown'
+        if mtype == Gst.MessageType.EOS:
+            LOG.debug(f"End of stream ({src_name})")
+            return STOP
+        elif mtype == Gst.MessageType.ERROR:
+            err, debug = message.parse_error()
 
-    def on_queue_overrun(self, queue):
-        LOG.warning("Queue '{}' has overrun!".format(queue.get_name()))
+            LOG.error('%s: BUS: %s\n -> %s', src_name, err.message, debug)
+            if src_name in self._removed_sources:
+                LOG.debug(f"Error source {src_name}, has already been removed")
+                return CONTINUE
+            sid = gst_helper.find_source_id_by_src_elem(self.pipeline, src)
+            if sid >= 0:
+                message = f"Error occurred in source {src_name}: {err.message}"
+                self._pending_events.append(FrameEvent.from_source_error(sid, message))
+                if len(self.agg_pads) > 1:
+                    LOG.debug(f"Error source is {sid=}, removing source from pipeline")
+                    if (agg_pad_name := self.agg_pads.pop(sid, None)) is not None:
+                        gst_helper.remove_source(self.pipeline, agg_pad_name)
+                    self._removed_sources.add(src_name)
+                    return CONTINUE
+                LOG.warning(f"Error source is {sid=}, all streams exhausted")
+                message = f"Error occurred in source {sid} {src_name} {err.message}"
+                self._pending_events.append(FrameEvent.from_end_of_pipeline(sid, message))
+            elif self._removed_sources:
+                # we started, and at least one source failed and is being/has been removed
+                # so probably this is vestigial error from the removed source, so keep going
+                LOG.warning("Unable to identify error source, but recently removed source")
+                return CONTINUE
+            else:
+                LOG.warning("Unable to identify error source, stopping pipeline")
+            try:
+                gst_helper.set_state_and_wait(self.pipeline, Gst.State.NULL)
+            except Exception as e:
+                # we really don't want to propagate any other error here
+                LOG.error("Failed to set pipeline NULL state: %s", str(e))
+            return STOP
+        elif mtype == Gst.MessageType.WARNING:
+            err, debug = message.parse_warning()
+            LOG.warning('%s: BUS: %s\n (%s)', src_name, err.message, debug)
+            return CONTINUE
+        else:
+            gst_helper.log_state_changes(message, self.pipeline, self.logging_dir)
+            return CONTINUE
 
-    def at_eos(self):
-        if self.pipeline:
-            return _at_eos(self.pipeline, self._appsinks, self.logging_dir)
-        return True
+    def _pre_roll_pipeline(self):
+        # we send the first frame through the pipeline to ensure all elemnets are
+        # fully constructed, this means errors in the pipeline are detected early
+        while not self._at_eos():
+            for stream_id, sink in enumerate(self._appsinks):
+                sample = sink.try_pull_sample(Gst.MSECOND)
+                if sample:
+                    LOG.debug("Received first frame from gstreamer")
+                    return stream_id, sample
 
-    def frame_from_sample(self, sample, stream_id):
+    def _frame_from_sample(self, sample, stream_id) -> tuple[FrameEvent, GstTaskMeta]:
         now = time.time()
         buf = sample.get_buffer()
         image = types.Image.fromgst(sample)
 
         gst_task_meta = self.decoder.extract_all_meta(buf)
         # pop here so that the stream_id is not treated as a normal meta element
-        stream_data = gst_task_meta.pop(self.stream_meta_key, (stream_id, 0))
+        stream_data = gst_task_meta.pop(self.stream_meta_key, (stream_id, 0, 0))
         stream_id, ts, inferences = (
             stream_data
             if isinstance(stream_data, tuple)
@@ -174,147 +182,117 @@ class GstStream:
         )
 
         tensor = None  # TODO where do we get tensor from?
-        self.received_frames += 1
-        img_id, gt = self.mqueue.get() if self.mqueue else ('', None)
+        mq = self._handlers.get(stream_id)
+        img_id, gt = mq.get() if mq is not None else ('', None)
         ax_meta = meta.AxMeta(str(img_id), ground_truth=gt)
-        return (
-            frame_data.FrameResult(image, tensor, ax_meta, stream_id, ts, now, inferences),
-            gst_task_meta,
-        )
+        result = FrameResult(image, tensor, ax_meta, stream_id, ts, now, inferences)
+        return (FrameEvent.from_result(result), gst_task_meta)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterable[tuple[FrameEvent, dict[str, Any] | None]]:
         try:
             if self._pre_sample is not None:
                 stream_id, sample = self._pre_sample
                 self._pre_sample = None
                 if sample:
-                    yield self.frame_from_sample(sample, stream_id)
+                    yield self._frame_from_sample(sample, stream_id)
 
-            while not self.at_eos():
+            while not self._at_eos():
+                while self._pending_events:
+                    yield (self._pending_events.popleft(), None)
                 for stream_id, sink in enumerate(self._appsinks):
                     sample = sink.try_pull_sample(Gst.MSECOND)
                     if sample:
-                        yield self.frame_from_sample(sample, stream_id)
+                        yield self._frame_from_sample(sample, stream_id)
         except Exception as e:
             LOG.error(f"Error in GstStream iteration: {e!r}")
             self.stop()
-        finally:
+            raise
+        else:
+            LOG.debug("Finished iterating frames from GStreamer pipeline")
             self.stop()
 
     def stop(self):
-        if self.mqueue:
+        if self._handlers:
             self._stop_event.set()
-            self._feeding_thread.join()
+            for t in self._handlers.values():
+                t.join()
             self._stop_event.clear()
-        if self.pipeline:
-            self.pipeline.send_event(Gst.Event.new_eos())
-            self.pipeline.set_state(Gst.State.NULL)
+        if pipeline := self.pipeline:
             self.pipeline = None
+            self.agg_pads = {}
+            self._appsinks = None
+            LOG.trace("GstStream.stop: pipeline sending event")
+            # pipeline.send_event(Gst.Event.new_eos())
+            LOG.trace("GstStream.stop: pipeline event sent")
+            gst_helper.set_state_and_wait(pipeline, Gst.State.NULL)
+            del pipeline
 
-            if (
-                (not self.mqueue)
-                and self.pushed_frames
-                and (self.pushed_frames != self.received_frames)
-            ):
-                LOG.error(
-                    f"Pushed {self.pushed_frames} frames, but received {self.received_frames} frames."
-                )
-            elif self._appsinks:
-                LOG.trace(f"Finished processing {self.received_frames} frames")
 
-    def initialize_src(self, pipeline, name, loader, data_formatter):
+class _AppSrcHandler:
+    def __init__(self, appsrc, frame_generator, stop_event):
+        self._mq = queue.Queue()
+        self._enough_data = False
+        appsrc.connect("need-data", self._on_need_data)
+        appsrc.connect("enough-data", self._on_enough_data)
+        self._mq = queue.Queue()
+        self._thr = utils.ExceptionThread(target=self._feed_data, args=(appsrc, frame_generator))
+        self._stop_event = stop_event
+        self._pair_validation = None  # until we know otherwise
+
+    def get(self):
+        return self._mq.get()
+
+    def start(self):
+        self._thr.start()
+
+    def join(self):
+        self._thr.join()
+
+    @property
+    def is_pair_validation(self) -> bool:
+        return bool(self._pair_validation)
+
+    def _on_need_data(self, appsrc, length):
+        self._enough_data = False
+
+    def _on_enough_data(self, appsrc):
+        self._enough_data = True
+
+    def _feed_data(self, appsrc, frame_generator):
         '''
-        If the pipeline contains an appsrc element with the given name,
-        connect the need-data signal to the loader callable.
-        '''
-        appsrc = pipeline.get_by_name(name)
-        if not appsrc:
-            raise ValueError(f"Unable to find appsrc element {name} in pipeline")
-        if loader is None:
-            raise ValueError("loader must be specified if src is specified")
-
-        appsrc.connect("need-data", self._need_data)
-        appsrc.connect("enough-data", self._enough_data)
-        self.enough_data_signal = False
-
-        queue = pipeline.get_by_name("queue_axelera_dataset")
-        max_size_buffers = queue.get_property("max-size-buffers")
-        max_size_bytes = queue.get_property("max-size-bytes")
-        max_size_time = queue.get_property("max-size-time")
-        LOG.trace(
-            f"queue_axelera_dataset max size: {max_size_buffers} buffers, {max_size_bytes} bytes, {max_size_time} time"
-        )
-
-        self._stop_event = threading.Event()
-        self._feeding_thread = utils.ExceptionThread(
-            target=self._feed_data, args=(appsrc, loader, data_formatter)
-        )
-
-    def check_appsrc_queue_level(self, queue, show_info):
-        '''Check the queue level and return delay seconds if it is nearing/over its capacity'''
-        current_level_buffers = queue.get_property("current-level-buffers")
-        current_level_bytes = queue.get_property("current-level-bytes")
-        current_level_time = queue.get_property("current-level-time")
-
-        max_size_buffers = queue.get_property("max-size-buffers")
-        max_size_bytes = queue.get_property("max-size-bytes")
-        max_size_time = queue.get_property("max-size-time")
-
-        loading_buffer = current_level_buffers / max_size_buffers if max_size_buffers else 0
-        loading_bytes = current_level_bytes / max_size_bytes if max_size_bytes else 0
-        loading_time = current_level_time / max_size_time if max_size_time else 0
-        max_loading = max(loading_buffer, loading_bytes, loading_time)
-        if show_info:
-            LOG.debug(
-                f"Queue overrun, loading {loading_buffer*100:.2f}% buffers, "
-                f"{loading_bytes*100:.2f}% bytes, {loading_time*100:.2f}% time"
-            )
-        return max_loading
-
-    def _enough_data(self, appsrc):
-        self.enough_data_signal = True
-
-    def _need_data(self, appsrc, length):
-        self.enough_data_signal = False
-
-    def _feed_data(self, appsrc, loader, data_formatter):
-        '''
-        This is called when the appsrc needs more data
-        It calls the data loader to get the next image
-        and pushes it to the appsrc
-        If the loader returns None, None, None, it will
-        emit an end-of-stream signal
+        This is called in a thread, and waits for the appsrc to need more data
+        It calls the data src to get the next image and pushes it to the appsrc
+        If the loader raises StopIteration, it will emit an end-of-stream signal
         '''
         # we need this limitation for VAAPI+GPU pipeline which runs too fast at preprocessing
         delay = 0.001
-        while not self._stop_event.is_set():
-            if not self.enough_data_signal:
-                delay = self._feed_data_once(appsrc, loader, data_formatter)
-                delay = 0.001 if delay is None else 0.01
-            else:
-                time.sleep(delay)
+        try:
+            while not self._stop_event.is_set():
+                if not self._enough_data:
+                    delay = self._feed_data_once(appsrc, frame_generator)
+                    delay = 0.001 if delay is None else 0.01
+                else:
+                    time.sleep(delay)
+        except StopIteration:
+            LOG.debug("Frame generator raised StopIteration, stopping feeding thread")
+        except Exception as e:
+            LOG.error(f"Frame generator raised an error: {e}, stopping feeding thread")
+            LOG.error(traceback.format_exc())
+        appsrc.end_of_stream()
+        self._stop_event.set()
         LOG.trace("Feeding thread stopped")
 
-    def _feed_data_once(self, appsrc, loader, data_formatter):
-        try:
-            data = next(loader)
-        except StopIteration:
-            appsrc.end_of_stream()
-            return None
-        except Exception as e:
-            appsrc.end_of_stream()
-            self._stop_event.set()
-            LOG.error(traceback.format_exc())
-            return None
-        batched_data = data_formatter(data)
-        assert len(batched_data) == 1, "batch_size > 1 is not supported"
-        data = batched_data[0]
+    def _feed_data_once(self, appsrc, frame_generator):
+        data = next(frame_generator)
+        assert isinstance(data, types.FrameInput), f"Expected FrameInput, got {type(data)}"
         image_source = [data.img] if data.img else data.imgs
         if image_source is None:
             LOG.warning("No image data found in the batch")
             return None
 
-        if self.is_pair_validation and len(image_source) != 2:
+        if self._pair_validation is None:
+            self._pair_validation = data.imgs is not None
+        if self._pair_validation and len(image_source) != 2:
             LOG.warning(f"Pair validation requires 2 images, got {len(image_source)}")
         for image in image_source:
             w, h = image.size
@@ -347,9 +325,7 @@ class GstStream:
                         buffer_offset, frame[frame_offset : frame_offset + w * num_channels]
                     )
             appsrc.push_buffer(buffer)
-            self.pushed_frames += 1
-            self.mqueue.put((data.img_id, data.ground_truth))
-            batched_data, buffer, frame = None, None, None
+            self._mq.put((data.img_id, data.ground_truth))
         return data
 
 
@@ -495,9 +471,11 @@ def _build_pipeline(
     pipein: io.PipeInput,
     hw_caps: config.HardwareCaps,
     tiling: config.TilingConfig,
+    which_cl: str,
+    low_latency: bool,
 ) -> list[dict[str, Any]]:
-    qsize = 1 if config.env.low_latency else 4
-    gst = gst_builder.builder(hw_caps, tiling, qsize)
+    qsize = 1 if low_latency else 4
+    gst = gst_builder.builder(hw_caps, tiling, qsize, which_cl)
     _build_input_pipeline(gst, nn.tasks[0], pipein)
 
     for taskn, task in enumerate(nn.tasks):
@@ -513,7 +491,7 @@ def _build_pipeline(
         if gst.tiling:
             gst.axtransform(
                 lib='libtransform_roicrop.so',
-                options=f'meta_key:axelera-tiles-internal',
+                options='meta_key:axelera-tiles-internal',
             )
 
         for op in task.preprocess:
@@ -573,22 +551,24 @@ def _softmax(nn, task_name):
 class GstPipe(base.Pipe):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._pipeline_cache = None
-        self._agg_pads: dict[int, str] = {}
         self._cached_ax_meta = None  # Cache the full ax_meta instance for pair validation
+        self._stream: GstStream | None = None
+        self._meta_assembler: meta.GstMetaAssembler | None = None
         self._gen_end2end_pipe()
-        self._seen = set()
 
     def _get_source_elements(self):
         """Find and return all source elements in the given pipeline."""
+        assert self._stream, "Pipeline not yet created, call init_loop() first"
         sources = []
-        for element in gst_helper.list_elements(self._pipeline_cache):
+        for element in gst_helper.list_elements(self._stream.pipeline):
             # Check if the element is a source (it has only source pads)
             if not gst_helper.list_sink_pads(element):
                 sources.append(element)
         return sources
 
     def _get_pausable_elements(self):
+        if self._stream is None:
+            raise RuntimeError("Pipeline not yet created")
         # if we have any live srcs we will pause them first, and then if we have aby non-live srcs
         # we also pause/play the whole pipeline
         # [for now we assume that only rtsp srcs are live, we should proably check
@@ -596,7 +576,7 @@ class GstPipe(base.Pipe):
         srcs = [src for src in self._get_source_elements()]
         rtsp = [src for src in srcs if src.get_name().startswith("rtsp")]
         if len(rtsp) != len(srcs):
-            srcs.append(self._pipeline_cache)
+            srcs.append(self._stream.pipeline)
         return srcs
 
     def pause(self):
@@ -609,25 +589,30 @@ class GstPipe(base.Pipe):
 
     def add_source(self, pipe_newinput: io.PipeInput):
         qsize = 1 if config.env.low_latency else 4
-        gst = gst_builder.builder(self.hardware_caps, self.config.tiling, qsize)
-        _build_input_pipeline(gst, self.nn.tasks, pipe_newinput)
-        self._agg_pads[pipe_newinput.source_id] = gst_helper.add_input(gst, self._pipeline_cache)
+        gst = gst_builder.builder(
+            self.hardware_caps, self.config.tiling, qsize, self.config.which_cl
+        )
+        _build_input_pipeline(gst, self.nn.tasks[0], pipe_newinput)
+        self._stream.agg_pads[pipe_newinput.source_id] = gst_helper.add_input(
+            gst, self._stream.pipeline
+        )
 
     def remove_source(self, source_id: int) -> None:
-        if self._pipeline_cache == None:
+        if self._stream is None:
             raise RuntimeError("Pipeline not yet created")
-        if source_id not in self._agg_pads:
+        if len(self._stream.agg_pads) == 1:
+            LOG.warning("Can't remove last stream, stop pipeline instead")
+            return
+        try:
+            agg_pad_name = self._stream.agg_pads.pop(source_id)
+        except KeyError:
             LOG.warning(f"Source slot {source_id} not occupied")
             return
-        if len(self._agg_pads) == 1:
-            LOG.warning(f"Can't remove last stream, stop pipeline instead")
-            return
-        agg_pad_name = self._agg_pads[source_id]
-        gst_helper.remove_source(self._pipeline_cache, agg_pad_name)
-        del self._agg_pads[source_id]
+        else:
+            gst_helper.remove_source(self._stream.pipeline, agg_pad_name)
 
     def _get_aggregator(self):
-        return self._pipeline_cache.get_by_name(AGGREGATE_NAME)
+        return self._stream.pipeline.get_by_name(AGGREGATE_NAME)
 
     def stream_select(self, streams: Iterable[int] | str) -> None:
         if isinstance(streams, str):
@@ -647,9 +632,7 @@ class GstPipe(base.Pipe):
         return [int(s) for s in streams.split(',') if s]
 
     def _gen_end2end_pipe(self):
-        self.batched_data_reformatter = self._pipein.batched_data_reformatter
-        if self.batched_data_reformatter:
-            self.frame_generator = self._pipein.frame_generator()
+        self._frame_generators = self._pipein.frame_generators()
 
         pipeline = None
         if self.config.ax_precompiled_gst:
@@ -658,7 +641,12 @@ class GstPipe(base.Pipe):
             )
         else:
             pipeline = _build_pipeline(
-                self.nn, self._pipein, self.hardware_caps, self.config.tiling
+                self.nn,
+                self._pipein,
+                self.hardware_caps,
+                self.config.tiling,
+                self.config.which_cl,
+                self.config.low_latency,
             )
             task_names = [t.model_info.name for t in self.nn.tasks]
             _save_axnet_files(pipeline, task_names, self.logging_dir)
@@ -669,7 +657,7 @@ class GstPipe(base.Pipe):
             os.environ['GST_PLUGIN_PATH'] = f"{extra}:{plugin_path}" if plugin_path else extra
 
         if self.config.ax_precompiled_gst and self.config.save_compiled_gst:
-            LOG.debug(f"Not writing GST representation because it was passed in")
+            LOG.debug("Not writing GST representation because it was passed in")
         elif out_yaml := self.config.save_compiled_gst:
             pipelines = [{'pipeline': pipeline}]
             out_yaml.write_text(yaml.dump(pipelines, sort_keys=False))
@@ -691,129 +679,31 @@ class GstPipe(base.Pipe):
                     bbox_task_name
                 ]
 
+        self._ensure_meta_assembler()
+
+    def _ensure_meta_assembler(self) -> None:
+        if self._meta_assembler is not None:
+            return
+        model_info_provider = meta.ModelInfoProvider(
+            labels_dict=getattr(self, 'model_info_labels_dict', {}),
+            num_classes_dict=getattr(self, 'model_info_num_classes_dict', {}),
+            softmax_lookup=lambda task_name: _softmax(self.nn, task_name),
+        )
+        self._meta_assembler = meta.GstMetaAssembler(model_info_provider)
+
     def init_loop(self) -> Callable[[], None]:
         if LOG.isEnabledFor(logging_utils.TRACE):
             env = {k: v for k, v in sorted(os.environ.items()) if k.startswith('AX')}
             senv = pprint.pformat(env, width=1, compact=True, depth=1)
-            LOG.trace(f"environment at gst pipeline construction:\n%s", senv)
+            LOG.trace("environment at gst pipeline construction:\n%s", senv)
 
         start = time.time()
         LOG.debug("Started building gst pipeline")
-        if self._pipeline_cache is None:
-            self._pipeline_cache = gst_helper.build_pipeline(self.pipeline)
-            agg_pads = gst_helper.get_agg_pads(self._pipeline_cache)
-            self._agg_pads = {n: pad for n, pad in enumerate(agg_pads)}
-        self.is_pair_validation = False
-
-        args = ()
-        if self.batched_data_reformatter:
-            # check if it is pair validation
-            peek_iter, main_iter = itertools.tee(self.frame_generator, 2)
-            data = next(peek_iter)
-            data = self.batched_data_reformatter(data)[0]
-            self.is_pair_validation = data.imgs is not None
-
-            src_name = 'axelera_dataset_src'
-            args = (
-                src_name,
-                main_iter,
-                self.batched_data_reformatter,
-                self.is_pair_validation,
-            )
-
-        stream = GstStream(
-            self._pipeline_cache,
-            self.logging_dir,
-            self.hardware_caps,
-            *args,
-        )
+        loop = any(s.loop for s in self.config.sources)
+        gst = gst_helper.build_pipeline(self.pipeline, loop)
+        self._stream = GstStream(gst, self.logging_dir, self.hardware_caps, self._frame_generators)
         LOG.debug("Finished building gst pipeline - build time = %.3f", time.time() - start)
-        return lambda: self._loop(stream)
-
-    def _create_meta_instances_from_gst_decoded_meta(
-        self, ax_meta, gst_meta_info, task_meta, master_meta
-    ):
-        gst_meta_key = gst_meta_info.task_name
-        subframe_index = gst_meta_info.subframe_index
-        if type(task_meta) == meta.ClassificationMeta:
-            model_meta = meta.ClassificationMeta(
-                num_classes=self.model_info_num_classes_dict[gst_meta_key],
-                # label is not important for measurement
-                labels=self.model_info_labels_dict[gst_meta_key],
-                extra_info={"softmax": _softmax(self.nn, gst_meta_key)},
-            )
-            model_meta.transfer_data(task_meta)
-        elif type(task_meta) == meta.ObjectDetectionMeta:
-            model_meta = meta.ObjectDetectionMeta.create_immutable_meta(
-                boxes=task_meta.boxes,
-                scores=task_meta.scores,
-                class_ids=task_meta.class_ids,
-                labels=self.model_info_labels_dict.get(gst_meta_key, None),
-                make_extra_info_mutable=True,
-            )
-        elif type(task_meta) == meta.TrackerMeta:
-            model_meta = meta.TrackerMeta(
-                tracking_history=task_meta.tracking_history,
-                class_ids=task_meta.class_ids,
-                object_meta=task_meta.object_meta,
-                frame_object_meta=task_meta.frame_object_meta,
-                labels=self.model_info_labels_dict[gst_meta_key],
-                labels_dict=self.model_info_labels_dict,
-            )
-        elif type(task_meta) == meta.CocoBodyKeypointsMeta:
-            model_meta = meta.CocoBodyKeypointsMeta(
-                keypoints=task_meta.keypoints,
-                boxes=task_meta.boxes,
-                scores=task_meta.scores,
-            )
-        elif type(task_meta) == meta.FaceLandmarkLocalizationMeta:
-            model_meta = meta.FaceLandmarkLocalizationMeta(
-                keypoints=task_meta.keypoints,
-                boxes=task_meta.boxes,
-                scores=task_meta.scores,
-            )
-        elif type(task_meta) == meta.InstanceSegmentationMeta:
-            model_meta = meta.InstanceSegmentationMeta(
-                labels=self.model_info_labels_dict[gst_meta_key]
-            )
-            model_meta.transfer_data(task_meta)
-        elif type(task_meta) == meta.FaceLandmarkTopDownMeta:
-            model_meta = meta.FaceLandmarkTopDownMeta(
-                _keypoints=task_meta._keypoints, _boxes=[], _scores=[]
-            )
-        elif type(task_meta) == meta.SemanticSegmentationMeta:
-            model_meta = meta.SemanticSegmentationMeta(
-                shape=task_meta.shape,
-                class_map=task_meta.class_map,
-                probabilities=task_meta.probabilities,
-                extra_info=task_meta.extra_info,
-            )
-        elif type(task_meta) == meta.LicensePlateMeta:
-            model_meta = meta.LicensePlateMeta(label=task_meta.label)
-        elif type(task_meta) == meta.ImageMeta:
-            model_meta = meta.ImageMeta(img=task_meta.img)
-        elif type(task_meta) == meta.PoseInsSegMeta:
-            model_meta = meta.PoseInsSegMeta(labels=self.model_info_labels_dict[gst_meta_key])
-            model_meta.transfer_data(task_meta)
-        else:
-            _type = type(task_meta)
-            if _type not in self._seen:
-                self._seen.add(_type)
-                LOG.debug(f"Directly registering {_type} into ax_meta")
-            ax_meta.add_instance(
-                gst_meta_info.task_name,
-                task_meta,
-                master_meta_name=master_meta,
-                subframe_index=subframe_index,
-            )
-            return
-
-        ax_meta.add_instance(
-            gst_meta_info.task_name,
-            model_meta,
-            master_meta_name=master_meta,
-            subframe_index=subframe_index,
-        )
+        return self._loop
 
     def _handle_pair_validation(self, ax_meta, decoded_meta):
         gst_meta_key, task_meta = next(iter(decoded_meta.items()))
@@ -822,17 +712,22 @@ class GstPipe(base.Pipe):
             gst_meta_key.task_name,
             meta.PairValidationMeta,  # gst_meta_key.meta_type is 'PairValidationMeta'
         )
-        if is_complete := pair_validation_meta.add_result(embeddings[0]):
+        if pair_validation_meta.add_result(embeddings[0]):
             return None
         return ax_meta
 
-    def _loop(self, stream):
+    def _loop(self):
         try:
-            for fr, decoded_meta in stream:
+            for event, decoded_meta in self._stream:
                 if self._stop_event.is_set():
                     break
 
-                if self.is_pair_validation:
+                if event.result is None:
+                    self._on_event(event)
+                    continue
+
+                fr = event.result
+                if self._stream.is_pair_validation(fr.stream_id):
                     ax_meta = self._cached_ax_meta if self._cached_ax_meta else fr.meta
                     self._cached_ax_meta = self._handle_pair_validation(ax_meta, decoded_meta)
                     if self._cached_ax_meta is not None:
@@ -840,35 +735,25 @@ class GstPipe(base.Pipe):
                     fr.meta = ax_meta
                 else:
                     ax_meta = fr.meta
-                    for gst_meta_info, task_meta in (decoded_meta or {}).items():
-                        master_meta = self.task_graph.get_master(
-                            gst_meta_info.task_name, view=graph.EdgeType.RESULT
-                        )
-                        has_master = master_meta and gst_meta_info.master
-                        if has_master and gst_meta_info.master != master_meta:
-                            raise ValueError(
-                                f"From the YAML, the master of {gst_meta_info.task_name} is expected to be {master_meta}, but GST is sending it as {gst_meta_info.master}."
-                            )
-                        only_yaml_has_master = master_meta and not gst_meta_info.master
-                        if only_yaml_has_master:
-                            LOG.warning(
-                                f"GST is treating {gst_meta_info.task_name} as a master meta, but from the YAML it is expected to be a submeta of {master_meta}."
-                            )
-                        only_gst_has_master = not master_meta and gst_meta_info.master
-                        if only_gst_has_master:
-                            LOG.warning(
-                                f"GST is treating {gst_meta_info.task_name} as a submeta of {gst_meta_info.master}, but from the YAML it is expected to be a master meta."
-                            )
-                        self._create_meta_instances_from_gst_decoded_meta(
-                            ax_meta, gst_meta_info, task_meta, gst_meta_info.master
-                        )
+                    self._ensure_meta_assembler()
+                    self._meta_assembler.process(
+                        ax_meta,
+                        decoded_meta or {},
+                        task_graph=self.task_graph,
+                        result_view=graph.EdgeType.RESULT,
+                    )
 
-                self._result_ready(fr)
+                if self._on_event(event) is False:
+                    LOG.debug("_on_event requested to stop the pipeline")
+                    break
         except Exception as e:
-            import traceback
-
             LOG.error(f"Pipeline error occurred: {str(e)}\n{traceback.format_exc()}")
+            self._stream.stop()
+            self._stream = None
+            self._on_event(FrameEvent.from_end_of_pipeline(0, str(e)))
             raise
-        finally:
-            stream.stop()
-            self._result_ready(None)
+
+        else:
+            self._stream.stop()
+            self._stream = None
+            self._on_event(FrameEvent.from_end_of_pipeline(0, 'Normal termination'))

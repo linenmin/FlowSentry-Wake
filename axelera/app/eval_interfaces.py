@@ -1,13 +1,12 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Evaluation Data Classes: These classes are interfaces to transform evaluation
 # data from an AxTaskMeta and a ground truth in a custom dataset into a format
 # suitable for evaluators. Thus, the design of evaluation data classes is closely
 # aligned with both task metadata and evaluator architectures.
 from __future__ import annotations
 
-import abc
 import dataclasses
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import numpy as np
 from typing_extensions import Self
@@ -28,7 +27,7 @@ class GeneralSample(types.BaseEvalSample):
 
 @dataclasses.dataclass
 class ImageSample(types.BaseEvalSample):
-    img: ndarray
+    img: np.ndarray
 
     @property
     def data(self) -> Any:
@@ -321,7 +320,7 @@ class KptDetEvalSample(types.BaseEvalSample):
         assert boxes.shape[1] == 4, f"boxes should have 4 columns, got {boxes.shape[1]}"
         assert (
             boxes.shape[0] == scores.shape[0] == keypoints.shape[0]
-        ), f"boxes, scores, and keypoints should have the same shape at dimension 0"
+        ), "boxes, scores, and keypoints should have the same shape at dimension 0"
         return cls(boxes, keypoints, scores)
 
     @classmethod
@@ -506,7 +505,7 @@ class InstSegEvalSample(types.BaseEvalSample):
             assert boxes.shape[1] == 4, f"boxes should have 4 columns, got {boxes.shape[1]}"
         assert (
             boxes.shape[0] == scores.shape[0] == scores.shape[0]
-        ), f"predicted boxes, scores should have the same shape at dimension 0"
+        ), "predicted boxes, scores should have the same shape at dimension 0"
         return cls(boxes, labels, scores, masks)
 
     @classmethod

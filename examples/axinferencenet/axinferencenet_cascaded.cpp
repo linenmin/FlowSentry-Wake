@@ -3,7 +3,6 @@
 // inference on a video stream With an object detection network.
 
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -17,21 +16,15 @@
 #include "AxStreamerUtils.hpp"
 #include "AxUtils.hpp"
 #include "axruntime/axruntime.hpp"
-#include "opencv2/opencv.hpp"
+
+#include "AxFFMpegVideoDecoder.hpp"
+#include "AxOpenCVVideoDecoder.hpp"
 
 using namespace std::string_literals;
-using std::chrono::high_resolution_clock;
-using std::chrono::microseconds;
 constexpr auto DEFAULT_LABELS = "ax_datasets/labels/coco.names";
 
 namespace
 {
-auto
-micro_duration(high_resolution_clock::time_point start, high_resolution_clock::time_point now)
-{
-  return std::chrono::duration_cast<std::chrono::microseconds>(now - start);
-}
-
 auto
 read_labels(const std::string &path)
 {
@@ -52,7 +45,8 @@ parse_args(int argc, char **argv)
     auto s = std::string(argv[arg]);
     if (s.ends_with(".txt") || s.ends_with(".names")) {
       labels = read_labels(s);
-    } else if (!std::filesystem::exists(s)) {
+    } else if (!std::filesystem::exists(s) && !s.starts_with("rtsp://")
+               && !s.starts_with("/dev/video")) {
       std::cerr << "Warning: Path does not exist: " << s << std::endl;
     } else if (!input.empty()) {
       std::cerr << "Warning: Multiple input files specified: " << s << std::endl;
@@ -64,7 +58,7 @@ parse_args(int argc, char **argv)
     std::cerr
         << "Usage: " << argv[0] << " [labels.txt] input-source\n"
         << "  labels.txt: path to the labels file (default: " << DEFAULT_LABELS << ")\n"
-        << "  input-source: path to video source\n"
+        << "  input-source: video source (e.g. file path, rtsp://, /dev/video)\n"
         << "\n"
         << "This example uses a cascaded AxInferenceNet using the fruit-demo network,\n"
         << "which consists of a pose detector, the ROIs of which are passed to a\n"
@@ -103,25 +97,9 @@ parse_args(int argc, char **argv)
 }
 
 struct Frame {
-  cv::Mat bgr;
+  cv::Mat rgb;
   Ax::MetaMap meta;
 };
-
-void
-reader_thread(cv::VideoCapture &input, Ax::InferenceNet &net)
-{
-  while (true) {
-    auto frame = std::make_shared<Frame>();
-    if (!input.read(frame->bgr)) {
-      // Signal to AxInferenceNet that there is no more input and it should
-      // flush any buffers still in the pipeline.
-      net.end_of_input();
-      break;
-    }
-    auto video = Ax::video_from_cvmat(frame->bgr, AxVideoFormat::BGR);
-    net.push_new_frame(frame, video, frame->meta);
-  }
-}
 
 } // namespace
 
@@ -129,12 +107,6 @@ int
 main(int argc, char **argv)
 {
   const auto [labels, input] = parse_args(argc, argv);
-  cv::VideoCapture cap(input);
-  if (!cap.isOpened()) {
-    std::cerr << "Error: Could not open video source: " << input << std::endl;
-    return 1;
-  }
-
   Ax::Logger logger;
   const auto root = "build/fruit-demo"s;
   const auto props0 = Ax::read_inferencenet_properties(
@@ -163,57 +135,35 @@ main(int argc, char **argv)
   auto net0 = Ax::create_inference_net(
       props0, logger, Ax::filter_detections_to(*net1, filter));
 
-  // Start the reader thread which reads frames from the video source and pushes
-  // them to the inference network
-  std::jthread reader(reader_thread, std::ref(cap), std::ref(*net0));
+  auto frame_callback = [&net0](cv::Mat frame) {
+    if (frame.empty()) {
+      net0->end_of_input();
+      return;
+    }
+    auto frame_data = std::make_shared<Frame>();
+    frame_data->rgb = std::move(frame);
+    auto video = Ax::video_from_cvmat(frame_data->rgb, AxVideoFormat::RGB);
+    net0->push_new_frame(frame_data, video, frame_data->meta);
+  };
 
-  // Use OpenCV window to display the results
-  const std::string wndname = "AxInferenceNet Cascade Demo";
-  const bool display_enabled = !Ax::get_env("DISPLAY", "").empty();
-  if (display_enabled) {
-    cv::namedWindow(wndname, cv::WINDOW_NORMAL);
-    cv::setWindowProperty(wndname, cv::WND_PROP_ASPECT_RATIO, cv::WINDOW_KEEPRATIO);
-  } else {
-    std::cout << "DISPLAY is not set, results will not be shown." << std::endl;
-  }
+  auto video_decoder = Ax::FFMpegVideoDecoder(input, frame_callback, AxVideoFormat::RGB);
+  // auto video_decoder = Ax::OpenCVVideoDecoder(input, frame_callback, AxVideoFormat::RGB);
+  video_decoder.start_decoding();
 
+  auto display = Ax::OpenCV::create_display("AxInferenceNet Cascade Demo");
   Ax::OpenCV::RenderOptions render_options;
   render_options.labels = labels;
 
-  auto start = high_resolution_clock::now();
-  int num_frames = 0;
   while (1) {
     auto frame = ready.wait_one();
     if (!frame) {
       break;
     }
-    if ((num_frames % 10) == 0) {
-      // OpenCV is quite slow at rendering results, so we only render every 10th frame
-      for (auto &&[name, meta] : frame->meta) {
-        Ax::OpenCV::render(*meta, frame->bgr, render_options);
-      }
-      if (display_enabled) {
-        cv::imshow(wndname, frame->bgr);
-        cv::waitKey(1);
-      }
-    }
-    ++num_frames;
+    display->show(frame->rgb, frame->meta, AxVideoFormat::RGB, render_options, 0);
   }
-  const auto end = high_resolution_clock::now();
-  std::cout << std::endl;
 
   // Wait for AxInferenceNet to complete and join its threads, before joining the reader thread
   net0->stop();
   net1->stop();
   net2->stop();
-  reader.join();
-
-  // Output some statistics
-  const auto duration = micro_duration(start, end);
-  const auto taken = static_cast<float>(duration.count()) / 1e6;
-  std::cout << "Executed " << num_frames << " frames in " << taken
-            << "s : " << num_frames / taken << "fps" << std::endl;
-  if (display_enabled) {
-    cv::destroyWindow(wndname);
-  }
 }

@@ -1,4 +1,5 @@
-#include "unittest_transform_common.h"
+// Copyright Axelera AI, 2025
+#include "unittest_ax_common.h"
 
 #define CL_TARGET_OPENCL_VERSION 210
 #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
@@ -36,21 +37,21 @@ TEST(normalize_cl, no_mean_or_scale)
     { "quant_scale", "0.003919653594493866" },
   };
 
-  Transformer normalizer("libtransform_normalize_cl.so", input);
+  auto xform = Ax::LoadTransform("normalize_cl", input);
   std::vector<uint8_t> in_buf(4 * 4);
   std::iota(in_buf.begin(), in_buf.end(), 0);
   std::vector<uint8_t> out_buf(4 * 4);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
-    0x80, 0x81, 0x82, 0x03, 0x84, 0x85, 0x86, 0x07,
-    0x88, 0x89, 0x8a, 0x0b, 0x8c, 0x8d, 0x8e, 0x0f,
+    0x81, 0x82, 0x83, 0x03, 0x85, 0x86, 0x87, 0x07,
+    0x89, 0x8a, 0x8b, 0x0b, 0x8d, 0x8e, 0x8f, 0x0f,
     // clang-format on
   };
   auto in = AxTensorsInterface{ { { 1, 1, 4, 4 }, 1, in_buf.data() } };
   auto out = AxTensorsInterface{ { { 1, 1, 4, 4 }, 1, out_buf.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  normalizer.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   EXPECT_EQ(out_buf, expected);
 }
 
@@ -66,23 +67,23 @@ TEST(normalize_cl, no_mean_or_scale_4x4)
     { "quant_scale", "0.003919653594493866" },
   };
 
-  Transformer normalizer("libtransform_normalize_cl.so", input);
+  auto xform = Ax::LoadTransform("normalize_cl", input);
   std::vector<uint8_t> in_buf(4 * 4 * 2);
   std::iota(in_buf.begin(), in_buf.end(), 0);
   std::vector<uint8_t> out_buf(4 * 4 * 2);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
-    0x80, 0x81, 0x82, 0x03, 0x84, 0x85, 0x86, 0x07,
-    0x88, 0x89, 0x8a, 0x0b, 0x8c, 0x8d, 0x8e, 0x0f,
-    0x90, 0x91, 0x92, 0x13, 0x94, 0x95, 0x96, 0x17,
-    0x98, 0x99, 0x9a, 0x1b, 0x9c, 0x9d, 0x9e, 0x1f,
+    0x81, 0x82, 0x83, 0x03, 0x85, 0x86, 0x87, 0x07,
+    0x89, 0x8a, 0x8b, 0x0b, 0x8d, 0x8e, 0x8f, 0x0f,
+    0x91, 0x92, 0x93, 0x13, 0x95, 0x96, 0x97, 0x17,
+    0x99, 0x9a, 0x9b, 0x1b, 0x9d, 0x9e, 0x9f, 0x1f,
     // clang-format on
   };
   auto in = AxTensorsInterface{ { { 1, 2, 4, 4 }, 1, in_buf.data() } };
   auto out = AxTensorsInterface{ { { 1, 2, 4, 4 }, 1, out_buf.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  normalizer.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   EXPECT_EQ(out_buf, expected);
 }
 
@@ -98,14 +99,14 @@ TEST(normalize_cl, no_mean_or_scale_4x4_x)
     { "quant_scale", "0.003919653594493866" },
   };
 
-  Transformer normalizer("libtransform_normalize_cl.so", input);
+  auto xform = Ax::LoadTransform("normalize_cl", input);
   std::vector<uint8_t> in_buf(4 * 4 * 2);
   std::iota(in_buf.begin(), in_buf.end(), 0);
   std::vector<uint8_t> out_buf(4 * 4 * 2);
 
   auto expected = std::vector<uint8_t>{
     // clang-format off
-    0x80, 0x82, 0x83, 0x03, 0x85, 0x86, 0x87, 0x07,
+    0x81, 0x82, 0x83, 0x03, 0x85, 0x86, 0x87, 0x07,
     0x89, 0x8a, 0x8b, 0x0b, 0x8d, 0x8e, 0x8f, 0x0f,
     0x91, 0x92, 0x93, 0x13, 0x95, 0x96, 0x97, 0x17,
     0x99, 0x9a, 0x9b, 0x1b, 0x9d, 0x9e, 0x9f, 0x1f,
@@ -113,8 +114,8 @@ TEST(normalize_cl, no_mean_or_scale_4x4_x)
   };
   auto in = AxTensorsInterface{ { { 1, 2, 4, 4 }, 1, in_buf.data() } };
   auto out = AxTensorsInterface{ { { 1, 2, 4, 4 }, 1, out_buf.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  normalizer.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
   EXPECT_EQ(out_buf, expected);
 }
 

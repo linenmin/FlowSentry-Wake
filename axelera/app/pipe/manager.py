@@ -22,6 +22,7 @@ from .. import (
     utils,
     yaml_parser,
 )
+from .frame_data import FrameEvent, FrameEventType
 
 if TYPE_CHECKING:
     from .. import inf_tracers, network
@@ -44,11 +45,16 @@ def _deploy_one_model_via_subprocess(
     default_representative_images = deploy_config.default_representative_images
     cal_seed = deploy_config.cal_seed
     cores_argv = f' --aipu-cores {aipu_cores}'
-    if pipe_type == 'torch':
-        cores = ''
+    cores = ''
+    pipe = ''
+    mode = ''
+    if pipe_type == 'quantized':
+        mode = ' --mode QUANTIZE_DEBUG'
     else:
-        s = 's' if aipu_cores > 1 else ''
-        cores = f' for {aipu_cores} core{s}. This may take a while...'
+        pipe = f' --pipe {pipe_type}'
+        if pipe_type != 'torch':
+            s = 's' if aipu_cores > 1 else ''
+            cores = f' for {aipu_cores} core{s}. This may take a while...'
     LOG.info(f"Deploying model {model}{cores}")
     run_dir = config.env.framework
     try:
@@ -61,7 +67,7 @@ def _deploy_one_model_via_subprocess(
             run(
                 f'{run_dir}/deploy.py --model {model} --num-cal-images {num_cal_images} '
                 f'{cores_argv} '
-                f'--data-root {data_root} --pipe {pipe_type} --build-root {build_root} {nn_name} '
+                f'--data-root {data_root}{pipe}{mode} --build-root {build_root} {nn_name} '
                 f'--aipu-cores {aipu_cores} --metis {metis.name} {cal_argv} {dump_core_model_argv}',
             )
 
@@ -83,16 +89,16 @@ def _get_or_deploy_models(
     metis: config.Metis,
 ) -> network.ModelInfos:
     nn_dir = system_config.build_root / nn.name
-    model_infos = network.read_deployed_model_infos(
-        nn_dir, nn, pipeline_config.pipe_type, pipeline_config.aipu_cores, metis
-    )
+    model_infos = network.read_deployed_model_infos(nn_dir, nn, pipeline_config, metis)
     model_infos.add_label_enums(nn.datasets)
     if not model_infos.ready:
         for model in model_infos.missing():
             exec_cores = model_infos.determine_execution_cores(
                 model, pipeline_config.aipu_cores, metis
             )
-            deploy_cores = model_infos.determine_deploy_cores(model, exec_cores, metis)
+            deploy_cores = model_infos.determine_deploy_cores(
+                model, exec_cores, metis, pipeline_config.low_latency
+            )
             if deploy_cores < exec_cores:
                 _for = f'up to {deploy_cores} cores' if deploy_cores > 1 else 'single-core'
                 but = f'(but can be run using {exec_cores} cores)'
@@ -110,9 +116,7 @@ def _get_or_deploy_models(
                 metis,
             )
 
-        model_infos = network.read_deployed_model_infos(
-            nn_dir, nn, pipeline_config.pipe_type, pipeline_config.aipu_cores, metis
-        )
+        model_infos = network.read_deployed_model_infos(nn_dir, nn, pipeline_config, metis)
         model_infos.check_ready()
     return model_infos
 
@@ -205,7 +209,9 @@ def _update_pending_expansions(task):
                     setattr(op, field, task.model_info.num_classes)
 
 
-def _create_inference_operators(device_man: device_manager.DeviceManager, nn: network.AxNetwork):
+def _create_inference_operators(
+    device_man: device_manager.DeviceManager, nn: network.AxNetwork, low_latency: bool
+):
     def _instantiate_model(model_name: str) -> types.Model:
         with nn.from_model_dir(model_name):
             return nn.instantiate_model(model_name)
@@ -233,6 +239,7 @@ def _create_inference_operators(device_man: device_manager.DeviceManager, nn: ne
             model_or_manifest,
             task.model_info,
             task.inference_op_config,
+            low_latency,
         )
 
 
@@ -248,6 +255,7 @@ def _propagate_model_and_context_info(nn: network.AxNetwork, task_graph: graph.D
 
         if not task.is_dl_task:
             op_list = [task.input] + task.cv_process
+            compiled_model_dir = None
             for op in op_list:
                 op.configure_model_and_context_info(
                     task.model_info,
@@ -408,7 +416,7 @@ class PipeManager:
         )
         if pipeline_config.pipe_type in ('torch', 'torch-aipu') or pipeline_config.eval_mode:
             utils.ensure_dependencies_are_installed(nn.dependencies)
-        network.restrict_cores(nn, pipeline_config.pipe_type, pipeline_config.aipu_cores, metis)
+        network.restrict_cores(nn, pipeline_config, metis)
 
         nn.model_infos = _get_or_deploy_models(
             network_path,
@@ -425,7 +433,7 @@ class PipeManager:
 
         # this is kind of the core of the pipeline builder. But note it is still dependent on the device manager
         compile_pipelines(nn, sources, self.hardware_caps, pipeline_config.tiling)
-        _create_inference_operators(self._device_man, nn)
+        _create_inference_operators(self._device_man, nn, low_latency=pipeline_config.low_latency)
         nn.model_infos.add_label_enums(nn.datasets)
         _propagate_model_and_context_info(nn, task_graph)
 
@@ -448,7 +456,7 @@ class PipeManager:
             )
             self._evaluator = None
         self.sources = {sid: p.sources[0] for sid, p in self._pipein.inputs.items()}
-        rc = self._render_config = _set_render_config(nn, render_config)
+        rc = _set_render_config(nn, render_config)
         self._pipeout = io.PipeOutput(pipeline_config.save_output, self._pipein, rc)
         self._pipeline = base.create_pipe(
             self._device_man,
@@ -457,10 +465,15 @@ class PipeManager:
             logging_dir,
             system_config.hardware_caps,
             task_graph,
-            self._result_ready_callback,
+            self._event_callback,
             self._pipein,
         )
         self._id_allocator = id_allocator
+
+    @property
+    def name(self):
+        '''Return the name of the network associated with this PipeManager.'''
+        return self._network.name
 
     @property
     def network(self) -> network.AxNetwork:
@@ -482,6 +495,7 @@ class PipeManager:
     def remove_source(self, source_id):
         self._pipein.remove_source(self.sources[source_id])
         self._pipeline.remove_source(source_id)
+        self._id_allocator.deallocate(source_id)
         del self.sources[source_id]
 
     def stream_select(self, streams: Iterable[int] | str) -> None:
@@ -494,10 +508,14 @@ class PipeManager:
     def pipe(self):
         return self._pipeline
 
+    @property
+    def pipeout(self):
+        return self._pipeout
+
     def set_render(self, show_labels=False, show_annotations=False):
         """Set render mode for the pipeline for all tasks."""
         for task in self._pipeline.nn.tasks:
-            self.pipeout.render_config.set_task(task.name, show_annotations, show_labels)
+            self._pipeout.set_task_render(task.name, show_annotations, show_labels)
         return self
 
     def __getattr__(self, task_name):
@@ -531,12 +549,13 @@ class PipeManager:
     def play_pipe(self):
         self._pipeline.play()
 
-    def _result_ready_callback(self, result: base.FrameResult | None):
-        """Callback for the pipe output to handle results."""
-        if result is not None:
+    def _event_callback(self, event: FrameEvent) -> bool:
+        """Callback for the pipe output to handle events/results."""
+        if event.result is not None:
+            result = event.result
             result.sink_timestamp = time.time()
             if result.meta:
-                result.meta.set_render_config(self._render_config)
+                result.meta.set_render_config(self._pipeout.get_render_config())
             if result.meta and self.tracers:
                 for tracer in self.tracers:
                     tracer.update(result)
@@ -545,10 +564,11 @@ class PipeManager:
                         for m in tracer.get_metrics():
                             result.meta.add_instance(m.key, m)
             self._pipeout.sink(result)
-        else:
+        elif event.type == FrameEventType.end_of_pipeline:
             self._pipeout.close_writer()
         if self._parent_callback:
-            self._parent_callback(result)
+            return self._parent_callback(event)
+        return True
 
     def setup_callback(self, callback: base.ResultCallback):
         self._parent_callback = callback
@@ -621,7 +641,6 @@ class TaskProxy:
 
     def __init__(self, pipe_manager, task_name):
         self._pipe_manager = pipe_manager
-        self._pipeout = pipe_manager.pipeout
         self.task_name = task_name
 
         for t in pipe_manager._pipeline.nn.tasks:
@@ -639,7 +658,7 @@ class TaskProxy:
         Returns:
             Self for method chaining
         """
-        self._pipeout.render_config.set_task(self.task_name, show_annotations, show_labels)
+        self._pipe_manager.pipeout.set_task_render(self.task_name, show_annotations, show_labels)
         return self
 
     def __getattr__(self, name):

@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <gmock/gmock.h>
 #include <numeric>
-#include "unittest_transform_common.h"
+#include "unittest_ax_common.h"
 
 /**
  * Unit tests for AxTransformPaddingDequantize operator
@@ -16,13 +16,6 @@
 class TransformPaddingDequantizeTest : public ::testing::Test
 {
   protected:
-  // Shorthand for creating a transformer with the paddingdequantize library
-  Transformer createTransformer(const std::unordered_map<std::string, std::string> &params)
-  {
-    return Transformer("libtransform_paddingdequantize.so", params);
-  }
-
-  // Helper to calculate tensor size from dimensions
   int calculateSize(const std::vector<int> &dims)
   {
     return std::accumulate(dims.begin(), dims.end(), 1, std::multiplies<int>());
@@ -35,26 +28,26 @@ class TransformPaddingDequantizeTest : public ::testing::Test
 
 TEST_F(TransformPaddingDequantizeTest, non_tensor_input)
 {
-  Transformer transformer = createTransformer({ { "dequant_scale", "0" } });
+  auto xform = Ax::LoadTransform("paddingdequantize", { { "dequant_scale", "0" } });
 
   // Test with empty input
   AxDataInterface inp_empty;
-  EXPECT_THROW(transformer.set_output_interface(inp_empty), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(inp_empty), std::runtime_error);
 
   // Test with video input
   AxVideoInterface inp_video{ {}, nullptr };
-  EXPECT_THROW(transformer.set_output_interface(inp_video), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(inp_video), std::runtime_error);
 }
 
 TEST_F(TransformPaddingDequantizeTest, invalid_configurations)
 {
   // Missing required parameters should throw
-  EXPECT_THROW(createTransformer({}), std::runtime_error);
+  EXPECT_THROW(Ax::LoadTransform("paddingdequantize", {}), std::runtime_error);
 
   // Test mismatch between dequant_scale and dequant_zeropoint sizes
   std::unordered_map<std::string, std::string> input_mismatch
       = { { "dequant_scale", "0.5,0.25" }, { "dequant_zeropoint", "1" } };
-  EXPECT_THROW(createTransformer(input_mismatch), std::logic_error);
+  EXPECT_THROW(Ax::LoadTransform("paddingdequantize", input_mismatch), std::logic_error);
 }
 
 // =============================================================================
@@ -70,7 +63,7 @@ TEST_F(TransformPaddingDequantizeTest, basic_dequantization)
     { "padding", "0,0,0,0,0,0,0,0" },
   };
 
-  Transformer transformer = createTransformer(input);
+  auto xform = Ax::LoadTransform("paddingdequantize", input);
 
   // Create a simple 2x2x2 tensor filled with values 0-7
   std::vector<int> dims = { 1, 2, 2, 2 };
@@ -81,13 +74,14 @@ TEST_F(TransformPaddingDequantizeTest, basic_dequantization)
   auto out_data = std::vector<float>(size);
   AxTensorsInterface inp{ { dims, 1, inp_data.data() } };
 
-  auto out = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out.size(), 1);
   EXPECT_EQ(out[0].sizes, dims);
   EXPECT_EQ(out[0].bytes, 4); // float output
 
   out[0].data = out_data.data();
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Expected output: scale * input_value
   for (int i = 0; i < size; ++i) {
@@ -104,7 +98,7 @@ TEST_F(TransformPaddingDequantizeTest, multi_tensor_dequantization)
     { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
   };
 
-  Transformer transformer = createTransformer(input);
+  auto xform = Ax::LoadTransform("paddingdequantize", input);
 
   std::vector<int> dims = { 1, 2, 3, 4 };
   int tensor_size = calculateSize(dims);
@@ -118,7 +112,7 @@ TEST_F(TransformPaddingDequantizeTest, multi_tensor_dequantization)
   AxTensorsInterface inp{ { dims, 1, inp_data.data() },
     { dims, 1, inp_data.data() + tensor_size } };
 
-  auto out = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out.size(), 2);
   EXPECT_EQ(out[0].sizes, dims);
   EXPECT_EQ(out[1].sizes, dims);
@@ -127,7 +121,8 @@ TEST_F(TransformPaddingDequantizeTest, multi_tensor_dequantization)
 
   out[0].data = out_data.data();
   out[1].data = out_data.data() + tensor_size;
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Create expected output and verify
   auto expected = std::vector<float>(total_size);
@@ -156,7 +151,7 @@ TEST_F(TransformPaddingDequantizeTest, basic_transpose)
     { "padding", "0,0,0,0,0,0,0,0" },
   };
 
-  Transformer transformer = createTransformer(input);
+  auto xform = Ax::LoadTransform("paddingdequantize", input);
 
   std::vector<int> dims = { 1, 2, 3, 4 };
   int size = calculateSize(dims);
@@ -167,7 +162,7 @@ TEST_F(TransformPaddingDequantizeTest, basic_transpose)
   auto out_data = std::vector<float>(size);
   AxTensorsInterface inp{ { dims, 1, inp_data.data() } };
 
-  auto out = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out.size(), 1);
 
   // Check that output shape is transposed from NHWC to NCHW
@@ -175,7 +170,8 @@ TEST_F(TransformPaddingDequantizeTest, basic_transpose)
   EXPECT_EQ(out[0].bytes, 4);
 
   out[0].data = out_data.data();
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Expected transposed values - verified against the operator's implementation
   auto expected = std::vector<float>({ 0, 4, 8, 12, 16, 20, 1, 5, 9, 13, 17, 21,
@@ -194,7 +190,7 @@ TEST_F(TransformPaddingDequantizeTest, selective_transpose)
     { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
   };
 
-  Transformer transformer = createTransformer(input);
+  auto xform = Ax::LoadTransform("paddingdequantize", input);
 
   // Create two tensors with the same dimensions
   std::vector<int> dims = { 1, 2, 2, 2 };
@@ -207,7 +203,7 @@ TEST_F(TransformPaddingDequantizeTest, selective_transpose)
   AxTensorsInterface inp{ { dims, 1, inp_data.data() },
     { dims, 1, inp_data.data() + tensor_size } };
 
-  auto out = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out.size(), 2);
 
   // First tensor should be transposed, second should not
@@ -218,7 +214,8 @@ TEST_F(TransformPaddingDequantizeTest, selective_transpose)
   out[0].data = out_data.data();
   out[1].data = out_data.data() + tensor_size;
 
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Verify first tensor (transposed) values
   // For a 1x2x2x2 tensor with data [0,1,2,3,4,5,6,7], after NHWC->NCHW
@@ -246,7 +243,7 @@ TEST_F(TransformPaddingDequantizeTest, padding_and_dequant)
     { "padding", "0,0,0,0,0,0,0,-1" }, // Crop last element of width
   };
 
-  Transformer transformer = createTransformer(input);
+  auto xform = Ax::LoadTransform("paddingdequantize", input);
 
   std::vector<int> dims = { 1, 2, 3, 4 };
   int size = calculateSize(dims);
@@ -260,13 +257,14 @@ TEST_F(TransformPaddingDequantizeTest, padding_and_dequant)
   auto out_data = std::vector<float>(out_size);
   AxTensorsInterface inp{ { dims, 1, inp_data.data() } };
 
-  auto out = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out.size(), 1);
   EXPECT_EQ(out[0].sizes, out_dims);
   EXPECT_EQ(out[0].bytes, 4);
 
   out[0].data = out_data.data();
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Expected cropped and transposed values with dequantization
   auto expected = std::vector<float>({ -0.5, 1.5, 3.5, 5.5, 7.5, 9.5, 0, 2, 4,
@@ -286,7 +284,7 @@ TEST_F(TransformPaddingDequantizeTest, dequantize_without_lut)
     { "padding", "0,0,0,0,0,0,0,-1" }, { "dequant_lut", "0" }, // Don't use LUT
   };
 
-  Transformer transformer = createTransformer(input);
+  auto xform = Ax::LoadTransform("paddingdequantize", input);
 
   std::vector<int> dims = { 1, 2, 3, 4 };
   int size = calculateSize(dims);
@@ -297,13 +295,14 @@ TEST_F(TransformPaddingDequantizeTest, dequantize_without_lut)
   auto out_data = std::vector<float>(1 * 3 * 2 * 3);
   AxTensorsInterface inp{ { dims, 1, inp_data.data() } };
 
-  auto out = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out.size(), 1);
   EXPECT_EQ(out[0].sizes, std::vector<int>({ 1, 3, 2, 3 }));
   EXPECT_EQ(out[0].bytes, 4);
 
   out[0].data = out_data.data();
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Expected: should match test_padding_transform_dequantize
   auto expected = std::vector<float>({ -0.5, 1.5, 3.5, 5.5, 7.5, 9.5, 0, 2, 4,
@@ -325,7 +324,7 @@ TEST_F(TransformPaddingDequantizeTest, extreme_values)
     { "padding", "0,0,0,0,0,0,0,0" },
   };
 
-  Transformer transformer = createTransformer(input);
+  auto xform = Ax::LoadTransform("paddingdequantize", input);
 
   std::vector<int> dims = { 1, 1, 2, 2 };
   int size = calculateSize(dims);
@@ -334,10 +333,11 @@ TEST_F(TransformPaddingDequantizeTest, extreme_values)
   auto out_data = std::vector<float>(size);
 
   AxTensorsInterface inp{ { dims, 1, inp_data.data() } };
-  auto out = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   out[0].data = out_data.data();
 
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Expected: scale * value
   auto expected = std::vector<float>{ 0.5f * INT8_MIN, 0.5f * INT8_MAX, 0.0f, -0.5f };
@@ -352,7 +352,7 @@ TEST_F(TransformPaddingDequantizeTest, empty_padding_vector)
     // No padding specified - should cause error
   };
 
-  Transformer transformer = createTransformer(input);
+  auto xform = Ax::LoadTransform("paddingdequantize", input);
 
   std::vector<int> dims = { 1, 2, 2, 2 };
   int size = calculateSize(dims);
@@ -363,5 +363,5 @@ TEST_F(TransformPaddingDequantizeTest, empty_padding_vector)
   AxTensorsInterface inp{ { dims, 1, inp_data.data() } };
 
   // Should fail with runtime error about missing padding
-  EXPECT_THROW(transformer.set_output_interface(inp), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(inp), std::runtime_error);
 }

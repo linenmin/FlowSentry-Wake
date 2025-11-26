@@ -1,8 +1,8 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <memory>
 #include <stdexcept>
@@ -65,7 +65,7 @@ TEST(ssd_errors, no_zero_points_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_ssd2.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("ssd2", properties), std::runtime_error);
 }
 
 TEST(ssd_errors, no_scales_throws)
@@ -73,7 +73,7 @@ TEST(ssd_errors, no_scales_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "zero_points", "0" },
   };
-  EXPECT_THROW(Decoder("libdecode_ssd2.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("ssd2", properties), std::runtime_error);
 }
 
 TEST(ssd_errors, different_scale_and_zero_point_sizes_throws)
@@ -86,7 +86,7 @@ TEST(ssd_errors, different_scale_and_zero_point_sizes_throws)
     { "zero_points", "0, 0" },
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder decoder("libdecode_ssd2.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("ssd2", properties), std::runtime_error);
 }
 
 TEST(ssd_errors, must_provide_classes)
@@ -96,7 +96,7 @@ TEST(ssd_errors, must_provide_classes)
     { "scales", "1, 2" },
     { "anchors", "10, 10" },
   };
-  EXPECT_THROW(Decoder("libdecode_ssd2.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("ssd2", properties), std::runtime_error);
 }
 
 
@@ -126,14 +126,14 @@ TEST(ssd_decode_scores, all_filtered_at_max_confidence)
     { "classes", "5" },
     { "class_agnostic", "1" },
   };
-  Decoder decoder("libdecode_ssd2.so", properties);
+  auto decoder = Ax::LoadDecode("ssd2", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto tensors = tensors_from_vector(ssd_box, { 1, 1, 1, 3 * 4 });
   auto score_tensors = tensors_from_vector(ssd_scores, { 1, 1, 1, 3 * (5 + 1) });
   tensors.push_back(score_tensors[0]);
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
   EXPECT_EQ(actual_classes, std::vector<int32_t>{});
@@ -167,14 +167,14 @@ TEST(ssd_decode_scores, none_filtered_at_min_confidence_with_multiclass)
     { "classes", "4" },
     { "class_agnostic", "0" },
   };
-  Decoder decoder("libdecode_ssd2.so", properties);
+  auto decoder = Ax::LoadDecode("ssd2", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto tensors = tensors_from_vector(ssd_box, { 1, 1, 1, 3 * 4 });
   auto score_tensors = tensors_from_vector(ssd_scores, { 1, 1, 1, 3 * (5 + 1) });
   tensors.push_back(score_tensors[0]);
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3 };
@@ -213,14 +213,14 @@ TEST(ssd_decode_scores, all_but_first_highest_filtered_at_min_confidence_with_no
     { "classes", "5" },
     { "class_agnostic", "1" },
   };
-  Decoder decoder("libdecode_ssd2.so", properties);
+  auto decoder = Ax::LoadDecode("ssd2", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto tensors = tensors_from_vector(ssd_box, { 1, 1, 1, 3 * 4 });
   auto score_tensors = tensors_from_vector(ssd_scores, { 1, 1, 1, 3 * (5 + 1) });
   tensors.push_back(score_tensors[0]);
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 0, 1, 2 };
@@ -259,14 +259,14 @@ TEST(ssd_decode_scores, with_multiclass_all_below_threshold_are_filtered)
     { "classes", "5" },
     { "class_agnostic", "0" },
   };
-  Decoder decoder("libdecode_ssd2.so", properties);
+  auto decoder = Ax::LoadDecode("ssd2", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto tensors = tensors_from_vector(ssd_box, { 1, 1, 1, 3 * 4 });
   auto score_tensors = tensors_from_vector(ssd_scores, { 1, 1, 1, 3 * (5 + 1) });
   tensors.push_back(score_tensors[0]);
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 0, 1, 1, 3, 2, 4 };

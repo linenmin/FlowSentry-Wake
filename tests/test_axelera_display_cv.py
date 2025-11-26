@@ -1,8 +1,8 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 import os
+import queue
 from unittest.mock import ANY, Mock, call, patch
 
-import cv2
 import numpy as np
 
 from axelera import types
@@ -14,9 +14,10 @@ OPENGL = config.HardwareEnable.disable
 def test_window_creation():
     with patch.dict(os.environ, DISPLAY='somewhere'):
         with patch.object(display_cv, "cv2") as mcv:
+            mcv.getWindowProperty.return_value = 1.0
             mcv.imread.return_value = np.full((32, 32, 3), (42, 43, 44), np.uint8)
             mcv.copyMakeBorder.return_value = np.full((480, 640, 3), (42, 43, 44), np.uint8)
-            with display.App(visible=True, opengl=OPENGL) as app:
+            with display.App(renderer=True, opengl=OPENGL) as app:
                 wnd = app.create_window("test", (640, 480))
                 app.start_thread(wnd.close)
                 app.run()
@@ -31,33 +32,39 @@ def test_window_creation():
 
 def test_window_creation_fullscreen():
     with patch.dict(os.environ, DISPLAY='somewhere'):
-        with patch.object(display_cv, "cv2") as mcv:
-            with display.App(visible=True, opengl=OPENGL) as app:
+        with patch.object(display_cv, "cv2") as mcv, patch.object(
+            display, "get_primary_screen_resolution", return_value=(1920, 1080)
+        ):
+            mcv.getWindowProperty.return_value = 1.0
+            with display.App(renderer=True, opengl=OPENGL) as app:
                 wnd = app.create_window("test", display.FULL_SCREEN)
                 app.start_thread(wnd.close)
                 app.run()
                 assert wnd.is_closed == True
-    assert mcv.namedWindow.call_args_list == [call("test", mcv.WINDOW_FULLSCREEN)]
+    assert mcv.namedWindow.call_args_list == [call("test", mcv.WINDOW_NORMAL)]
     assert mcv.setWindowProperty.call_args_list == [
-        call("test", mcv.WND_PROP_ASPECT_RATIO, mcv.WINDOW_KEEPRATIO)
+        call("test", mcv.WND_PROP_FULLSCREEN, mcv.WINDOW_FULLSCREEN)
     ]
 
 
 def test_window_creation_with_data():
     with patch.dict(os.environ, DISPLAY='somewhere'):
+        import cv2 as real_cv2
+
         with patch.object(display_cv, "cv2") as mcv:
             mcv.waitKey.return_value = ord("q")
             mcv.getWindowProperty.return_value = 0.0
-            with display.App(visible=True, opengl=OPENGL) as app:
+            mcv.resize = real_cv2.resize
+            with display.App(renderer=True, opengl=OPENGL) as app:
                 wnd = app.create_window("test", (640, 480))
-                array = np.full((480, 640, 4), (42, 43, 44, 0), np.uint8)
+                array = np.full((480, 640, 3), (42, 43, 44), np.uint8)
                 i = types.Image.fromarray(array)
                 meta_map = {}
                 app.start_thread(wnd.show, args=(i, meta_map))
                 app.run()
                 assert wnd.is_closed == True
     # note RGB -> BGR swap for opencv:
-    exp = np.full((480, 640, 4), (44, 43, 42, 0), np.uint8)
+    exp = np.full((480, 640, 3), (44, 43, 42), np.uint8)
     assert mcv.imshow.call_args_list == [
         call("test", ANY),
         call("test", ANY),
@@ -82,11 +89,11 @@ def test_layered_draw_list():
 def test_layered_draw_list_access():
     dlist = display_cv._LayeredDrawList()
     dlist.text((10, 10), "Default", (255, 255, 255, 255))
-    dlist[1].rect((20, 20, 30, 30), (255, 0, 0, 255))
-    assert len(dlist[0]) == 1
+    dlist[2].rect((20, 20, 30, 30), (255, 0, 0, 255))
     assert len(dlist[1]) == 1
-    assert dlist[0][0][0] == "text"
-    assert dlist[1][0][0] == "rect"
+    assert len(dlist[2]) == 1
+    assert dlist[1][0][0] == "text"
+    assert dlist[2][0][0] == "rect"
     assert len(dlist) == 2
 
 
@@ -126,3 +133,36 @@ def test_layered_draw_list_multiple_ops():
     assert len(dlist[0]) == 2
     assert len(dlist[1]) == 2
     assert len(dlist[-1]) == 2
+
+
+def test_cv_window_open_close_source():
+    mock_frame = (Mock(), Mock(), False)
+    new_frame = (Mock(), Mock(), False)
+    wnd = display_cv.CVWindow(None, None, '', (640, 480))
+    wnd._current = {0: mock_frame, 1: mock_frame, 2: mock_frame}
+    assert not wnd._closed_sources
+    wnd._handle_message(display._CloseSource(1, False))
+    assert wnd._closed_sources == {1}
+    assert wnd._current == {0: mock_frame, 2: mock_frame}
+    wnd._handle_message(display._Frame(1, *new_frame[:2]))
+    # check new frames are ignored
+    assert wnd._current == {0: mock_frame, 2: mock_frame}
+    wnd._handle_message(display._OpenSource(1))
+    assert not wnd._closed_sources
+    # After open message received - no restart until next frame received
+    assert wnd._current == {0: mock_frame, 2: mock_frame}
+    wnd._handle_message(display._Frame(1, *new_frame[:2]))
+    assert wnd._current == {0: mock_frame, 1: new_frame, 2: mock_frame}
+
+
+def test_cv_window_close_source_reopen():
+    mock_frame = (Mock(), Mock(), False)
+    new_frame = (Mock(), Mock(), False)
+    wnd = display_cv.CVWindow(None, None, '', (640, 480))
+    wnd._current = {0: mock_frame, 1: mock_frame, 2: mock_frame}
+    assert not wnd._closed_sources
+    wnd._handle_message(display._CloseSource(1, True))
+    assert not wnd._closed_sources
+    assert wnd._current == {0: mock_frame, 2: mock_frame}
+    wnd._handle_message(display._Frame(1, *new_frame[:2]))
+    assert wnd._current == {0: mock_frame, 1: new_frame, 2: mock_frame}

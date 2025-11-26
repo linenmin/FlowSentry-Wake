@@ -1,6 +1,6 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 std::pair<std::vector<std::vector<int32_t>>, std::vector<std::vector<float>>>
 get_meta(const std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &map,
@@ -40,11 +40,11 @@ TEST(no_softmax, topk_1_should_return_highest_scoring_index)
 
   std::unordered_map<std::string, std::string> input
       = { { "meta_key", meta_identifier }, { "top_k", "1" }, { "softmax", "0" } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
   auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
 
   std::vector<std::vector<int>> expected_idx = { { 4 } };
@@ -61,14 +61,14 @@ TEST(no_softmax, topk_3_should_return_3_highest_scoring_indices)
 
   std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
     { "top_k", "3" }, { "softmax", "0" }, { "sorted", "0" } };
-  Decoder decoder("libdecode_classification.so", input);
+  auto decoder = Ax::LoadDecode("classification", input);
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
 
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
 
@@ -88,11 +88,11 @@ TEST(no_softmax, sorted_topk_3_should_return_3_highest_scoring_indices_in_order)
 
   std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
     { "top_k", "3" }, { "softmax", "0" }, { "sorted", "1" } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
 
@@ -111,12 +111,12 @@ TEST(no_softmax, bottom_k_1_should_return_lowest_scoring_index)
 
   std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
     { "top_k", "1" }, { "softmax", "0" }, { "largest", "0" } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
 
@@ -134,12 +134,12 @@ TEST(no_softmax, bottom_k_3_should_return_3_lowest_scoring_indices)
 
   std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
     { "top_k", "3" }, { "softmax", "0" }, { "largest", "0" }, { "sorted", "0" } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
 
@@ -159,12 +159,12 @@ TEST(no_softmax, sorted_bottom_k_3_should_return_3_lowest_scoring_indices_in_ord
 
   std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
     { "top_k", "3" }, { "softmax", "0" }, { "largest", "0" }, { "sorted", "0" } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
 
@@ -182,12 +182,12 @@ TEST(softmax, topk_3_should_return_highest_softmaxed_scores)
 
   std::unordered_map<std::string, std::string> input
       = { { "meta_key", meta_identifier }, { "top_k", "3" }, { "softmax", "1" } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto [actual_idx, actual_score] = get_meta(metadata, meta_identifier);
 
@@ -209,12 +209,12 @@ TEST(no_softmax, test_empty_labels)
   std::unordered_map<std::string, std::string> input
       = { { "meta_key", meta_identifier }, { "top_k", "3" }, { "softmax", "1" },
           { "classlabels_file", labels_file.filename() } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto position = metadata.find(meta_identifier);
   ASSERT_NE(position, metadata.end());
@@ -236,12 +236,12 @@ TEST(no_softmax, test_labels)
   std::unordered_map<std::string, std::string> input
       = { { "meta_key", meta_identifier }, { "top_k", "3" }, { "softmax", "1" },
           { "classlabels_file", labels_file.filename() } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 
   auto position = metadata.find(meta_identifier);
   ASSERT_NE(position, metadata.end());
@@ -263,13 +263,13 @@ TEST(no_softmax, test_labels_size_too_small)
   std::unordered_map<std::string, std::string> input
       = { { "meta_key", meta_identifier }, { "top_k", "3" }, { "softmax", "1" },
           { "classlabels_file", labels_file.filename() } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
   //  Should not throw
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 }
 
 TEST(no_softmax, test_labels_size_too_large)
@@ -281,18 +281,18 @@ TEST(no_softmax, test_labels_size_too_large)
   std::unordered_map<std::string, std::string> input
       = { { "meta_key", meta_identifier }, { "top_k", "1" }, { "softmax", "1" },
           { "classlabels_file", labels_file.filename() } };
-  Decoder decoder("libdecode_classification.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto decoder = Ax::LoadDecode("classification", input);
+  Ax::MetaMap metadata;
   auto tensors = tensors_from_vector(scores);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
   //  Should not throw
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
 }
 
 TEST(classification, throws_on_invalid_number_of_subframes)
 {
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  Ax::MetaMap metadata;
   metadata.emplace("master_meta",
       std::make_unique<AxMetaBbox>(BboxXyxyVector{}, std::vector<float>{},
           std::vector<int>{}, std::vector<int>{}));
@@ -301,14 +301,14 @@ TEST(classification, throws_on_invalid_number_of_subframes)
   std::string meta_identifier = "top_k";
   std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
     { "master_meta", "master_meta" }, { "top_k", "3" }, { "softmax", "1" } };
-  Decoder decoder("libdecode_classification.so", input);
+  auto decoder = Ax::LoadDecode("classification", input);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  ASSERT_THROW(decoder.decode_to_meta(tensors, 0, 1, metadata, video_info), std::runtime_error);
+  ASSERT_THROW(decoder->decode_to_meta(tensors, 0, 1, metadata, video_info), std::runtime_error);
 }
 
 TEST(classification, throws_on_invalid_subframe_index)
 {
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  Ax::MetaMap metadata;
   metadata.emplace("master_meta",
       std::make_unique<AxMetaBbox>(BboxXyxyVector{ BboxXyxy{ 0, 0, 1, 1 } },
           std::vector<float>{ 0.2f }, std::vector<int>{ 0 }, std::vector<int>{}));
@@ -317,14 +317,14 @@ TEST(classification, throws_on_invalid_subframe_index)
   std::string meta_identifier = "top_k";
   std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
     { "master_meta", "master_meta" }, { "top_k", "3" }, { "softmax", "1" } };
-  Decoder decoder("libdecode_classification.so", input);
+  auto decoder = Ax::LoadDecode("classification", input);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  ASSERT_THROW(decoder.decode_to_meta(tensors, 1, 1, metadata, video_info), std::runtime_error);
+  ASSERT_THROW(decoder->decode_to_meta(tensors, 1, 1, metadata, video_info), std::runtime_error);
 }
 
 TEST(classification, throws_on_inconsistent_number_of_subframes)
 {
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  Ax::MetaMap metadata;
   metadata.emplace("master_meta",
       std::make_unique<AxMetaBbox>(BboxXyxyVector{ BboxXyxy{ 0, 0, 1, 1 } },
           std::vector<float>{ 0.2f }, std::vector<int>{ 0 }, std::vector<int>{}));
@@ -333,8 +333,8 @@ TEST(classification, throws_on_inconsistent_number_of_subframes)
   std::string meta_identifier = "top_k";
   std::unordered_map<std::string, std::string> input = { { "meta_key", meta_identifier },
     { "master_meta", "master_meta" }, { "top_k", "3" }, { "softmax", "1" } };
-  Decoder decoder("libdecode_classification.so", input);
+  auto decoder = Ax::LoadDecode("classification", input);
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
-  decoder.decode_to_meta(tensors, 0, 1, metadata, video_info);
-  ASSERT_THROW(decoder.decode_to_meta(tensors, 1, 2, metadata, video_info), std::runtime_error);
+  decoder->decode_to_meta(tensors, 0, 1, metadata, video_info);
+  ASSERT_THROW(decoder->decode_to_meta(tensors, 1, 2, metadata, video_info), std::runtime_error);
 }

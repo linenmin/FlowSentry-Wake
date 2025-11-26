@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Custom pre-processing operators
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ class Letterbox(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         # TODO: implement SQUISH and LETTERBOX_CONTAIN mode in torch and verify accuracy on YOLOs
@@ -214,7 +214,7 @@ class ConvertColor(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         self.task_name = task_name
@@ -288,12 +288,12 @@ class FaceAlign(PreprocessOperator):
     width: int = 0
     height: int = 0
     padding: float = 0.0
-    template_keypoints_x: List[
-        float
-    ] = []  # Empty by default, will be populated based on detection
-    template_keypoints_y: List[
-        float
-    ] = []  # Empty by default, will be populated based on detection
+    template_keypoints_x: List[float] = (
+        []
+    )  # Empty by default, will be populated based on detection
+    template_keypoints_y: List[float] = (
+        []
+    )  # Empty by default, will be populated based on detection
     # Whether to use self-normalizing alignment when no template is provided
     use_self_normalizing: bool = False
     save_aligned_images: bool = True  # for debugging purposes
@@ -327,7 +327,7 @@ class FaceAlign(PreprocessOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -484,7 +484,7 @@ class FaceAlign(PreprocessOperator):
                     LOG.error(
                         f"Landmarks shape: {landmarks.shape}, Template shape: {template.shape}"
                     )
-            except:
+            except Exception:
                 pass
             return image
 
@@ -567,7 +567,7 @@ class FaceAlign(PreprocessOperator):
         points2 /= s2
 
         points1_T = points1.T
-        points2_T = points2.T
+        # points2_T = points2.T
 
         # Use SVD to find rotation matrix
         try:
@@ -659,7 +659,7 @@ class FaceAlign(PreprocessOperator):
                 return self._transformation_from_points(landmarks, template)
         else:
             LOG.debug(
-                f"No template provided and self-normalizing not enabled. Using default template."
+                "No template provided and self-normalizing not enabled. Using default template."
             )
             template = self._get_position(
                 width, height, self.padding, num_points=min(num_keypoints, 51)
@@ -676,9 +676,9 @@ class FaceAlign(PreprocessOperator):
         num_keypoints,
     ):
         """Save debug images for visualization and troubleshooting"""
-        cv2.imwrite(f"aligned_face.jpg", aligned_img)
-        cv2.imwrite(f"original_face_full.jpg", original_full_img)
-        cv2.imwrite(f"original_face_cropped.jpg", original_cropped_img)
+        cv2.imwrite("aligned_face.jpg", aligned_img)
+        cv2.imwrite("original_face_full.jpg", original_full_img)
+        cv2.imwrite("original_face_cropped.jpg", original_cropped_img)
 
         debug_img = original_cropped_img.copy()
         for i, (x, y) in enumerate(landmarks):
@@ -731,7 +731,7 @@ class FaceAlign(PreprocessOperator):
                 (255, 255, 0),
                 1,
             )
-        cv2.imwrite(f"landmarks_face.jpg", debug_img)
+        cv2.imwrite("landmarks_face.jpg", debug_img)
 
     def _get_standard_51_point_template(self):
         """
@@ -1007,19 +1007,84 @@ class FaceAlign(PreprocessOperator):
         return cropped_img, adjusted_landmarks, cropped_img.copy()
 
 
-OUT_FORMATS = {
-    types.ColorFormat.RGBA: 3,
-    types.ColorFormat.BGRA: 4,
-    types.ColorFormat.RGB: 3,
-    types.ColorFormat.BGR: 4,
-    types.ColorFormat.GRAY: 5,
-}
+def get_output_format_spec(format: types.ColorFormat) -> str:
+    OUT_FORMATS = {
+        types.ColorFormat.RGBA: 'rgb',
+        types.ColorFormat.BGRA: 'bgr',
+        types.ColorFormat.RGB: 'rgb',
+        types.ColorFormat.BGR: 'bgr',
+        types.ColorFormat.GRAY: 'gray8',
+    }
+    return f';format:{OUT_FORMATS[format]}' if format else ''
+
+
+@builtin
+class Polar(PreprocessOperator):
+    width: int = None
+    height: int = None
+    size: int = None
+    rotate180: bool = False
+    center_x: float = 0.5
+    center_y: float = 0.5
+    max_radius: int = None
+    inverse: bool = False
+    linear_polar: bool = True
+    format: types.ColorFormat = types.ColorFormat.RGB
+
+    def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
+        opencl = gst.getconfig() is not None and gst.getconfig().opencl
+        out = get_output_format_spec(self.format)
+
+        oplib = 'libtransform_polar_cl.so' if opencl else 'libtransform_polar.so'
+        sizestr = (
+            f'size:{self.size};' if self.size else f'width:{self.width};height:{self.height};'
+        )
+        gst.axtransform(
+            lib=oplib,
+            options=f'center_x:{self.center_x};center_y:{self.center_y};'
+            f'{sizestr}'
+            f'inverse:{int(self.inverse)};'
+            f'linear_polar:{int(self.linear_polar)};'
+            f'max_radius:{self.max_radius}{out}',
+        )
+
+    def exec_torch(self, image):
+        img = image.asarray()
+        h, w = img.shape[:2]
+        if self.size:
+            self.width = self.size
+            self.height = self.size
+        if not self.width or not self.height:
+            self.width = w
+            self.height = h
+        center = (int(self.center_y * h), int(self.center_x * w))
+        max_radius = (
+            self.max_radius
+            if self.max_radius
+            else min(center[1], center[0], w - center[0], h - center[1])
+        )
+        flags = cv2.WARP_FILL_OUTLIERS
+        flags |= cv2.INTER_LINEAR
+        if self.linear_polar:
+            flags |= cv2.WARP_POLAR_LINEAR
+        else:
+            flags |= cv2.WARP_POLAR_LOG
+        if self.inverse:
+            flags |= cv2.WARP_INVERSE_MAP
+
+        polar_img = cv2.warpPolar(
+            img.transpose(1, 0, 2), (self.height, self.width), center, max_radius, flags
+        )
+        if self.rotate180:
+            polar_img = cv2.rotate(polar_img, cv2.ROTATE_180)
+        return types.Image.fromarray(polar_img.transpose(1, 0, 2), color_format=image.color_format)
 
 
 @builtin
 class Perspective(PreprocessOperator):
     camera_matrix: List[float]
-    format: types.ColorFormat = types.ColorFormat.RGB
+    invert: bool = False
+    format: types.ColorFormat = None
 
     def _post_init(self):
         if self.camera_matrix is None:
@@ -1039,16 +1104,19 @@ class Perspective(PreprocessOperator):
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         opencl = gst.getconfig() is not None and gst.getconfig().opencl
         matrix = np.array(self.camera_matrix).reshape(3, 3)
-        matrix = np.linalg.inv(matrix)
-        matrix = ','.join(map(str, matrix.flatten()))
+        if self.invert:
+            matrix = np.linalg.inv(matrix)
+        matrix = ','.join(f'{x:.6g}' for x in matrix.flatten())
         if opencl:
+            out = get_output_format_spec(self.format)
             gst.axtransform(
                 lib='libtransform_perspective_cl.so',
-                options=f'matrix:{matrix};out_format:{OUT_FORMATS[self.format]}',
+                options=f'matrix:{matrix}{out}',
             )
         else:
             vaapi = False  # Gst perspective element doesn't respect from offsets and strides in VAsurfaces (GstVideoMeta)
-            insert_color_convert(gst, self.format, vaapi, opencl)
+            if self.format:
+                insert_color_convert(gst, self.format, vaapi, opencl)
             gst.perspective(matrix=matrix)
 
     def exec_torch(self, image):
@@ -1065,10 +1133,9 @@ class CameraUndistort(PreprocessOperator):
     cy: float
     distort_coefs: List[float]
     normalized: bool = True
-    format: types.ColorFormat = types.ColorFormat.RGBA
+    format: types.ColorFormat = None
 
     def _post_init(self):
-        self._enforce_member_type('format')
         if self.distort_coefs is None:
             raise ValueError("You must specify camera matrix")
         if len(self.distort_coefs) != 5:
@@ -1076,12 +1143,12 @@ class CameraUndistort(PreprocessOperator):
 
     def build_gst(self, gst: gst_builder.Builder, stream_idx: str):
         if gst.getconfig().opencl:
+            out = get_output_format_spec(self.format)
             gst.axtransform(
                 lib='libtransform_barrelcorrect_cl.so',
                 options=f'camera_props:{self.fx},{self.fy},{self.cx},{self.cy};'
                 f'normalized_properties:{int(self.normalized)};'
-                f'distort_coefs:{",".join(str(coef) for coef in self.distort_coefs)};'
-                f'out_format:{OUT_FORMATS[self.format]}',
+                f'distort_coefs:{",".join(str(coef) for coef in self.distort_coefs)}{out}',
             )
         else:
             # for non OpenCL path camera matrix need to be denormalized in yaml file
@@ -1089,8 +1156,8 @@ class CameraUndistort(PreprocessOperator):
                 raise ValueError(
                     "CameraUndistort only supports non normalized camera matrix in non OpenCL path"
                 )
-            gst.videoconvert()
-            gst.capsfilter(caps=f"video/x-raw,format={self.format.name}")
+            if self.format:
+                insert_color_convert(gst, self.format, False, False)
             config = f'<?xml version=\"1.0\"?><opencv_storage><cameraMatrix type_id=\"opencv-matrix\"><rows>3</rows><cols>3</cols><dt>f</dt><data>{self.fx} 0. {self.cx} 0. {self.fy} {self.cy} 0. 0. 1.</data></cameraMatrix><distCoeffs type_id=\"opencv-matrix\"><rows>5</rows><cols>1</cols><dt>f</dt><data>{" ".join(str(coef) for coef in self.distort_coefs)}</data></distCoeffs></opencv_storage>'
             gst.cameraundistort(settings=config)
 

@@ -318,7 +318,7 @@ class ModelInfos:
         return name in self._classical_cv_models
 
     def add_error(self, idx: int, name: str, error: str, level=LOG.trace):
-        level(f"%d. %s:%s", idx, name, error)
+        level("%d. %s:%s", idx, name, error)
         self._errors[name] = error
 
     def add_model(self, model_info: types.ModelInfo, manifest_path: Optional[Path]):
@@ -375,7 +375,9 @@ class ModelInfos:
     def mvm_limitation(self, model: str, metis: config.Metis) -> int:
         return self._hw_option(model, metis, 'mvm_limitation', 100, int)
 
-    def determine_deploy_cores(self, name: str, execution_cores: int, metis: config.Metis) -> int:
+    def determine_deploy_cores(
+        self, name: str, execution_cores: int, metis: config.Metis, low_latency: bool = False
+    ) -> int:
         if self.is_classical_cv_model(name):
             return 0
         overrides = _collapse_compiler_overrides(self._compiler_overrides.get(name, {}), metis)
@@ -386,7 +388,7 @@ class ModelInfos:
                 )
 
         desired = overrides.get('aipu_cores', execution_cores)
-        if config.env.low_latency:
+        if low_latency:
             max_compiler = 1
         else:
             max_compiler = overrides.get('max_compiler_cores', config.env.max_compiler_cores)
@@ -525,7 +527,7 @@ class AxNetwork:
             raise ValueError("Missing definition of top-level datasets section")
         try:
             return self.datasets[dataset_name]
-        except KeyError as e:
+        except KeyError:
             raise ValueError(f"Missing definition of dataset {dataset_name}") from None
 
     @property
@@ -608,7 +610,7 @@ class AxNetwork:
         if not task.preprocess:
             # if not, check if preprocess method has been implemented in user model file
             LOG.debug(
-                f"No pipeline specified in YAML file. Default to user-provided 'preprocess' method instead"
+                "No pipeline specified in YAML file. Default to user-provided 'preprocess' method instead"
             )
             if not utils.is_method_overridden(model, 'override_preprocess'):
                 raise RuntimeError(
@@ -668,7 +670,9 @@ def _register_custom_operators(
         name = name.replace('-', '').replace('_', '')
         cls = attribs["class"]
         path = attribs["class_path"]
-        LOG.debug(f"Register custom operator '{name}' with class {cls} from {path}")
+        LOG.debug(
+            f"Register custom operator '{name}' with class {cls} from {os.path.relpath(path)}"
+        )
 
         OperatorClass = utils.import_class_from_file(cls, path)
         if name in operators.builtins:
@@ -705,15 +709,21 @@ def _provisional_model_info_from_yaml(name, yaml_props) -> types.ModelInfo:
         obj = types.ModelInfo(
             name,
             task_category.name,
-            None
-            if task_category == types.TaskCategory.LanguageModel
-            else props.pop('input_tensor_shape'),
-            None
-            if task_category == types.TaskCategory.LanguageModel
-            else props.pop('input_color_format'),
-            None
-            if task_category == types.TaskCategory.LanguageModel
-            else props.pop('input_tensor_layout'),
+            (
+                None
+                if task_category == types.TaskCategory.LanguageModel
+                else props.pop('input_tensor_shape')
+            ),
+            (
+                None
+                if task_category == types.TaskCategory.LanguageModel
+                else props.pop('input_color_format')
+            ),
+            (
+                None
+                if task_category == types.TaskCategory.LanguageModel
+                else props.pop('input_tensor_layout')
+            ),
             labels=schema.SENTINELS['labels'],
             label_filter=schema.SENTINELS['label_filter'],
             weight_path=props.pop('weight_path', ''),
@@ -820,7 +830,7 @@ def parse_and_validate_datasets(
 
             if 'class' in dataset:
                 if dataset['class'] == 'DataAdapter':
-                    LOG.debug(f"Using the default DataAdapter")
+                    LOG.debug("Using the default DataAdapter")
                     dataset.setdefault('data_dir_path', data_root)
 
                     if 'repr_imgs_dir_path' in dataset:
@@ -832,7 +842,7 @@ def parse_and_validate_datasets(
                                 'GRAY',
                             ]:
                                 raise ValueError(
-                                    f"repr_imgs_dataloader_color_format must be RGB, BGR, or GRAY"
+                                    "repr_imgs_dataloader_color_format must be RGB, BGR, or GRAY"
                                 )
                     elif 'data_dir_name' not in dataset or 'repr_imgs_dir_name' not in dataset:
                         raise ValueError(
@@ -1077,26 +1087,28 @@ def _parse_network(
 
 def restrict_cores(
     network: AxNetwork,
-    pipe_type: str,
-    requested_cores: int,
+    pipeline_config: config.PipelineConfig,
     metis: config.Metis,
     deploy: bool = False,
 ):
     for task in network.tasks:
         if not task.is_dl_task:
             continue
-        if pipe_type in ('torch-aipu', 'torch'):
+        if pipeline_config.pipe_type in ('torch-aipu', 'torch'):
             ncores = 1
             LOG.info(
-                f"Restricting {task.model_info.name} to {ncores} core(s) because running pipe {pipe_type}."
+                f"Restricting {task.model_info.name} to {ncores} core(s) because running pipe {pipeline_config.pipe_type}."
             )
         elif deploy:
             ncores = network.model_infos.determine_deploy_cores(
-                task.model_info.name, requested_cores, metis
+                task.model_info.name,
+                pipeline_config.aipu_cores,
+                metis,
+                pipeline_config.low_latency,
             )
         else:
             ncores = network.model_infos.determine_execution_cores(
-                task.model_info.name, requested_cores, metis
+                task.model_info.name, pipeline_config.aipu_cores, metis
             )
         task.aipu_cores = ncores
         task.model_info.extra_kwargs['aipu_cores'] = ncores
@@ -1123,9 +1135,8 @@ def parse_network_from_path(
 ) -> AxNetwork:
     """Parse YAML pipeline to Network object, returns the network and the yaml."""
     # First create network and ensure all models are deployed
-    LOG.debug(f"Create network from {path}")
-    compiled_schema = schema.load(
-        schema.network,
+    LOG.debug(f"Create network from {os.path.relpath(path)}")
+    compiled_schema = schema.load_network(
         path,
         check_required=(not _has_template(path)),
         load_compiler_config=from_deploy,
@@ -1219,8 +1230,7 @@ def localise_path(original_path):
 def read_deployed_model_infos(
     nn_dir: Path,
     nn: AxNetwork,
-    pipe_type: str,
-    requested_cores: int,
+    pipeline_config: config.PipelineConfig,
     metis: config.Metis,
 ) -> ModelInfos:
     '''
@@ -1262,10 +1272,10 @@ def read_deployed_model_infos(
             model_infos.add_error(i, name, msg, LOG.exception)
             continue
 
-        if pipe_type == 'torch':
+        if pipeline_config.pipe_type == 'torch':
             model_infos.add_model(model_info, model_json)
             continue
-        elif pipe_type == 'quantized':
+        elif pipeline_config.pipe_type == 'quantized':
             try:
                 quantized_dir = nn_dir / f'{name}/{constants.K_MODEL_QUANTIZED_DIR}'
                 manifest_file = _find_manifest(i, quantized_dir)
@@ -1282,7 +1292,9 @@ def read_deployed_model_infos(
             continue
 
         # elif pipe_type in ['torch-aipu', 'gst']:
-        deploy_cores = model_infos.determine_deploy_cores(name, requested_cores, metis)
+        deploy_cores = model_infos.determine_deploy_cores(
+            name, pipeline_config.aipu_cores, metis, pipeline_config.low_latency
+        )
         root = model_json.parent / model_infos.determine_deploy_decoration(
             name, deploy_cores, metis
         )

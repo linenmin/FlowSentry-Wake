@@ -56,7 +56,6 @@ def _find_template_operators(network):
     yaml_pipeline = network.get('pipeline', [])
     if yaml_pipeline is not None:
         for el in yaml_pipeline:
-            task_name = next(iter(el.keys()), '')
             paths = utils.find_values_in_dict('template_path', el)
             for path in paths:
                 if Path(path).is_file():
@@ -90,20 +89,20 @@ def _to_type(t, allow_variable=True, allow_sentinel=False, existing=None, use_en
     from ..operators import PreprocessOperator
 
     # From YAML POV there is no difference between a str and a Path
-    if t == str or t == Path:
+    if t is str or t is Path:
         cast = Str
-    elif t == int:
+    elif t is int:
         cast = Int
-    elif t == float:
+    elif t is float:
         cast = Float
-    elif t == bool:
+    elif t is bool:
         cast = Bool
     elif inspect.isclass(t) and issubclass(t, enum.Enum):
         if use_enum_values and all(isinstance(e.value, int) for e in t):
             cast = IntEnum[[e.value for e in t]]
         else:
             cast = Enum[[e.value for e in t]] if use_enum_values else Enum[[e.name for e in t]]
-    elif t == PreprocessOperator and existing is not None:
+    elif t is PreprocessOperator and existing is not None:
         cast = existing
     elif typing.get_origin(t) is typing.List or typing.get_origin(t) is list:
         if typing.get_args(t):
@@ -117,7 +116,7 @@ def _to_type(t, allow_variable=True, allow_sentinel=False, existing=None, use_en
             ]
         else:
             cast = List[Any]
-    elif t == list:
+    elif t is list:
         cast = List[Any]
     # This may need refining in the future, only needed by `algo_params` in tracker as of writing,
     # which in turn is only used to write to json again, so type casting is not necessary.
@@ -133,7 +132,7 @@ def _to_type(t, allow_variable=True, allow_sentinel=False, existing=None, use_en
             ]
         else:
             cast = MapPattern[Any]
-    elif t == dict:
+    elif t is dict:
         cast = MapPattern[Any]
     elif typing.get_origin(t) is typing.Union:
         args = typing.get_args(t)

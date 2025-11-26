@@ -1,10 +1,17 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 # Model zoo custom weights deployment
 
+## Contents
 - [Model zoo custom weights deployment](#model-zoo-custom-weights-deployment)
+  - [Contents](#contents)
+  - [Prerequisites](#prerequisites)
+  - [Level](#level)
+  - [Overview](#overview)
   - [Deploy a PyTorch object detector directly (YOLOv8n with custom weights)](#deploy-a-pytorch-object-detector-directly-yolov8n-with-custom-weights)
     - [Model definition](#model-definition)
     - [Data adapter definition](#data-adapter-definition)
+    - [Ultralytics Data YAML Support](#ultralytics-data-yaml-support)
+    - [Traditional Class Name Configuration](#traditional-class-name-configuration)
     - [Model env definition](#model-env-definition)
     - [Use the Voyager SDK to deploy your new model](#use-the-voyager-sdk-to-deploy-your-new-model)
   - [Deploy an ONNX-exported model (YOLOv8n with custom weights)](#deploy-an-onnx-exported-model-yolov8n-with-custom-weights)
@@ -13,7 +20,21 @@
   - [Automatic asset management with URLs and MD5 checksums](#automatic-asset-management-with-urls-and-md5-checksums)
     - [Model weight management](#model-weight-management)
     - [Dataset management](#dataset-management)
+  - [Next Steps](#next-steps)
+  - [Related Documentation](#related-documentation)
+  - [Further support](#further-support)
 
+## Prerequisites
+- Complete [Quick Start Guide](quick_start_guide.md) - understand basic model deployment
+- [Application Integration](application.md) or [AxInferenceNet Tutorial](axinferencenet.md) - know how to run inference
+- Your own trained model weights (PyTorch .pth or ONNX format)
+- Calibration dataset representative of your target domain
+- Understanding of YAML configuration files
+
+## Level
+**Intermediate** - Requires understanding of model architectures and dataset preparation
+
+## Overview
 Axelera model zoo models are provided with default weights based on industry-standard datasets.
 This enables you to quickly and easily evaluate model accuracy on Metis compared to other
 implementations. For most models you can also easily substitute the default weights with your
@@ -47,9 +68,14 @@ using a license plate dataset from [Roboflow](https://public.roboflow.com/object
 
 ## Deploy a PyTorch object detector directly (YOLOv8n with custom weights)
 
+> [!NOTE]
+> **About file organization**:
+> - **YAML model configuration files**: Place these in the `customers/` directory to keep your custom model definitions separate from the SDK's model zoo in `ax_models/zoo/`.
+> - **Weight files and datasets**: Can be stored anywhere on your filesystem using absolute paths. You may organize them in `customers/` alongside your YAMLs for convenience, or store them in shared locations, external storage, or any directory you prefer.
+
 The first step to deploy your custom weights is to locate the model zoo YAML file
 for your model (based on industry-standard weights) and copy this from a location
-in `ax_models/zoo` to `customers`.
+in `ax_models/zoo` to a location of your choice (e.g., `customers/` directory).
 
 To create a new project based on YOLOv8n, run the following commands from the root
 of the repository:
@@ -76,50 +102,69 @@ Open the new file `yolov8n-licenseplate.yaml` in an editor and modify it so it l
 the example below.
  
 ```yaml
+axelera-model-format: 1.0.0
+
 name: yolov8n-licenseplate
 
 description: A custom YOLOv8n model trained on a licenseplate dataset
 
-model-env:
-  dependencies:
-    - ultralytics
-
 pipeline:
-  - YOLOv8n-licenseplate:
-      template_path: $AXELERA_FRAMEWORK/pipeline-template/yolo-letterbox.yaml
+  - detections:
+      model_name: yolov8n-licenseplate
+      input:
+        type: image
+      preprocess:
+        - letterbox:
+            height: ${{input_height}}
+            scaleup: true
+            width: ${{input_width}}
+        - torch-totensor:
+      inference:
+        handle_all: false
       postprocess:
-        - decodeyolo:                  # fine-tune decoder settings
-            max_nms_boxes: 30000
+        - decodeyolo:
+            box_format: xywh
             conf_threshold: 0.25
+            label_filter: ${{label_filter}}
+            max_nms_boxes: 30000
+            nms_class_agnostic: true
             nms_iou_threshold: 0.45
-            nms_class_agnostic: False
             nms_top_k: 300
+            normalized_coord: false
+            use_multi_label: false
             eval:
-               conf_threshold: 0.001     # overwrites above parameter during accuracy measurements
+              conf_threshold: 0.001
+              nms_class_agnostic: false
+              nms_iou_threshold: 0.7
+              use_multi_label: true
 
 models:
-  YOLOv8n-licenseplate:
+  yolov8n-licenseplate:
     class: AxUltralyticsYOLO
     class_path: $AXELERA_FRAMEWORK/ax_models/yolo/ax_ultralytics.py
-    weight_path: $AXELERA_FRAMEWORK/customers/mymodels/yolov8n_licenseplate.pt  # pretrained weights file
+    weight_path: /home/user/mymodels/yolov8n_licenseplate.pt  # absolute path to your weights file (recommended)
     task_category: ObjectDetection
     input_tensor_layout: NCHW
-    input_tensor_shape: [1, 3, 640, 640]                                        # your model input size
+    input_tensor_shape: [1, 3, 640, 640]                                 # your model input size
     input_color_format: RGB
-    num_classes: 1                                                              # the number of classes in your dataset
-    dataset: licenseplate
+    num_classes: 1                                                       # the number of classes in your dataset
+    dataset: licenseplate                                                # dataset
 
-datasets:
+datasets: # Python dataloader
   licenseplate:
     class: ObjDataAdapter
     class_path: $AXELERA_FRAMEWORK/ax_datasets/objdataadapter.py
     data_dir_name: licenseplate_v4_resized640_aug3x-ACCURATE
-    ultralytics_data_yaml: data.yaml  # Recommended: Ultralytics format (replaces cal_data, val_data, labels)
+    ultralytics_data_yaml: data.yaml    # Recommended: Ultralytics format (replaces cal_data, val_data, labels)
     label_type: YOLOv8
-    # Alternative traditional format:
-    # labels: data.yaml
-    # cal_data: val.txt     # Text file with image paths or directory like `valid`
-    # val_data: test.txt    # Text file with image paths or directory like `test`
+
+model-env:
+  dependencies: [ultralytics]
+
+operators:
+  decodeyolo:
+    class: DecodeYolo
+    class_path: $AXELERA_FRAMEWORK/ax_models/decoders/yolo.py
 ```
 
 The YAML file contains five top-level sections:
@@ -154,7 +199,7 @@ configuration parameters.
 | :---- | :---------- |
 | `class` | The name of a PyTorch class used to instantiate an object of the YOLO model. For this example, set to `AxYolo`
 | `class_path` | Absolute path to a Python file containing the above class definition. For this example, set to [ax_models/yolo/ax_yolo.py](/ax_models/yolo/ax_yolo.py)
-| `weight_path` | Absolute path to your weights file. (Ensure that neither `weight_url` or `prequantized_url` are specified, as these fields take precedence.) |
+| `weight_path` | **Path to your custom weights file**. For custom weights, use one of these options:<br><br>• **Absolute path (recommended)**: `/home/user/my_weights/model.pt` - Most straightforward, no ambiguity<br><br>• **Home directory with `~`**: `~/my_weights/model.pt` - Expands to your home directory<br><br>• **Relative path**: If your YAML is at `customers/mymodels/yolov8n-licenseplate.yaml` and model name is `yolov8n-licenseplate`, then `custom_weights/model.pt` resolves to `customers/mymodels/yolov8n-licenseplate/custom_weights/model.pt`<br><br>**Note**: The `weights/` prefix (e.g., `weights/model.pt`) is a special pattern used by the SDK's model zoo for auto-downloaded weights. It's removed during path resolution, which can cause confusion. For custom weights, use absolute paths or avoid the `weights/` prefix. Ensure that neither `weight_url` nor `prequantized_url` are specified, as these fields take precedence over `weight_path`. |
 | `task_category` | All YOLO object detectors have task category `ObjectDetection`. Keypoint detectors such as YOLOv8l-Pose have task category `KeypointDetection` and instance segmentation models such as YOLOv8m-seg have task category `InstanceSegmentation` |
 | `input_tensor_layout` | The tensor layout. Ultralytics YOLO models are all `NCHW`
 | `input_tensor_shape` | The size of your model input specified as [1, channels, width, height]. The batch size is always set to 1
@@ -353,7 +398,7 @@ models:
   YOLOv8n-licenseplate:
     class: AxONNXModel
     class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
-    weight_path: $AXELERA_FRAMEWORK/customers/mymodels/yolov8n_licenseplate.onnx
+    weight_path: /home/user/mymodels/yolov8n_licenseplate.onnx  # absolute path (recommended)
 ```
 
 The model class `AxONNXModel` defined in `ax_models/base_onnx.py` is a generic class that
@@ -473,7 +518,9 @@ With this configuration:
 3. If the file doesn't exist or the MD5 doesn't match, it downloads the file from `weight_url` to `~/.cache/axelera/weights/yolov8n_custom.onnx`
 
 > [!IMPORTANT]
-> If you're using your own custom weights, make sure to remove the `weight_url` and `weight_md5` fields from your YAML file to prevent automatic downloads that might overwrite your custom weights.
+> **When to use `weight_url` and `weight_md5`:**
+> - **For team sharing/production**: Include these fields to share weights across your team (via internal server, S3, etc.), ensuring everyone uses the exact same weights with automatic download and integrity verification.
+> - **For local development**: Omit these fields and use only `weight_path` to iterate quickly with your local weights without triggering downloads or checksum verification.
 
 ### Dataset management
 
@@ -503,3 +550,32 @@ For example, with a ZIP file containing `dataset/train/` and `dataset/val/`:
 
 > [!TIP]
 > The `weight_path` field supports absolute paths and paths with `~/` for home directory expansion, giving you flexibility in where you store your model weights.
+
+## Next Steps
+- **Deploy entirely new architectures**: [Custom Model Tutorial](custom_model.md)
+- **Chain multiple models**: [Cascaded Models Tutorial](cascaded_model.md)
+- **Validate accuracy**: [Benchmarking Tutorial](benchmarking.md)
+- **Integrate into application**: [Application Integration](application.md)
+- **Optimize performance**: [Compiler Configs Reference](../reference/compiler_configs.md)
+
+## Related Documentation
+**Tutorials:**
+- [Custom Model](custom_model.md) - For entirely new architectures not in Model Zoo
+- [Application Integration](application.md) - Run your custom model in applications
+- [Benchmarking](benchmarking.md) - Validate accuracy of your custom weights
+
+**References:**
+- [Compiler CLI](../reference/compiler_cli.md) - Command-line compilation options
+- [Compiler API](../reference/compiler_api.md) - Programmatic compilation
+- [Compiler Configs](../reference/compiler_configs.md) - Advanced configuration options
+- [Deploy Reference](../reference/deploy.md) - Deployment workflow details
+- [Model Zoo](../reference/model_zoo.md) - Available base architectures
+- [YAML Operators](../reference/yaml_operators.md) - Pipeline operator syntax
+- [Pipeline Operators](../reference/pipeline_operators.md) - Pre/post-processing operators
+
+**Examples:**
+- Model deployment examples in SDK use custom weight patterns
+
+## Further support
+- For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+- For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

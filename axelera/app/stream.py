@@ -11,14 +11,32 @@ import queue
 import signal
 import sys
 import threading
+import time
+import traceback
 from typing import TYPE_CHECKING, Iterable
 
 from . import config, logging_utils, pipe, utils
+from .pipe import FrameEventType
 
 LOG = logging_utils.getLogger(__name__)
-_INTERRUPT_RAISED = object()  # sentinel for interrupt raised
+
+
+class _Sentinel:
+    def __init__(self, name):
+        self.name = name
+
+    def __repr__(self):
+        return self.name
+
+
+_INTERRUPT_RAISED = _Sentinel('INTERRUPT_RAISED')
+_PIPELINE_REMOVED = _Sentinel('PIPELINE_REMOVED')
+_FRAMES_COMPLETED = _Sentinel('FRAMES_COMPLETED')
+
 
 if TYPE_CHECKING:
+    from axelera import types
+
     from .inf_tracers import TraceMetric, Tracer
 
 
@@ -32,9 +50,18 @@ class InterruptHandler:
             signal.signal(signal.SIGTERM, self)
 
     def __call__(self, *args):
+        already_interrupted = self._interrupted.is_set()
         self._interrupted.set()
         if self.stream is not None:
-            LOG.info("Interrupting the inference stream")
+            if already_interrupted:
+                LOG.info("Interrupting the inference stream again, active threads:")
+                try:
+                    for t in list(threading.enumerate()):
+                        LOG.info(f"Thread {t.name} {t.daemon=} {t.is_alive()=}")
+                except Exception as e:
+                    LOG.info(f"Failed to list active threads: {e}")
+            else:
+                LOG.info("Interrupting the inference stream")
             return self.stream.stop()
         else:
             LOG.error('Unable to stop stream')
@@ -81,6 +108,23 @@ def _calculate_num_frames(pipelines, requested_frames):
     return min(combined) if combined else 0
 
 
+class _IterateWithLen:
+    def __init__(self, iter: Iterable, len: int):
+        self._iter = iter
+        self._len = len
+
+    def __iter__(self):
+        return self._iter
+
+    def __len__(self):
+        return self._len
+
+
+def _debug_log_sentinel(pipeline, msg, text):
+    if isinstance(msg, _Sentinel):
+        LOG.debug(text, f"{pipeline.name if pipeline else 'None'}: {msg!r}")
+
+
 class InferenceStream:
     """An iterator that launches the inference pipeline locally
     and yields inference results for each frame"""
@@ -105,16 +149,19 @@ class InferenceStream:
         self._queue = queue.Queue(maxsize=10)
         self._interrupt_raised = False
         self._pipelines: list[pipe.PipeManager] = []
+        self._removed_pipelines: set[pipe.PipeManager] = set()
+        self._pending_evaluators: list[types.Evaluator] = []
         self._timer = utils.Timer()
         self._frames_requested = stream_config.frames
+        self._frames_lock = threading.Lock()
         self._frames_executed = 0
         self._stream_lock = threading.Lock()
         self._interrupt_handler = InterruptHandler(self)
         self._id_allocator = pipe.SourceIdAllocator()
         self.hardware_caps = system_config.hardware_caps.detect_caps()
-        self._done = False
         self._queue_blocked = False
         self._tracers: list[Tracer] = tracers or []
+        self._started = False
         for pc in pipeline_configs:
             self.add_pipeline(pc)
         self._frames = _calculate_num_frames(self._pipelines, stream_config.frames)
@@ -143,19 +190,59 @@ class InferenceStream:
         '''
         pipeline_config = pipeline_config or copy.deepcopy(self._default_pipeline_config)
         pipeline_config.update_from_kwargs(kwargs)
-        manager = _create_manager(
-            self._system_config,
-            self._stream_config,
-            pipeline_config,
-            self._deploy_config,
-            self._tracers,
-            None,
-            self._id_allocator,
-        )
-        manager.init_pipe()
-        manager.setup_callback(lambda result: self._feed_result(manager, result))
-        self._pipelines.append(manager)
+        other_pipelines = self._pipelines[:]
+        if self._started:
+            for p in other_pipelines:
+                p.pause_pipe()
+        try:
+            manager = _create_manager(
+                self._system_config,
+                self._stream_config,
+                pipeline_config,
+                self._deploy_config,
+                self._tracers,
+                pipeline_config.render_config,
+                self._id_allocator,
+            )
+            manager.init_pipe()
+            manager.setup_callback(lambda result: self._feed_result(manager, result))
+            self._pipelines.append(manager)
+            if self._started:
+                manager.run_pipe()
+        finally:
+            if self._started:
+                for p in other_pipelines:
+                    p.play_pipe()
         return manager
+
+    def remove_pipeline(self, pipeline: pipe.PipeManager | int):
+        """Remove a pipeline from the stream.
+
+        Note that the pipeline will be stopped, and removed immediately. No more
+        results will be received.
+
+        Args:
+            pipeline: The pipeline to remove, either a PipeManager instance or an index.
+        """
+        if isinstance(pipeline, int):
+            if pipeline < 0 or pipeline >= len(self._pipelines):
+                raise IndexError(
+                    f"Pipeline index {pipeline} out of range [0, {len(self._pipelines)})"
+                )
+            pipeline = self._pipelines[pipeline]
+        if pipeline not in self._pipelines:
+            LOG.warning(f"Pipeline {pipeline.network.name} not found in the stream")
+            return
+
+        name = f'Pipeline {self._pipelines.index(pipeline)} ({pipeline.network.name})'
+        pipeline.stop_pipe()
+        LOG.debug(f"Stopped {name}, awaiting removal")
+        while pipeline in self._pipelines:
+            LOG.debug(f"{name} was not yet removed")
+            time.sleep(0.1)
+        for src_id in pipeline.sources.keys():
+            self._id_allocator.deallocate(src_id)
+        LOG.debug(f"{name} has been removed")
 
     @property
     def manager(self):
@@ -173,6 +260,12 @@ class InferenceStream:
     def sources(self) -> dict[int, config.Source]:
         '''Return the list of input sources'''
         return collections.ChainMap(*(p.sources for p in self._pipelines))
+
+    @property
+    def frames_executed(self) -> int:
+        '''Return the number of frames that have been processed so far.'''
+        with self._frames_lock:
+            return self._frames_executed
 
     @property
     def frames(self) -> int:
@@ -193,70 +286,140 @@ class InferenceStream:
     def __len__(self):
         return self._frames
 
-    def _feed_result(self, pipeline: pipe.PipeManager, result: pipe.FrameResult | None):
-        while not self._done:
-            try:
-                self._queue.put((pipeline, result), timeout=0.2)
-                if self._queue_blocked and self._queue.qsize() < self._queue.maxsize // 2:
-                    LOG.info(
-                        f"InferencedStream is being processed quickly enough again (backlog={self._queue.qsize()})"
-                    )
-                    self._queue_blocked = False
-                break
-            except queue.Full:
-                if not self._queue_blocked:
-                    LOG.warning(
-                        f"New inference data is ready, but the InferencedStream is not being processed fast enough (backlog={self._queue.qsize()})"
-                    )
-                self._queue_blocked = True
+    def _feed_result(self, pipeline: pipe.PipeManager, event: pipe.FrameEvent | None) -> bool:
+        should_continue = True
+        if self.is_interrupted:
+            should_continue = False
+            LOG.debug(f"Stream stopping, ignoring new results {event!r}")
+            return should_continue
 
-    def __iter__(self) -> Iterable[pipe.FrameResult]:
-        if not self._pipelines:
+        msgs = []
+        if event is None and pipeline is not None:
+            LOG.debug(f"Received None from {pipeline.name}, removing pipeline")
+        if event.type == FrameEventType.end_of_pipeline:
+            LOG.debug(f"Pipeline {pipeline.name} implicit _PIPELINE_REMOVED")
+            if pipeline not in self._removed_pipelines:
+                msgs.append((pipeline, _PIPELINE_REMOVED))
+        else:
+            msgs.append((pipeline, event))
+
+        if event is not None and event.result:
+            with self._frames_lock:
+                self._frames_executed += 1
+                if self._frames_requested and self._frames_executed >= self._frames_requested:
+                    LOG.debug(f"Reached frame limit ({self._frames_requested}), stopping stream")
+                    for p in self._pipelines:
+                        msgs.append((p, _PIPELINE_REMOVED))
+                    msgs.append((None, _FRAMES_COMPLETED))
+                    should_continue = False
+
+        for p, msg in msgs:
+            while not self.is_interrupted:
+                try:
+                    self._queue.put((p, msg), timeout=0.2)
+                    qsize = self._queue.qsize()
+                    if self._queue_blocked and qsize < self._queue.maxsize // 2:
+                        LOG.info(f"InferenceStream queue is unblocked ({qsize=})")
+                        self._queue_blocked = False
+                    break
+                except queue.Full:
+                    if not self._queue_blocked:
+                        qsize = self._queue.qsize()
+                        LOG.warning(f"InferenceStream queue is full ({qsize=})")
+                    self._queue_blocked = True
+        with self._stream_lock:
+            for p, msg in msgs:
+                _debug_log_sentinel(p, msg, "Emitting %s")
+                if msg is _PIPELINE_REMOVED and p in self._pipelines:
+                    self._pipelines.remove(p)
+                    self._removed_pipelines.add(p)
+                    if p.evaluator:
+                        self._pending_evaluators.append(p.evaluator)
+        return should_continue
+
+    def _iter(self) -> Iterable[pipe.FrameEvent]:
+        if not self._pipelines and self._queue.qsize() == 0:
             raise ValueError(
                 "No pipeline configs provided, please add a pipeline using add_pipeline()"
             )
         for pipeline in self._pipelines:
             pipeline.run_pipe()
+        self._started = True
         self._timer.reset()
         try:
-            n = 0
-            while (not self.frames or n < self.frames) and self._pipelines:
+            while self._pipelines or self._queue.qsize() > 0:
                 if self.is_interrupted:
                     LOG.debug("Stream interrupted, stopping...")
                     break
                 try:
-                    pipeline, result = self._queue.get(timeout=self.timeout)
-                    if result is None and pipeline is not None:
-                        if pipeline in self._pipelines:
-                            LOG.debug(
-                                f"Received None from {pipeline.network.name} removing pipeline"
-                            )
-                            self._pipelines.remove(pipeline)
-                            self.report_summary(pipeline)
-                        else:
-                            LOG.warning(f"Received None from unknown pipeline {pipeline}")
-                        continue
-                    elif result is _INTERRUPT_RAISED or self._interrupt_raised:
+                    p, msg = self._queue.get(timeout=self.timeout)
+                    _debug_log_sentinel(p, msg, "Got %s")
+                    if self._interrupt_raised:
                         LOG.debug("Stream interrupted, stopping...")
                         break
-                    if pipeline.evaluator:
-                        pipeline.evaluator.append_new_sample(result.meta)
+                    if msg is _PIPELINE_REMOVED:
+                        continue
+                    if msg in (_INTERRUPT_RAISED, _FRAMES_COMPLETED):
+                        break
+                    if p.evaluator:
+                        result = msg.result
+                        # TODO consider if this should happen in the _feed_result thread
+                        p.evaluator.append_new_sample(result.meta)
 
                 except queue.Empty:  # timeout
                     LOG.warning("Timeout for querying an inference")
-                    raise RuntimeError('timeout for querying an inference') from None
-                if n == 1:
-                    # Reset the timer after the first two frames which are usually very slow
+                    raise RuntimeError('Timeout for querying an inference') from None
+                # Reset the timer after the first two frames which are usually very slow
+                if self.frames_executed == 2:
                     self._timer.reset()
-                yield result
-                n += 1
+                yield msg
+        except Exception as e:
+            LOG.error(f'InferenceStream terminated due to {str(e)}')
+            LOG.debug(f'{traceback.format_exc()}')
+            raise
         finally:
-            self._done = True
-            self._frames_executed = max(n - 2, 0)
+            LOG.trace("InferenceStream._iter() is in finally")
             self._timer.stop()
-            for pipeline in self._pipelines:
-                pipeline.stop_pipe()
-                self.report_summary(pipeline)
+            with self._stream_lock:
+                for evaluator in self._pending_evaluators:
+                    self._report_summary(evaluator)
+            LOG.trace("InferenceStream._iter() has completed")
+
+    def without_events(self) -> Iterable[pipe.FrameResult]:
+        '''Iterate over the stream, yielding only FrameResult objects.
+
+        Any FrameEvents will be ignored, with a warning logged.
+        '''
+        for x in self._iter():
+            if x.result:
+                yield x.result
+            else:
+                LOG.warning(f"Ignoring event {x!r}")
+                LOG.warning_once("Use stream.with_events() to receive events")
+
+    def with_events(self) -> Iterable[pipe.FrameEvent]:
+        '''Iterate over the stream, yielding FrameEvent objects.
+
+        FrameEvent objects are used to notify the application of events such as end-of-stream,
+        errors, or other conditions. if the event has a result property then it is of
+        type FrameResult, which is the same object returned by the normal iterator of the stream.
+
+        The advantage of using `with_events` is that it allows the application to
+        respond to non inference events, for example to handle end-of-stream or errors.
+
+        stream = create_inference_stream(network="resnet18-imagenet", sources=['usb:0'])
+        for event in stream.with_events():
+            if fr := event.result:
+                window.show(fr.image, fr.meta, stream_id=fr.stream_id)
+            elif event.type == FrameEventType.stream_error:
+                print(f"Stream {event.stream_id} had an error and has been closed: {event.message}")
+            else:
+                print(f"Stream {event.stream_id} had an event: {event.type} {event.message}")
+
+        '''
+        return _IterateWithLen(self._iter(), len(self))
+
+    __iter__ = without_events
 
     def stream_select(self, streams: Iterable[int] | str) -> None:
         '''Configure streams to be in paused or resumed state.
@@ -288,7 +451,7 @@ class InferenceStream:
         sids = set()
         with self._stream_lock:
             for p in self._pipelines:
-                sids |= p.get_stream_select()
+                sids |= set(p.get_stream_select())
         valid_ids = set(self.sources.keys())
         if paused := valid_ids - sids:
             spaused = ' '.join(str(x) for x in paused)
@@ -346,9 +509,12 @@ class InferenceStream:
         self._interrupt_raised = True
         # put a None, but if the queue is full flush it, do this in a loop until we succeed
         # otherwise the queue may be being fed by the producer
+        for p in self._pipelines:
+            p.stop_pipe()
         while 1:
             try:
                 self._queue.put((None, _INTERRUPT_RAISED), timeout=0)  # unblock the queue
+                LOG.debug("Stream stop requested")
                 break
             except queue.Full:
                 pass
@@ -362,14 +528,13 @@ class InferenceStream:
         '''True if any input stream is a single image.'''
         return any(p.is_single_image() for p in self._pipelines)
 
-    def report_summary(self, pipeline: pipe.PipeManager) -> None:
-        '''When evaluating, report the summary of the evaluation.'''
-        if evaluator := pipeline.evaluator:
-            duration_s = self._timer.time
-            evaluator.evaluate_metrics(duration_s)
-            output = io.StringIO()
-            evaluator.write_metrics(output)
-            LOG.info(output.getvalue().strip())
+    def _report_summary(self, evaluator: types.Evaluator) -> None:
+        '''Report the summary of the evaluator.'''
+        duration_s = self._timer.time
+        evaluator.evaluate_metrics(duration_s)
+        output = io.StringIO()
+        evaluator.write_metrics(output)
+        LOG.info(output.getvalue().strip())
 
     def get_all_metrics(self) -> dict[str, TraceMetric]:
         '''Return all tracer metrics.

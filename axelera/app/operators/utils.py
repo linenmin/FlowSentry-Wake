@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Utils for operators
 
 import difflib
@@ -43,10 +43,10 @@ def build_class_sieve(label_filter, labels):
             return [_label_enum_to_int(labels, label) for label in label_filter]
         else:
             return [str(labels.index(label)) for label in label_filter]
-    raise ValueError(f"Type of label filter not supported, must be all int or all str")
+    raise ValueError("Type of label filter not supported, must be all int or all str")
 
 
-def insert_color_convert(gst, format, vaapi=False, opencl=False, opencv=False):
+def insert_color_convert(gst, format, vaapi=False, opencl=False, opencv=True):
     if not isinstance(format, str):
         format = format.name
     if format.lower() in ['rgb', 'bgr']:
@@ -66,7 +66,9 @@ def insert_color_convert(gst, format, vaapi=False, opencl=False, opencv=False):
             gst.videoconvert()
             gst.axinplace()
     elif bool(opencv) is True:
-        gst.axtransform(lib="libtransform_colorconvert.so", options=f'format:{format.lower()}')
+        gst.axtransform(
+            lib="libtransform_colorconvert.so", options=f'format:{color_format.lower()}'
+        )
     else:
         gst.videoconvert()
         gst.capsfilter(caps=f'video/x-raw,format={color_format}')
@@ -74,9 +76,9 @@ def insert_color_convert(gst, format, vaapi=False, opencl=False, opencv=False):
 
 def inspect_resize_status(context: PipelineContext):
     if context.resize_status != types.ResizeMode.ORIGINAL:
-        msg = f"Please ensure that there is only one Resize or Letterbox operator in the "
-        msg += f"pipeline. The current resize status is {context.resize_status} already."
-        raise ValueError(msg)
+        msg = "Pipeline contains multiple resize operators, "
+        msg += "this may lead to unexpected results."
+        LOG.debug(msg)
 
 
 def create_tmp_chars(chars):

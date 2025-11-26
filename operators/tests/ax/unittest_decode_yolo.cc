@@ -1,8 +1,8 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <memory>
 #include <numeric>
@@ -73,7 +73,7 @@ TEST(yolo_errors, no_zero_points_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolo.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolo", properties), std::runtime_error);
 }
 
 TEST(yolo_errors, no_scales_throws)
@@ -81,7 +81,7 @@ TEST(yolo_errors, no_scales_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "zero_points", "0" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolo.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolo", properties), std::runtime_error);
 }
 
 TEST(yolo_errors, different_scale_and_zero_point_sizes_throws)
@@ -90,7 +90,7 @@ TEST(yolo_errors, different_scale_and_zero_point_sizes_throws)
     { "zero_points", "0, 0" },
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolo.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolo", properties), std::runtime_error);
 }
 
 
@@ -102,7 +102,7 @@ TEST(yolo_errors, must_provide_onnx)
   };
 
   try {
-    Decoder("libdecode_yolo.so", properties);
+    Ax::LoadDecode("yolo", properties);
     FAIL() << "Expected std::runtime_error";
   } catch (std::runtime_error const &err) {
     EXPECT_EQ(err.what(),
@@ -120,7 +120,7 @@ TEST(yolo_errors, must_provide_classes)
     { "zero_points", "0, 0" },
     { "scales", "1, 2" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolo.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolo", properties), std::runtime_error);
 }
 
 
@@ -132,7 +132,7 @@ TEST(yolo_errors, onnx_must_exist)
     { "feature_decoder_onnx", "doesnt_exist.onnx" },
   };
   try {
-    Decoder("libdecode_yolo.so", properties);
+    Ax::LoadDecode("yolo", properties);
     FAIL() << "Expected std::runtime_error";
   } catch (std::runtime_error const &err) {
     EXPECT_EQ(err.what(),
@@ -151,7 +151,7 @@ TEST(yolo_errors, padding_length_must_all_be_8)
     { "paddings", "0,0,0,0,0,0,0,1|0,0,0,0,0,0,0,2|0,0,0,2,0,1" },
   };
   try {
-    Decoder("libdecode_yolo.so", properties);
+    Ax::LoadDecode("yolo", properties);
     FAIL() << "Expected std::runtime_error";
   } catch (std::runtime_error const &err) {
     EXPECT_EQ(err.what(),
@@ -183,14 +183,14 @@ TEST(yolo_error, different_tensor_sizes_and_dequantize_tables_size)
     { "multiclass", "0" },
     { "feature_decoder_onnx", get_file_dir() + "/assets/test_concat-1-8-10.onnx" },
   };
-  Decoder decoder("libdecode_yolo.so", properties);
+  auto decoder = Ax::LoadDecode("yolo", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto tensors = tensors_from_vector(coordinates, coordinates_shape);
   auto tensors_conf = tensors_from_vector(confidences, confidences_shape);
   tensors.push_back(std::move(tensors_conf[0]));
-  EXPECT_THROW(decoder.decode_to_meta(tensors, 0, 1, map, video_info), std::runtime_error);
+  EXPECT_THROW(decoder->decode_to_meta(tensors, 0, 1, map, video_info), std::runtime_error);
 }
 
 std::vector<int8_t>
@@ -308,11 +308,11 @@ TEST_F(YoloDecodeScoresTest, unsupported_output_channels_excluding_classes)
     { "multiclass", "0" },
     { "feature_decoder_onnx", m_test_onnx_v8 },
   };
-  Decoder decoder("libdecode_yolo.so", properties);
+  auto decoder = Ax::LoadDecode("yolo", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   try {
-    decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+    decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
     FAIL() << "Expected std::runtime_error, but got nothing";
   } catch (std::runtime_error const &err) {
     EXPECT_EQ(err.what(),
@@ -338,10 +338,10 @@ TEST_F(YoloDecodeScoresTest, depadding)
     { "multiclass", "0" },
     { "feature_decoder_onnx", m_test_onnx_v8 },
   };
-  Decoder decoder("libdecode_yolo.so", properties);
+  auto decoder = Ax::LoadDecode("yolo", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
 
@@ -367,14 +367,14 @@ TEST_F(YoloDecodeScoresTest, multiclass)
     { "multiclass", "1" },
     { "feature_decoder_onnx", m_test_onnx_v8 },
   };
-  Decoder decoder("libdecode_yolo.so", properties);
+  auto decoder = Ax::LoadDecode("yolo", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
-  auto expected_classes = std::vector<int32_t>{ 0, 1, 0, 3 };
-  auto expected_scores = std::vector<float>{ 0.585F, 0.55F, 0.55F, 0.56F };
+  auto expected_classes = std::vector<int32_t>{ 0, 3, 1, 0 };
+  auto expected_scores = std::vector<float>{ 0.585F, 0.56F, 0.55F, 0.55F };
   ASSERT_EQ(actual_classes, expected_classes);
   EXPECT_FLOAT_EQ(actual_scores[0], expected_scores[0]);
   EXPECT_FLOAT_EQ(actual_scores[1], expected_scores[1]);
@@ -396,10 +396,10 @@ TEST_F(YoloDecodeScoresTest, yolov8)
     { "model_height", "640" },
     { "feature_decoder_onnx", m_test_onnx_v8 },
   };
-  Decoder decoder("libdecode_yolo.so", properties);
+  auto decoder = Ax::LoadDecode("yolo", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
 
@@ -427,10 +427,10 @@ TEST_F(YoloDecodeScoresTest, yolov5)
     { "model_height", "640" },
     { "feature_decoder_onnx", m_test_onnx_v5 },
   };
-  Decoder decoder("libdecode_yolo.so", properties);
+  auto decoder = Ax::LoadDecode("yolo", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
   auto expected_boxes = std::vector<int32_t>{ 63, 86, 239, 220, 187, 51, 208, 83 };

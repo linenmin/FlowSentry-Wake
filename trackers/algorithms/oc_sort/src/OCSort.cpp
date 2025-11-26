@@ -1,8 +1,14 @@
+// Copyright Axelera AI, 2025
 #include "../include/OCSort.hpp"
-#include <opencv2/core/eigen.hpp>
-#include <opencv2/opencv.hpp>
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <iostream>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include "iomanip"
+#include "lapjv.hpp"
 
 namespace ocsort
 {
@@ -20,31 +26,93 @@ operator<<(std::ostream &os, const std::vector<Matrix> &v)
   return os;
 }
 
-OCSort::OCSort(float det_thresh_, int max_age_, int min_hits_, float iou_threshold_,
-    int delta_t_, std::string asso_func_, float inertia_, float w_assoc_emb_,
-    float alpha_fixed_emb_, int max_id_, bool aw_off_, float aw_param_, bool cmc_off_)
+OCSort::OCSort(float det_thresh_, int max_age_, int min_hits_,
+    float iou_threshold_, int delta_t_, float inertia_, float w_assoc_emb_,
+    float alpha_fixed_emb_, int max_id_, bool aw_off_, float aw_param_,
+    bool cmc_off_, bool enable_id_recovery_, int img_width_, int img_height_,
+    int rec_image_rect_margin_, int rec_track_min_time_since_update_at_boundary_,
+    int rec_track_min_time_since_update_inside_, int rec_track_min_age_,
+    float rec_track_merge_lap_thresh_, int rec_track_memory_capacity_, int rec_track_memory_max_age_)
+    : det_thresh(det_thresh_), max_age(max_age_), min_hits(min_hits_),
+      iou_threshold(iou_threshold_), delta_t(delta_t_), inertia(inertia_),
+      w_assoc_emb(w_assoc_emb_), alpha_fixed_emb(alpha_fixed_emb_),
+      aw_off(aw_off_), aw_param(aw_param_), cmc_off(cmc_off_),
+      enable_id_recovery(enable_id_recovery_),
+      rec_image_rect_margin(rec_image_rect_margin_),
+      rec_track_min_time_since_update_at_boundary(rec_track_min_time_since_update_at_boundary_),
+      rec_track_min_time_since_update_inside(rec_track_min_time_since_update_inside_),
+      rec_track_min_age(rec_track_min_age_),
+      rec_track_merge_lap_thresh(rec_track_merge_lap_thresh_),
+      rec_track_memory_capacity(rec_track_memory_capacity_),
+      rec_track_memory_max_age(rec_track_memory_max_age_), frame_count(0)
 {
-  cmc_off = cmc_off_;
-  max_age = max_age_;
-  min_hits = min_hits_;
-  iou_threshold = iou_threshold_;
-  trackers.clear();
-  frame_count = 0;
-  det_thresh = det_thresh_;
-  delta_t = delta_t_;
-  aw_off = aw_off_;
-  aw_param = aw_param_;
-  std::unordered_map<std::string, std::function<Eigen::MatrixXf(const Eigen::MatrixXf &, const Eigen::MatrixXf &)>> ASSO_FUNCS{
-    { "iou", iou_batch }, { "giou", giou_batch }
+  const auto make_error = [](const char *param, const std::string &detail) {
+    return std::invalid_argument(
+        "OCSort tracker: parameter '" + std::string(param) + "' " + detail);
   };
-  std::function<Eigen::MatrixXf(const Eigen::MatrixXf &, const Eigen::MatrixXf &)> asso_func
-      = ASSO_FUNCS[asso_func_];
-  inertia = inertia_;
-  w_assoc_emb = w_assoc_emb_;
-  alpha_fixed_emb = alpha_fixed_emb_;
 
-  assert(max_id_ >= 0);
+  const auto require = [&](bool condition, const char *param, const std::string &detail) {
+    if (!condition)
+      throw make_error(param, detail);
+  };
+
+  const auto require_finite = [&](float value, const char *param) {
+    if (!std::isfinite(value))
+      throw make_error(param, "must be finite.");
+  };
+
+  require_finite(det_thresh, "det_thresh");
+  require(det_thresh >= 0.0f && det_thresh <= 1.0f, "det_thresh", "must be in the range [0, 1].");
+
+  require(max_age >= 0, "max_age", "must be non-negative.");
+  require(min_hits >= 0, "min_hits", "must be non-negative.");
+
+  require_finite(iou_threshold, "iou_threshold");
+  require(iou_threshold >= 0.0f && iou_threshold <= 1.0f, "iou_threshold",
+      "must be in the range [0, 1].");
+
+  require(delta_t > 0, "delta_t", "must be positive.");
+
+  require_finite(inertia, "inertia");
+  require(inertia >= 0.0f && inertia <= 1.0f, "inertia", "must be in the range [0, 1].");
+
+  require_finite(w_assoc_emb, "w_assoc_emb");
+  require(w_assoc_emb >= 0.0f, "w_assoc_emb", "must be non-negative.");
+
+  require_finite(alpha_fixed_emb, "alpha_fixed_emb");
+  require(alpha_fixed_emb >= 0.0f && alpha_fixed_emb <= 1.0f, "alpha_fixed_emb",
+      "must be in the range [0, 1].");
+
+  require(max_id_ >= 0, "max_id", "must be non-negative.");
+
+  require_finite(aw_param, "aw_param");
+  require(aw_param >= 0.0f, "aw_param", "must be non-negative.");
+
+  require(img_width_ >= 0, "img_width", "must be non-negative.");
+  require(img_height_ >= 0, "img_height", "must be non-negative.");
+
+  require(rec_image_rect_margin >= 0, "rec_image_rect_margin", "must be non-negative.");
+  require(rec_track_min_time_since_update_at_boundary >= 0,
+      "rec_track_min_time_since_update_at_boundary", "must be non-negative.");
+  require(rec_track_min_time_since_update_inside >= 0,
+      "rec_track_min_time_since_update_inside", "must be non-negative.");
+  require(rec_track_min_age >= 0, "rec_track_min_age", "must be non-negative.");
+
+  require_finite(rec_track_merge_lap_thresh, "rec_track_merge_lap_thresh");
+  require(rec_track_merge_lap_thresh >= 0.0f && rec_track_merge_lap_thresh <= 2.0f,
+      "rec_track_merge_lap_thresh", "must be in the range [0, 2].");
+
+  require(rec_track_memory_capacity >= 0, "rec_track_memory_capacity", "must be non-negative.");
+
+  require(rec_track_memory_max_age >= 0, "rec_track_memory_max_age", "must be non-negative.");
+
+  if (enable_id_recovery) {
+    require(img_width_ > 0, "img_width", "must be positive when enable_id_recovery is true.");
+    require(img_height_ > 0, "img_height", "must be positive when enable_id_recovery is true.");
+  }
+
   KalmanBoxTracker::max_id = max_id_;
+  img_rect = Rect(0.0f, 0.0f, static_cast<float>(img_width_), static_cast<float>(img_height_));
 }
 std::ostream &
 precision(std::ostream &os)
@@ -52,9 +120,97 @@ precision(std::ostream &os)
   os << std::fixed << std::setprecision(2);
   return os;
 }
+
+bool
+isOutOfImageRect(Rect image_rect, Rect obj_rect, int dist_thresh)
+{
+  const float shrink = static_cast<float>(dist_thresh);
+  const Rect inner_rect(image_rect.x + shrink, image_rect.y + shrink,
+      std::max(0.0f, image_rect.width - 2.0f * shrink),
+      std::max(0.0f, image_rect.height - 2.0f * shrink));
+
+  const Rect inter = inner_rect.intersect(obj_rect);
+  return inter.area() < obj_rect.area();
+}
+
+
+void
+mergeTracksIfTheSame(std::vector<KalmanBoxTracker> &active_tracks,
+    std::vector<KalmanBoxTracker> &reappearing_tracks, float merge_thresh = 0.09f)
+{
+  if (active_tracks.empty() || reappearing_tracks.empty())
+    return;
+
+  // Prepare embedding matrices
+  int n_active = active_tracks.size();
+  int n_reappear = reappearing_tracks.size();
+  int emb_dim = active_tracks[0].get_emb().size();
+  if (emb_dim == 0)
+    return;
+
+  Eigen::MatrixXf active_embs(n_active, emb_dim);
+  Eigen::MatrixXf reappear_embs(n_reappear, emb_dim);
+
+  for (int i = 0; i < n_active; ++i)
+    active_embs.row(i) = active_tracks[i].get_emb().transpose();
+  for (int i = 0; i < n_reappear; ++i)
+    reappear_embs.row(i) = reappearing_tracks[i].get_emb().transpose();
+
+  // Compute cosine distance matrix
+  std::vector<std::vector<float>> cost_matrix(
+      n_active, std::vector<float>(n_reappear, 1.0f));
+  for (int i = 0; i < n_active; ++i) {
+    for (int j = 0; j < n_reappear; ++j) {
+      float dot = active_embs.row(i).dot(reappear_embs.row(j));
+      float norm1 = active_embs.row(i).norm();
+      float norm2 = reappear_embs.row(j).norm();
+      float cosine_sim = (norm1 > 1e-6f && norm2 > 1e-6f) ? dot / (norm1 * norm2) : 0.0f;
+      cost_matrix[i][j] = 1.0f - cosine_sim; // cosine distance
+    }
+  }
+
+  // Solve LAP (Hungarian) assignment
+  std::vector<int> rowsol, colsol;
+  float cost = execLapjv(cost_matrix, rowsol, colsol, true, merge_thresh, false);
+
+  // Threshold for merging (tune as needed, e.g., 0.2 means cosine similarity > 0.8)
+
+  // Merge trackers
+  std::vector<bool> merged_reappear(n_reappear, false);
+  for (int i = 0; i < n_active; ++i) {
+    int j = rowsol[i];
+    if (j >= 0 && j < n_reappear && cost_matrix[i][j] < merge_thresh) {
+      // Merge reappearing_tracks[j] into active_tracks[i]
+      // You can choose to keep the one with longer history, or just remove the
+      // duplicate Here, we remove the reappearing tracker
+      merged_reappear[j] = true;
+      active_tracks[i].id = reappearing_tracks[j].id; // Update ID if needed
+
+      // Average embeddings
+      active_tracks[i].update_emb(reappearing_tracks[j].get_emb(), 0.5);
+    }
+  }
+
+  // Remove merged reappearing trackers
+  std::vector<KalmanBoxTracker> new_reappearing;
+  for (int j = 0; j < n_reappear; ++j) {
+    if (!merged_reappear[j]) {
+      new_reappearing.push_back(std::move(reappearing_tracks[j]));
+    }
+  }
+  reappearing_tracks = std::move(new_reappearing);
+}
+
 std::vector<Eigen::RowVectorXf>
 OCSort::update(Eigen::MatrixXf dets, Eigen::MatrixXf embs, Eigen::Matrix<float, 2, 3> cmc_transform)
 {
+  std::vector<KalmanBoxTracker> trackers;
+  trackers.insert(trackers.end(), active_trackers.begin(), active_trackers.end()); // Add active trackers
+  trackers.insert(trackers.end(), not_active_trackers.begin(),
+      not_active_trackers.end()); // Add not active trackers
+  trackers.insert(trackers.end(), lost_trackers.begin(), lost_trackers.end()); // Add lost trackers
+
+
   bool use_reid = false;
   if (embs.size() > 0) {
     use_reid = true;
@@ -74,6 +230,7 @@ OCSort::update(Eigen::MatrixXf dets, Eigen::MatrixXf embs, Eigen::Matrix<float, 
   }
 
   frame_count += 1;
+
   Eigen::Matrix<float, Eigen::Dynamic, 4> xyxys = dets.leftCols(4);
   Eigen::Matrix<float, 1, Eigen::Dynamic> confs = dets.col(4);
   Eigen::Matrix<float, 1, Eigen::Dynamic> clss = dets.col(5);
@@ -118,7 +275,6 @@ OCSort::update(Eigen::MatrixXf dets, Eigen::MatrixXf embs, Eigen::Matrix<float, 
 
   Eigen::MatrixXf trks = Eigen::MatrixXf::Zero(trackers.size(), 5);
   std::vector<int> to_del;
-  std::vector<Eigen::RowVectorXf> ret;
 
   int emb_len = 0;
   if (use_reid && trackers.size() > 0)
@@ -157,7 +313,8 @@ OCSort::update(Eigen::MatrixXf dets, Eigen::MatrixXf embs, Eigen::Matrix<float, 
   for (auto m : matched) {
     Eigen::Matrix<float, 5, 1> tmp_bbox;
     tmp_bbox = dets_first.block<1, 5>(m(0), 0);
-    trackers[m(1)].update(&(tmp_bbox), dets_first(m(0), 5), map_dets_first_to_dets[m(0)]);
+    trackers[m(1)].update(&(tmp_bbox), dets_first(m(0), 5),
+        map_dets_first_to_dets[m(0)], frame_count);
     if (use_reid)
       trackers[m(1)].update_emb(dets_embs.row(m(0)), dets_alpha(m(0)));
   }
@@ -207,8 +364,8 @@ OCSort::update(Eigen::MatrixXf dets, Eigen::MatrixXf embs, Eigen::Matrix<float, 
         ///////////////////////////////
         Eigen::Matrix<float, 5, 1> tmp_bbox;
         tmp_bbox = dets_first.block<1, 5>(det_ind, 0);
-        trackers.at(trk_ind).update(
-            &tmp_bbox, dets_first(det_ind, 5), map_dets_first_to_dets[det_ind]);
+        trackers.at(trk_ind).update(&tmp_bbox, dets_first(det_ind, 5),
+            map_dets_first_to_dets[det_ind], frame_count);
         if (use_reid)
           trackers.at(trk_ind).update_emb(dets_embs.row(det_ind), dets_alpha(det_ind));
         to_remove_det_indices.push_back(det_ind);
@@ -232,7 +389,7 @@ OCSort::update(Eigen::MatrixXf dets, Eigen::MatrixXf embs, Eigen::Matrix<float, 
   }
 
   for (auto m : unmatched_trks) {
-    trackers.at(m).update(nullptr, 0, -1);
+    trackers.at(m).update(nullptr, 0, -1, frame_count);
   }
   ///////////////////////////////
   /// Step4 Initialize new tracks and remove expired tracks
@@ -250,7 +407,10 @@ OCSort::update(Eigen::MatrixXf dets, Eigen::MatrixXf embs, Eigen::Matrix<float, 
     // Append newly created tracker to the end of trackers
     trackers.push_back(trk);
   }
-  int tmp_i = trackers.size();
+  std::vector<Eigen::RowVectorXf> ret;
+  active_trackers.clear();
+  lost_trackers.clear();
+  not_active_trackers.clear();
   for (int i = trackers.size() - 1; i >= 0; i--) {
     Eigen::Matrix<float, 1, 4> d;
     int last_observation_sum = trackers.at(i).last_observation.sum();
@@ -259,18 +419,76 @@ OCSort::update(Eigen::MatrixXf dets, Eigen::MatrixXf embs, Eigen::Matrix<float, 
     } else {
       d = trackers.at(i).last_observation.block(0, 0, 1, 4);
     }
-    if (trackers.at(i).time_since_update < 1
-        && ((trackers.at(i).hit_streak >= min_hits) | (frame_count <= min_hits))) {
+    const int age_thresh = 1;
+    if (trackers.at(i).time_since_update < age_thresh
+        && ((trackers.at(i).hit_streak >= min_hits) || (frame_count <= min_hits))) {
       Eigen::RowVectorXf tracking_res(8);
       tracking_res << d(0), d(1), d(2), d(3), trackers.at(i).id + 1,
           trackers.at(i).cls, trackers.at(i).conf, trackers.at(i).latest_detection_id;
       ret.push_back(tracking_res);
-    }
-    if (trackers.at(i).time_since_update > max_age) {
-      trackers.at(i).release_id();
-      trackers.erase(trackers.begin() + i);
+
+      active_trackers.push_back(trackers.at(i));
+    } else if (trackers.at(i).time_since_update >= age_thresh) {
+      lost_trackers.push_back(trackers.at(i));
+    } else {
+      not_active_trackers.push_back(trackers.at(i));
     }
   }
+
+  if (enable_id_recovery) {
+    std::vector<KalmanBoxTracker> lost_trackers_temp;
+    lost_trackers_temp.reserve(lost_trackers.size());
+    for (auto it = lost_trackers.begin(); it != lost_trackers.end(); ++it) {
+      Rect obj_rect(it->last_observation(0), it->last_observation(1),
+          it->last_observation(2) - it->last_observation(0),
+          it->last_observation(3) - it->last_observation(1));
+
+      if (it->time_since_update >= rec_track_min_time_since_update_at_boundary) {
+        if (isOutOfImageRect(img_rect, obj_rect, rec_image_rect_margin)) {
+          if (it->age > rec_track_min_age) {
+            reappearing_trackers.push_back(*it);
+          }
+        } else if (it->time_since_update >= rec_track_min_time_since_update_inside) {
+          if (it->age > rec_track_min_age) {
+            reappearing_trackers.push_back(*it);
+          }
+        } else {
+          lost_trackers_temp.push_back(*it);
+        }
+      } else {
+        lost_trackers_temp.push_back(*it);
+      }
+    }
+
+    lost_trackers = std::move(lost_trackers_temp);
+
+    mergeTracksIfTheSame(active_trackers, reappearing_trackers, rec_track_merge_lap_thresh);
+
+    const auto frames_since_update = [&](const KalmanBoxTracker &tracker) -> int {
+      return std::max(0, frame_count - tracker.frame_of_last_update);
+    };
+
+    if (rec_track_memory_max_age >= 0) {
+      reappearing_trackers.erase(
+          std::remove_if(reappearing_trackers.begin(), reappearing_trackers.end(),
+              [&](const KalmanBoxTracker &tracker) {
+                return frames_since_update(tracker) > rec_track_memory_max_age;
+              }),
+          reappearing_trackers.end());
+    }
+
+    if (rec_track_memory_capacity >= 0
+        && reappearing_trackers.size() > static_cast<std::size_t>(rec_track_memory_capacity)) {
+      auto nth = reappearing_trackers.begin() + rec_track_memory_capacity;
+      std::nth_element(reappearing_trackers.begin(), nth, reappearing_trackers.end(),
+          [&](const KalmanBoxTracker &lhs, const KalmanBoxTracker &rhs) {
+            return frames_since_update(lhs) < frames_since_update(rhs);
+          });
+
+      reappearing_trackers.erase(nth, reappearing_trackers.end());
+    }
+  }
+
   return ret;
 }
 } // namespace ocsort

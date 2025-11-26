@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from __future__ import annotations
 
 import contextlib
@@ -9,6 +9,11 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from axelera.app import config, device_manager
+
+
+@pytest.fixture(scope="function", autouse=True)
+def _reset_list_devices_cache():
+    device_manager._list_devices._cache = None
 
 
 def _make_device_info(board_type: int = 0, devicen: int = 0):

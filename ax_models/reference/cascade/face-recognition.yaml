@@ -45,13 +45,13 @@ pipeline:
           top_k: 1
           min_width: 80
           min_height: 80
-          # image_processing_on_roi:
-          # - facealign:
-          #     keypoints_submeta_key: detections
-          #     width: 192
-          #     height: 192
-          #     use_self_normalizing: False
-          #     save_aligned_images: False # for debugging
+          image_processing_on_roi:
+          - facealign:
+              keypoints_submeta_key: detections
+              width: 192
+              height: 192
+              use_self_normalizing: False
+              save_aligned_images: False # for debugging
       preprocess:
         - resize:
             width: 192
@@ -64,7 +64,7 @@ pipeline:
                 mean: 0.5, 0.5, 0.5
                 std: 0.501960784, 0.501960784, 0.501960784
       postprocess:
-        - recognition:
+         - recognition:
             distance_metric: cosine_similarity
             embeddings_file: famous_embeddings.json
             distance_threshold: 0.3520

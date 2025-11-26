@@ -2,10 +2,31 @@
 
 # Installation guide
 
+## Contents
 - [Installation guide](#installation-guide)
+  - [Contents](#contents)
+  - [Prerequisites](#prerequisites)
+  - [Level](#level)
+  - [Overview](#overview)
   - [Run the installer](#run-the-installer)
   - [Activate the development environment](#activate-the-development-environment)
+  - [Next Steps](#next-steps)
+  - [Related Documentation](#related-documentation)
+  - [Support](#support)
+  - [Further support](#further-support)
 
+## Prerequisites
+- Ubuntu 22.04+ or Windows with WSL2 installed
+- Python 3.10 or later
+- Git installed
+- Internet connection for downloading dependencies
+- Administrative/sudo privileges
+- USB 3.0 port or PCIe slot for Metis hardware
+
+## Level
+**Beginner** - Follow step-by-step installation instructions
+
+## Overview
 The Voyager SDK is released in a GitHub repository. This repository contains
 a branch for each publicly released version of the SDK. 
 To checkout the repository, run the following command:
@@ -119,8 +140,28 @@ Each time you use git to change the SDK release branch, you should deactivate an
 environment. This ensures that your environment variables are correctly set to the values in the
 installer configuration file on the new release branch.
 
+## Next Steps
+- **Verify installation**: Run `axdevice list` to confirm hardware is detected
+- **Run first inference**: [Quick Start Guide](quick_start_guide.md)
+- **Enable firmware updates**: [Enable Updates Guide](enable_updates.md) for new boards
+- **For Windows users**: Complete [Windows Getting Started](windows/windows_getting_started.md)
+- **For LLM workflows**: Create separate environment per installation instructions
+
+## Related Documentation
+**Tutorials:**
+- [Quick Start Guide](quick_start_guide.md) - Run your first inference after installation
+- [Windows Getting Started](windows/windows_getting_started.md) - Windows-specific setup
+- [Installing Driver](windows/installing_driver.md) - Windows driver installation
+- [Enable Updates](enable_updates.md) - Enable firmware updates (one-time per board)
+
+**References:**
+- [AxDevice API](../reference/axdevice.md) - Verify hardware detection after install
+
+## Support
+
+In case of using multiple PCIe cards on the same host system it is recommended to increase the number of open file descriptors when running Linux OS:
+`ulimit -n 10240`
+
 ## Further support
-
-For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
-
-For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).
+- For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+- For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

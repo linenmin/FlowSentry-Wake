@@ -1,63 +1,64 @@
+// Copyright Axelera AI, 2025
 #include <gmock/gmock.h>
-#include "unittest_transform_common.h"
+#include "unittest_ax_common.h"
 
 TEST(yolo_preproc, non_tensor_input)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   AxVideoInterface inp_video{ {}, nullptr };
   AxDataInterface input{ inp_video };
-  EXPECT_THROW(transformer.set_output_interface(input), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(input), std::runtime_error);
 }
 
 TEST(yolo_preproc, test_single_tensor_input)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   AxTensorsInterface inp;
   inp.push_back({ { 1, 2, 2, 3 }, 1, nullptr });
   inp.push_back({ { 1, 2, 2, 3 }, 1, nullptr });
   AxDataInterface input{ inp };
-  EXPECT_THROW(transformer.set_output_interface(input), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(input), std::runtime_error);
 }
 
 TEST(yolo_preproc, test_single_4D_tensor_input)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   AxTensorsInterface inp;
   inp.push_back({ { 1, 2, 3 }, 1, nullptr });
   AxDataInterface input{ inp };
-  EXPECT_THROW(transformer.set_output_interface(input), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(input), std::runtime_error);
 }
 
 TEST(yolo_preproc, test_even_height_input)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   AxTensorsInterface inp;
   inp.push_back({ { 1, 1, 2, 3 }, 1, nullptr });
   AxDataInterface input{ inp };
-  EXPECT_THROW(transformer.set_output_interface(input), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(input), std::runtime_error);
 }
 
 TEST(yolo_preproc, test_even_width_input)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   AxTensorsInterface inp;
   inp.push_back({ { 1, 2, 1, 3 }, 1, nullptr });
   AxDataInterface input{ inp };
-  EXPECT_THROW(transformer.set_output_interface(input), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(input), std::runtime_error);
 }
 
 TEST(yolo_preproc, test_rgb_input)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   AxTensorsInterface inp;
   inp.push_back({ { 1, 2, 2, 2 }, 1, nullptr });
   AxDataInterface input{ inp };
-  EXPECT_THROW(transformer.set_output_interface(input), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(input), std::runtime_error);
 }
 
 TEST(yolo_preproc, two_by_two)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   std::vector<int8_t> data(2 * 2 * 3);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 2, 2, 3 }, 1, data.data() } };
@@ -70,15 +71,14 @@ TEST(yolo_preproc, two_by_two)
   };
 
   AxTensorsInterface output{ { { 1, 1, 1, 12 }, 1, result.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-
-  transformer.transform(input, output, map, 0, 1);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
 TEST(yolo_preproc, two_by_two_by_two)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   std::vector<int8_t> data(2 * 2 * 2 * 3);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 2, 2, 2, 3 }, 1, data.data() } };
@@ -92,15 +92,14 @@ TEST(yolo_preproc, two_by_two_by_two)
   };
 
   AxTensorsInterface output{ { { 2, 1, 1, 12 }, 1, result.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-
-  transformer.transform(input, output, map, 0, 1);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
 TEST(yolo_preproc, two_by_two_rgba_in)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   std::vector<int8_t> data(2 * 2 * 4);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 2, 2, 4 }, 1, data.data() } };
@@ -113,16 +112,15 @@ TEST(yolo_preproc, two_by_two_rgba_in)
   };
 
   AxTensorsInterface output{ { { 1, 1, 1, 12 }, 1, result.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-
-  transformer.transform(input, output, map, 0, 1);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
 
 TEST(yolo_preproc, four_by_four)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   std::vector<int8_t> data(4 * 4 * 3);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 4, 4, 3 }, 1, data.data() } };
@@ -138,15 +136,14 @@ TEST(yolo_preproc, four_by_four)
   };
 
   AxTensorsInterface output{ { { 1, 2, 2, 12 }, 1, result.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-
-  transformer.transform(input, output, map, 0, 1);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
 TEST(yolo_preproc, four_by_four_rgba_in)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   std::vector<int8_t> data(4 * 4 * 4);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 4, 4, 4 }, 1, data.data() } };
@@ -162,15 +159,14 @@ TEST(yolo_preproc, four_by_four_rgba_in)
   };
 
   AxTensorsInterface output{ { { 1, 2, 2, 12 }, 1, result.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-
-  transformer.transform(input, output, map, 0, 1);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
 TEST(yolo_preproc, two_by_four_by_four_rgba_in)
 {
-  Transformer transformer("libtransform_yolopreproc.so", {});
+  auto xform = Ax::LoadTransform("yolopreproc", {});
   std::vector<int8_t> data(2 * 4 * 4 * 4);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 2, 4, 4, 4 }, 1, data.data() } };
@@ -190,9 +186,8 @@ TEST(yolo_preproc, two_by_four_by_four_rgba_in)
   };
 
   AxTensorsInterface output{ { { 2, 2, 2, 12 }, 1, result.data() } };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-
-  transformer.transform(input, output, map, 0, 1);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
@@ -202,7 +197,7 @@ TEST(yolo_preproc, four_by_four_rgba_in_with_end_pad)
     { "padding", "0, 0, 0, 0, 0, 0 , 0, 2" },
   };
 
-  Transformer transformer("libtransform_yolopreproc.so", properties);
+  auto xform = Ax::LoadTransform("yolopreproc", properties);
   std::vector<int8_t> data(4 * 4 * 4);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 4, 4, 4 }, 1, data.data() } };
@@ -219,9 +214,9 @@ TEST(yolo_preproc, four_by_four_rgba_in_with_end_pad)
   auto outp = inp;
   outp[0].data = result.data();
   AxDataInterface output{ outp };
-  output = transformer.set_output_interface(output);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-  transformer.transform(input, output, map, 0, 1);
+  output = xform->set_output_interface(output);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
@@ -231,7 +226,7 @@ TEST(yolo_preproc, four_by_four_rgba_in_with_start_and_end_pad)
     { "padding", "0, 0, 0, 0, 0, 0 , 2, 2" },
   };
 
-  Transformer transformer("libtransform_yolopreproc.so", properties);
+  auto xform = Ax::LoadTransform("yolopreproc", properties);
   std::vector<int8_t> data(4 * 4 * 4);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 4, 4, 4 }, 1, data.data() } };
@@ -248,9 +243,9 @@ TEST(yolo_preproc, four_by_four_rgba_in_with_start_and_end_pad)
   auto outp = inp;
   outp[0].data = result.data();
   AxDataInterface output{ outp };
-  output = transformer.set_output_interface(output);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-  transformer.transform(input, output, map, 0, 1);
+  output = xform->set_output_interface(output);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
@@ -260,7 +255,7 @@ TEST(yolo_preproc, four_by_four_rgba_in_with_start_and_end_pad_with_x_pad)
     { "padding", "0, 0, 0, 0, 1, 1 , 2, 2" },
   };
 
-  Transformer transformer("libtransform_yolopreproc.so", properties);
+  auto xform = Ax::LoadTransform("yolopreproc", properties);
   std::vector<int8_t> data(4 * 4 * 4);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 4, 4, 4 }, 1, data.data() } };
@@ -281,9 +276,9 @@ TEST(yolo_preproc, four_by_four_rgba_in_with_start_and_end_pad_with_x_pad)
   auto outp = inp;
   outp[0].data = result.data();
   AxDataInterface output{ outp };
-  output = transformer.set_output_interface(output);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-  transformer.transform(input, output, map, 0, 1);
+  output = xform->set_output_interface(output);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
@@ -293,7 +288,7 @@ TEST(yolo_preproc, four_by_four_rgba_in_with_start_and_end_pad_with_xy_pad)
     { "padding", "0, 0, 1, 1, 1, 1 , 2, 2" },
   };
 
-  Transformer transformer("libtransform_yolopreproc.so", properties);
+  auto xform = Ax::LoadTransform("yolopreproc", properties);
   std::vector<int8_t> data(4 * 4 * 4);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 4, 4, 4 }, 1, data.data() } };
@@ -322,9 +317,9 @@ TEST(yolo_preproc, four_by_four_rgba_in_with_start_and_end_pad_with_xy_pad)
   auto outp = inp;
   outp[0].data = result.data();
   AxDataInterface output{ outp };
-  output = transformer.set_output_interface(output);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-  transformer.transform(input, output, map, 0, 1);
+  output = xform->set_output_interface(output);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }
 
@@ -336,7 +331,7 @@ TEST(yolo_preproc, four_by_four_rgb_in_with_end_pad_with_fill)
     { "fill", "42" },
   };
 
-  Transformer transformer("libtransform_yolopreproc.so", properties);
+  auto xform = Ax::LoadTransform("yolopreproc", properties);
   std::vector<int8_t> data(4 * 4 * 3);
   std::iota(std::begin(data), std::end(data), 0);
   AxTensorsInterface inp{ { { 1, 4, 4, 3 }, 1, data.data() } };
@@ -353,8 +348,8 @@ TEST(yolo_preproc, four_by_four_rgb_in_with_end_pad_with_fill)
   auto outp = inp;
   outp[0].data = result.data();
   AxDataInterface output{ outp };
-  output = transformer.set_output_interface(output);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map = {};
-  transformer.transform(input, output, map, 0, 1);
+  output = xform->set_output_interface(output);
+  Ax::MetaMap map;
+  xform->transform(input, output, 0, 1, map);
   ASSERT_EQ(result, expected);
 }

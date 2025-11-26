@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from __future__ import annotations
 
 import contextlib
@@ -144,7 +144,6 @@ def download_prequant_and_build_manifest(
     quantized_dir = output_path / constants.K_MODEL_QUANTIZED_DIR
     _download_prequant(model_info, asset_path)
     manifest_file = asset_path / constants.K_MANIFEST_FILE_NAME
-    bad_path = asset_path / "build" / model_info.name / "x86_64" / model_info.name
     if not manifest_file.exists():
         raise RuntimeError(f"Unrecognised prequantized files from {asset_path}")
 

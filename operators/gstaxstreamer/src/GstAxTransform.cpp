@@ -1,3 +1,4 @@
+// Copyright Axelera AI, 2025
 #include "GstAxTransform.hpp"
 #include <cstring>
 #include <gmodule.h>
@@ -10,10 +11,13 @@
 #include <unordered_map>
 #include "AxDataInterface.h"
 #include "AxMeta.hpp"
+#include "AxPlugin.hpp"
 #include "AxStreamerUtils.hpp"
+#include "GstAxBufferPool.hpp"
 #include "GstAxDataUtils.hpp"
 #include "GstAxMeta.hpp"
 #include "GstAxStreamerUtils.hpp"
+
 
 GST_DEBUG_CATEGORY_STATIC(gst_axtransform_debug_category);
 #define GST_CAT_DEFAULT gst_axtransform_debug_category
@@ -21,14 +25,6 @@ GST_DEBUG_CATEGORY_STATIC(gst_axtransform_debug_category);
 extern "C" {
 gboolean gst_is_tensor_dmabuf_memory(GstMemory *mem);
 }
-
-struct double_buffer_details {
-  GstBuffer *inbuffer{};
-  std::vector<GstMapInfo> inmap{};
-  GstBuffer *outbuffer{};
-  std::vector<GstMapInfo> outmap{};
-  Ax::AsyncCompleter complete_last_xform{};
-};
 
 struct EventDetails {
   GstPad *pad;
@@ -38,19 +34,17 @@ struct EventDetails {
 struct _GstAxtransformData {
   std::string shared_lib_path;
   std::string options;
-  bool options_initialised = false;
   AxDataInterface output_template;
-  std::shared_ptr<void> subplugin_data;
   std::unique_ptr<Ax::SharedLib> shared;
+  std::unique_ptr<Ax::Transform> plugin;
   Ax::Logger logger{ Ax::Severity::trace, nullptr, gst_axtransform_debug_category };
-  Ax::V1Plugin::Transform fns;
   unsigned int batch = 1;
+  std::string which_cl;
   unsigned int current_batch = 0;
   std::vector<int> tensor_size{};
   GstBuffer *outbuf = nullptr;
   Ax::GstHandle<GstAllocator> allocator{};
   Ax::GstHandle<GstBufferPool> pool{};
-  double_buffer_details dbl_buffer;
   bool downstream_supports_crop = false;
   std::queue<EventDetails> event_queue;
   bool block_on_pool_empty = true;
@@ -65,6 +59,7 @@ enum {
   PROP_SHARED_LIB_PATH,
   PROP_OPTIONS,
   PROP_BATCH,
+  PROP_WHICH_CL,
 };
 
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
@@ -75,19 +70,26 @@ static GstStaticPadTemplate src_template
         GST_STATIC_CAPS(GST_TENSORS_CAP_DEFAULT ";" AX_GST_VIDEO_FORMATS_CAPS));
 
 static bool
-plugin_supports_cropmeta(GstAxtransform *axtransform)
+plugin_supports_cropmeta(_GstAxtransformData *data)
 {
-  return axtransform->data->fns.handles_crop_meta
-         && axtransform->data->fns.handles_crop_meta();
+  return data->plugin->query_supports(Ax::PluginFeature::crop_meta);
+}
+
+static bool
+plugin_supports_gst_video_meta(GstAxtransform *sink)
+{
+  return sink->data->plugin->query_supports(Ax::PluginFeature::video_meta);
 }
 
 const auto *dmabuf_device = "/dev/dma_heap/system";
 
 static bool
-is_suitable(GstAllocator *allocator)
+is_suitable(GstAllocator *allocator, GstAxtransform *self)
 {
+  auto &logger = self->data->logger;
   return !allocator || allocator == gst_aligned_allocator_get()
-         || allocator == gst_tensor_dmabuf_allocator_get(dmabuf_device);
+         || allocator == gst_tensor_dmabuf_allocator_get(dmabuf_device)
+         || allocator == gst_opencl_allocator_get(self->data->which_cl.c_str(), &logger);
 }
 
 static GstContext *
@@ -143,6 +145,13 @@ get_va_display(GstAxtransform *axtransform, Ax::Logger &logger)
   return display;
 }
 
+bool
+supports_opencl_buffers(GstAxtransform *self)
+{
+  return self->data->plugin->query_supports(Ax::PluginFeature::opencl_buffers);
+}
+
+
 static void
 gst_axtransform_do_bufferpool(GstAxtransform *axtransform, GstCaps *caps)
 {
@@ -175,7 +184,7 @@ gst_axtransform_do_bufferpool(GstAxtransform *axtransform, GstCaps *caps)
     if (gst_query_get_n_allocation_params(query) > 0) {
       GstAllocator *allocator = nullptr;
       gst_query_parse_nth_allocation_param(query, 0, &allocator, NULL);
-      if (is_suitable(allocator)) {
+      if (is_suitable(allocator, axtransform)) {
         if (axtransform->allocator) {
           gst_object_unref(axtransform->allocator);
         }
@@ -188,44 +197,58 @@ gst_axtransform_do_bufferpool(GstAxtransform *axtransform, GstCaps *caps)
     }
   }
   gst_query_unref(query);
+
+  if (supports_opencl_buffers(axtransform)) {
+    //  We shoud try to use opencl buffers
+    //  Get the opencl allocator
+    GstAllocator *opencl_allocator = gst_opencl_allocator_get(
+        axtransform->data->which_cl.c_str(), &axtransform->data->logger);
+    if (opencl_allocator && opencl_allocator == axtransform->allocator) {
+      //  Already have OpenCL allocator
+      return;
+    }
+    if (opencl_allocator) {
+      if (axtransform->allocator) {
+        gst_object_unref(axtransform->allocator);
+      }
+      axtransform->allocator = opencl_allocator;
+      if (axtransform->pool) {
+        gst_buffer_pool_set_active(axtransform->pool, FALSE);
+        gst_object_unref(axtransform->pool);
+        axtransform->pool = NULL;
+      }
+    } else {
+      GST_DEBUG_OBJECT(axtransform,
+          "OpenCL allocator is not suitable for this plugin, using default allocator");
+    }
+  }
+
   if (axtransform->pool) {
     return;
   }
-  if (std::holds_alternative<AxVideoInterface>(axtransform->data->output_template)) {
-    axtransform->pool = gst_video_buffer_pool_new();
-  } else {
-    axtransform->pool = gst_buffer_pool_new();
-  }
-  if (!axtransform->pool) {
-    return;
-  }
-  GstStructure *config = gst_buffer_pool_get_config(axtransform->pool);
-  gst_buffer_pool_config_set_params(config, caps, axtransform->outsize, 0, 0);
-  if (axtransform->allocator) {
-    gst_buffer_pool_config_set_allocator(config, axtransform->allocator, NULL);
-  }
-  if (!gst_buffer_pool_set_config(axtransform->pool, config)) {
-    throw std::runtime_error("Pool config cannot be set in axtransform");
-  }
+  axtransform->pool = gst_ax_buffer_pool_new();
+  if (axtransform->pool) {
+    GstStructure *config = gst_buffer_pool_get_config(axtransform->pool);
+    gst_buffer_pool_config_set_params(config, caps, axtransform->outsize, 0, 0);
+    if (axtransform->allocator) {
+      gst_buffer_pool_config_set_allocator(config, axtransform->allocator, NULL);
+    }
+    if (!gst_buffer_pool_set_config(axtransform->pool, config)) {
+      throw std::runtime_error("Pool config cannot be set in axtransform");
+    }
 
 
-  if (axtransform->pool && !gst_buffer_pool_set_active(axtransform->pool, TRUE)) {
-    throw std::runtime_error("Pool cannot be activated in axtransform");
+    if (axtransform->pool && !gst_buffer_pool_set_active(axtransform->pool, TRUE)) {
+      throw std::runtime_error("Pool cannot be activated in axtransform");
+    }
   }
 }
-
-bool
-plugin_has_transform(GstAxtransform *axtransform)
-{
-  return axtransform->data->fns.transform || axtransform->data->fns.transform_async;
-}
-
 
 static bool
 plugin_has_set_output_interface(GstAxtransform *axtransform)
 {
-  return axtransform->data->fns.set_output_interface
-         || axtransform->data->fns.set_output_interface_from_meta;
+  return axtransform->data->plugin->has_set_output_interface()
+         || axtransform->data->plugin->has_set_output_interface_from_meta();
 }
 
 static GstCaps *
@@ -250,21 +273,21 @@ gst_axtransform_outcaps(GstAxtransform *axtransform, GstCaps *from_event, GstBuf
   */
   GstCaps *from_srctemplate_and_peer = gst_pad_get_allowed_caps(axtransform->srcpad);
 
-  if (!plugin_has_set_output_interface(axtransform) && plugin_has_transform(axtransform)) {
+  if (!plugin_has_set_output_interface(axtransform)
+      && axtransform->data->plugin->has_transform()) {
     return from_srctemplate_and_peer;
   }
 
   AxDataInterface template_for_incaps = interface_from_caps_and_meta(from_event, nullptr);
 
   AxDataInterface template_for_outcaps = template_for_incaps;
-  if (axtransform->data->fns.set_output_interface) {
-    template_for_outcaps = axtransform->data->fns.set_output_interface(template_for_incaps,
-        axtransform->data->subplugin_data.get(), axtransform->data->logger);
-  } else if (axtransform->data->fns.set_output_interface_from_meta && buffer) {
+  if (axtransform->data->plugin->has_set_output_interface()) {
+    template_for_outcaps
+        = axtransform->data->plugin->set_output_interface(template_for_incaps);
+  } else if (axtransform->data->plugin->has_set_output_interface_from_meta() && buffer) {
     GstMetaGeneral *meta = gst_buffer_get_general_meta((buffer));
-    template_for_outcaps = axtransform->data->fns.set_output_interface_from_meta(
-        template_for_incaps, axtransform->data->subplugin_data.get(), meta->subframe_index,
-        meta->subframe_number, *meta->meta_map_ptr, axtransform->data->logger);
+    template_for_outcaps = axtransform->data->plugin->set_output_interface_from_meta(
+        template_for_incaps, meta->subframe_index, meta->subframe_number, *meta->meta_map_ptr);
   }
 
   if (axtransform->data->batch != 1) {
@@ -319,12 +342,14 @@ gst_axtransform_outcaps(GstAxtransform *axtransform, GstCaps *from_event, GstBuf
 void
 initialise_options(GstAxtransform *axtransform)
 {
-  if (!axtransform->data->options_initialised) {
+  auto &data = *axtransform->data;
+  if (!data.plugin) {
     (void) get_va_display; // prevent warning for unused function
-    auto va_display = nullptr;
-    init_options(G_OBJECT(axtransform), axtransform->data->options,
-        axtransform->data->fns, axtransform->data->logger, axtransform->data->subplugin_data,
-        axtransform->data->options_initialised, va_display);
+    auto context = AxAllocationContextHandle(gst_opencl_allocator_get_context(
+        axtransform->data->which_cl.c_str(), &data.logger));
+
+    data.plugin = std::make_unique<Ax::LoadedTransform>(
+        data.logger, std::move(*data.shared), data.options, context.get());
   }
 }
 
@@ -344,7 +369,7 @@ gst_axtransform_setcaps(GstAxtransform *axtransform, GstCaps *from_event, GstBuf
   }
   axtransform->data->output_template = interface_from_caps_and_meta(to, nullptr);
   axtransform->outsize = size_from_interface(axtransform->data->output_template);
-  if (plugin_has_transform(axtransform)) {
+  if (axtransform->data->plugin->has_transform()) {
     gst_axtransform_do_bufferpool(axtransform, to);
   }
 
@@ -353,49 +378,6 @@ gst_axtransform_setcaps(GstAxtransform *axtransform, GstCaps *from_event, GstBuf
   }
   gst_caps_unref(to);
   return ret;
-}
-
-static GstFlowReturn
-finish_previous_transform(GstAxtransform *axtransform, GstBuffer *in_buffer,
-    GstBuffer *out_buffer, std::vector<GstMapInfo> &inmap,
-    std::vector<GstMapInfo> &outmap, Ax::AsyncCompleter complete_last_xform)
-{
-  if (axtransform->data->dbl_buffer.inbuffer) {
-    //  We have a pending buffer
-    axtransform->data->outbuf = out_buffer;
-    std::swap(axtransform->data->dbl_buffer.complete_last_xform, complete_last_xform);
-    std::swap(axtransform->data->dbl_buffer.inbuffer, in_buffer);
-    std::swap(axtransform->data->dbl_buffer.inmap, inmap);
-    std::swap(axtransform->data->dbl_buffer.outbuffer, out_buffer);
-    std::swap(axtransform->data->dbl_buffer.outmap, outmap);
-    complete_last_xform();
-    unmap_mem(inmap);
-    unmap_mem(outmap);
-    gst_buffer_unref(in_buffer);
-    ++axtransform->data->current_batch;
-    if (axtransform->data->current_batch == axtransform->data->batch) {
-      axtransform->data->current_batch = 0;
-      axtransform->data->outbuf = nullptr;
-      return gst_pad_push(axtransform->srcpad, out_buffer);
-    }
-    return GST_FLOW_OK;
-  } else {
-    //  No pending buffer, just set up next buffer
-    axtransform->data->dbl_buffer.complete_last_xform = complete_last_xform;
-    axtransform->data->dbl_buffer.inbuffer = in_buffer;
-    axtransform->data->dbl_buffer.inmap = inmap;
-    axtransform->data->dbl_buffer.outbuffer = out_buffer;
-    axtransform->data->dbl_buffer.outmap = outmap;
-    return GST_FLOW_OK;
-  }
-}
-
-static GstFlowReturn
-finish_previous_transform(GstAxtransform *axtransform)
-{
-  auto inmap = std::vector<GstMapInfo>{};
-  auto outmap = std::vector<GstMapInfo>{};
-  return finish_previous_transform(axtransform, nullptr, nullptr, inmap, outmap, {});
 }
 
 static gboolean
@@ -434,7 +416,6 @@ gst_axtransform_sink_event(GstPad *pad, GstObject *parent, GstEvent *event)
   GstAxtransform *axtransform = GST_AXTRANSFORM(parent);
 
   if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
-    finish_previous_transform(axtransform);
     process_queued_events(axtransform, nullptr);
     if (axtransform->data->current_batch != 0) {
       gst_pad_push(axtransform->srcpad, axtransform->data->outbuf);
@@ -496,26 +477,22 @@ get_output_buffer(GstAxtransform *axtransform, const AxDataInterface &output, Gs
 bool
 can_passthrough(GstAxtransform *axtransform, const AxDataInterface &input)
 {
-  return !plugin_has_transform(axtransform)
-         || (axtransform->data->fns.can_passthrough
-             && axtransform->data->fns.can_passthrough(input, axtransform->data->output_template,
-                 axtransform->data->subplugin_data.get(), axtransform->data->logger));
+  auto &data = *axtransform->data;
+  return !data.plugin->has_transform()
+         || data.plugin->can_passthrough(input, data.output_template);
 }
 
 bool
 can_use_dmabuf(GstAxtransform *self)
 {
-  return self->data->fns.transform && self->data->fns.can_use_dmabuf
-         && self->data->fns.can_use_dmabuf(
-             self->data->subplugin_data.get(), self->data->logger);
+  return self->data->plugin->query_supports(Ax::PluginFeature::dmabuf_buffers);
 }
 
 bool
 can_use_vaapi(GstAxtransform *self)
 {
-  return self->data->fns.transform && self->data->fns.can_use_vaapi
-         && self->data->fns.can_use_vaapi(
-             self->data->subplugin_data.get(), self->data->logger);
+  //  Not currently supported
+  return false;
 }
 
 bool
@@ -554,7 +531,6 @@ add_meta_and_push_buffer(GstAxtransform *axtransform, GstBuffer *buffer,
       //  We have crop info, so we can pass the buffer through unchanged
       //  and just add GstVideoCropMeta to it (and GstVideoMeta if it's not there)
       buffer = gst_buffer_make_writable(buffer);
-      finish_previous_transform(axtransform);
       //  Now we need to set new src caps
       add_video_meta_from_interface_to_buffer(buffer, out);
       gst_pad_push(axtransform->srcpad, buffer);
@@ -580,7 +556,6 @@ gst_axtransform_sink_chain(GstPad *pad, GstObject *parent, GstBuffer *buffer)
   auto *self = axtransform->data;
   GST_DEBUG_OBJECT(axtransform, "sink_chain");
   if (!self->event_queue.empty()) {
-    finish_previous_transform(axtransform);
     process_queued_events(axtransform, buffer);
   }
   GstCaps *in_caps = gst_pad_get_current_caps(pad);
@@ -593,12 +568,11 @@ gst_axtransform_sink_chain(GstPad *pad, GstObject *parent, GstBuffer *buffer)
     return gst_pad_push(axtransform->srcpad, buffer);
   }
 
-  //  If the output capps depends on metadata, we need to set the caps first
-  if (self->fns.set_output_interface_from_meta) {
+  //  If the output caps depends on metadata, we need to set the caps first
+  if (self->plugin->has_set_output_interface_from_meta()) {
     GstMetaGeneral *meta = gst_buffer_get_general_meta(buffer); // input buffer
-    auto out = self->fns.set_output_interface_from_meta(input,
-        axtransform->data->subplugin_data.get(), meta->subframe_index,
-        meta->subframe_number, *meta->meta_map_ptr, self->logger);
+    auto out = self->plugin->set_output_interface_from_meta(
+        input, meta->subframe_index, meta->subframe_number, *meta->meta_map_ptr);
 
     if (!has_width_and_height(out)) {
       throw(std::runtime_error("Bounding box width or height is 0."));
@@ -627,9 +601,8 @@ gst_axtransform_sink_chain(GstPad *pad, GstObject *parent, GstBuffer *buffer)
     gst_caps_unref(current_caps);
   }
 
-  if (self->downstream_supports_crop && self->fns.set_output_interface) {
-    auto out = self->fns.set_output_interface(
-        input, axtransform->data->subplugin_data.get(), self->logger);
+  if (self->downstream_supports_crop && self->plugin->has_set_output_interface()) {
+    auto out = self->plugin->set_output_interface(input);
     if (add_meta_and_push_buffer(axtransform, buffer, pad, out) == GST_FLOW_OK) {
       return GST_FLOW_OK;
     }
@@ -649,6 +622,9 @@ gst_axtransform_sink_chain(GstPad *pad, GstObject *parent, GstBuffer *buffer)
     //  Need to add
     inmap = get_mem_map(buffer, GstMapFlags(0 | GST_MAP_VAAPI), G_OBJECT(parent));
     assign_vaapi_ptrs_to_interface(inmap, input);
+  } else if (supports_opencl_buffers(axtransform)
+             && gst_is_opencl_memory(gst_buffer_peek_memory(buffer, 0))) {
+    assign_opencl_ptrs_to_interface(input, buffer);
   } else {
     inmap = get_mem_map(buffer, GST_MAP_READ, G_OBJECT(parent));
     assign_data_ptrs_to_interface(inmap, input);
@@ -658,8 +634,15 @@ gst_axtransform_sink_chain(GstPad *pad, GstObject *parent, GstBuffer *buffer)
                           axtransform->data->outbuf;
 
   GstMetaGeneral *meta = gst_buffer_get_general_meta(outbuf); // input buffer
-  std::vector<GstMapInfo> outmap = get_mem_map(outbuf, GST_MAP_WRITE, G_OBJECT(parent));
-  assign_data_ptrs_to_interface(outmap, output);
+  std::vector<GstMapInfo> outmap;
+  if (supports_opencl_buffers(axtransform)
+      && gst_is_opencl_memory(gst_buffer_peek_memory(outbuf, 0))) {
+    assign_opencl_ptrs_to_interface(output, outbuf);
+    gst_opencl_memory_add_dependency(gst_buffer_peek_memory(outbuf, 0), buffer);
+  } else {
+    outmap = get_mem_map(outbuf, GST_MAP_WRITE, G_OBJECT(parent));
+    assign_data_ptrs_to_interface(outmap, output);
+  }
 
   if (axtransform->data->batch != 1) {
     auto &tensor = std::get<AxTensorsInterface>(output)[0];
@@ -667,19 +650,8 @@ gst_axtransform_sink_chain(GstPad *pad, GstObject *parent, GstBuffer *buffer)
     tensor.data = static_cast<char *>(tensor.data) + offset * tensor.bytes;
   }
 
-  if (axtransform->data->fns.transform_async) {
-    auto complete = axtransform->data->fns.transform_async(input, output,
-        axtransform->data->subplugin_data.get(), meta->subframe_index,
-        meta->subframe_number, *meta->meta_map_ptr, axtransform->data->logger);
-    if (Ax::enable_opencl_double_buffering()) {
-      return finish_previous_transform(axtransform, buffer, outbuf, inmap, outmap, complete);
-    }
-    complete();
-  } else {
-    axtransform->data->fns.transform(input, output,
-        axtransform->data->subplugin_data.get(), meta->subframe_index,
-        meta->subframe_number, *meta->meta_map_ptr, axtransform->data->logger);
-  }
+  self->plugin->transform(input, output, meta->subframe_index,
+      meta->subframe_number, *meta->meta_map_ptr);
 
   unmap_mem(inmap);
   unmap_mem(outmap);
@@ -704,32 +676,36 @@ ax_size_from_caps(GstCaps *caps)
 static gboolean
 add_allocation_proposal(GstAxtransform *sink, GstQuery *query)
 {
-  init_options(G_OBJECT(sink), sink->data->options, sink->data->fns, sink->data->logger,
-      sink->data->subplugin_data, sink->data->options_initialised, nullptr); // TODO display?
-
   //  Tell the upstream element that we support GstVideoMeta. This allows it
   //  to give us buffers with "unusual" strides and offsets.
-  gst_query_add_allocation_meta(query, GST_VIDEO_META_API_TYPE, NULL);
-  if (plugin_supports_cropmeta(sink)) {
-    // If the plugin supports GstVideoCropMeta, tell the upstream element that we support it.
-    gst_query_add_allocation_meta(query, GST_VIDEO_CROP_META_API_TYPE, NULL);
+  if (plugin_supports_gst_video_meta(sink)) {
+    gst_query_add_allocation_meta(query, GST_VIDEO_META_API_TYPE, NULL);
+    if (plugin_supports_cropmeta(sink->data)) {
+      // If the plugin supports GstVideoCropMeta, tell the upstream element that we support it.
+      gst_query_add_allocation_meta(query, GST_VIDEO_CROP_META_API_TYPE, NULL);
+    }
   }
-
   auto *self = sink;
-  GstCaps *caps;
-  gboolean need_pool;
+  GstCaps *caps = NULL;
+  gboolean need_pool = FALSE;
   gst_query_parse_allocation(query, &caps, &need_pool);
-
   if (!caps) {
-    GST_ERROR_OBJECT(self, "Allocation query without caps");
     return TRUE;
   }
+
+  //  Only offer our pool if upstream is using system memory
+  auto *features = gst_caps_get_features(caps, 0);
+  if (features && !gst_caps_features_contains(features, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY)) {
+    return TRUE;
+  }
+  //  Test caps only for system memory
 
   auto subplugin_use_dmabuf = can_use_dmabuf(self);
 
   self->data->allocator = Ax::as_handle(
-      subplugin_use_dmabuf ? gst_tensor_dmabuf_allocator_get(dmabuf_device) :
-                             gst_aligned_allocator_get());
+      subplugin_use_dmabuf ?
+          gst_tensor_dmabuf_allocator_get(dmabuf_device) :
+          gst_opencl_allocator_get(sink->data->which_cl.c_str(), &self->data->logger));
   if (!self->data->allocator) {
     GST_ERROR_OBJECT(self, "Unable to get aligned allocator");
     return TRUE;
@@ -737,8 +713,9 @@ add_allocation_proposal(GstAxtransform *sink, GstQuery *query)
 
   if (need_pool) {
     const int min_buffers = 4;
-    const int max_buffers = 16;
-    self->data->pool = Ax::as_handle(gst_buffer_pool_new());
+    //  Now that inplace no longer provides a pool we need to provide sufficient
+    const int max_buffers = 0;
+    self->data->pool = Ax::as_handle(gst_ax_buffer_pool_new());
     GstStructure *config = gst_buffer_pool_get_config(self->data->pool.get());
     guint size = ax_size_from_caps(caps);
 
@@ -758,6 +735,14 @@ add_allocation_proposal(GstAxtransform *sink, GstQuery *query)
   return TRUE;
 }
 
+#define STRINGIFY(x) #x
+#define STRINGIZE(x) STRINGIFY(x)
+
+#define GENERATE_VIDEO_CAPS(x) STRINGIZE(x) ,
+#define VIDEO_FORMATS_CAPS GST_AX_VIDEO_FORMATS(GENERATE_VIDEO_CAPS)
+
+
+std::string_view supported_video_formats[] = { VIDEO_FORMATS_CAPS };
 
 static int
 gst_axtransform_sink_query(GstPad *pad, GstObject *parent, GstQuery *query)
@@ -769,6 +754,36 @@ gst_axtransform_sink_query(GstPad *pad, GstObject *parent, GstQuery *query)
     case GST_QUERY_ALLOCATION:
       return add_allocation_proposal(axtransform, query);
 
+    case GST_QUERY_CAPS:
+      {
+        initialise_options(axtransform);
+        GstCaps *filter = NULL;
+        gst_query_parse_caps(query, &filter);
+
+        GstCaps *tmp_caps = gst_caps_from_string(GST_TENSORS_CAP_DEFAULT);
+
+        /* System memory variant */
+        const auto uses_dmabuf = can_use_dmabuf(axtransform);
+        for (auto format : supported_video_formats) {
+          GstStructure *s = gst_structure_new(
+              "video/x-raw", "format", G_TYPE_STRING, format.data(), NULL);
+          gst_caps_append_structure_full(tmp_caps, s,
+              gst_caps_features_new(GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY, NULL));
+          if (uses_dmabuf) {
+            GstStructure *s2 = gst_structure_new(
+                "video/x-raw", "format", G_TYPE_STRING, format.data(), NULL);
+            gst_caps_append_structure_full(tmp_caps, s2,
+                gst_caps_features_new(GST_CAPS_FEATURE_MEMORY_DMABUF, NULL));
+          }
+        }
+
+        auto *caps = filter ? gst_caps_intersect_full(tmp_caps, filter, GST_CAPS_INTERSECT_FIRST) :
+                              gst_caps_ref(tmp_caps);
+        gst_caps_unref(tmp_caps);
+        gst_query_set_caps_result(query, caps);
+        gst_caps_unref(caps);
+        return TRUE;
+      }
     default:
       return gst_pad_query_default(pad, parent, query);
   }
@@ -809,23 +824,27 @@ gst_axtransform_set_property(
 {
   GstAxtransform *axtransform = GST_AXTRANSFORM(object);
   GST_DEBUG_OBJECT(axtransform, "set_property");
+  auto &data = *axtransform->data;
 
   switch (prop_id) {
     case PROP_SHARED_LIB_PATH:
-      axtransform->data->shared_lib_path = Ax::libname(g_value_get_string(value));
-      axtransform->data->shared = std::make_unique<Ax::SharedLib>(
-          axtransform->data->logger, axtransform->data->shared_lib_path);
-      Ax::load_v1_plugin(*axtransform->data->shared, axtransform->data->fns);
+      data.shared_lib_path = Ax::libname(g_value_get_string(value));
+      data.shared = std::make_unique<Ax::SharedLib>(data.logger, data.shared_lib_path);
       break;
     case PROP_OPTIONS:
-      axtransform->data->options = g_value_get_string(value);
-      update_options(object, axtransform->data->options, axtransform->data->fns,
-          axtransform->data->logger, axtransform->data->subplugin_data,
-          axtransform->data->options_initialised);
+      data.options = g_value_get_string(value);
+      if (data.plugin) {
+        auto opts = Ax::parse_and_validate_plugin_options(
+            data.logger, data.options, data.plugin->allowed_properties());
+        data.plugin->set_dynamic_properties(opts);
+      }
       break;
     case PROP_BATCH:
-      axtransform->data->batch = g_value_get_uint(value);
-      axtransform->data->current_batch = 0;
+      data.batch = g_value_get_uint(value);
+      data.current_batch = 0;
+      break;
+    case PROP_WHICH_CL:
+      data.which_cl = g_value_get_string(value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -849,6 +868,10 @@ gst_axtransform_get_property(GObject *object, guint prop_id, GValue *value, GPar
     case PROP_BATCH:
       g_value_set_uint(value, axtransform->data->batch);
       break;
+    case PROP_WHICH_CL:
+      g_value_set_string(value, axtransform->data->which_cl.c_str());
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -898,6 +921,9 @@ gst_axtransform_class_init(GstAxtransformClass *klass)
   g_object_class_install_property(G_OBJECT_CLASS(klass), PROP_BATCH,
       g_param_spec_uint("batch", "size to batch", "Number of inputs to batch together",
           1, 16, 1, (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+  g_object_class_install_property(G_OBJECT_CLASS(klass), PROP_WHICH_CL,
+      g_param_spec_string("cl-platform", "CL platform", "OpenCL platform to use",
+          "auto", (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
   gst_element_class_add_pad_template(
       GST_ELEMENT_CLASS(klass), gst_static_pad_template_get(&src_template));
   gst_element_class_add_pad_template(

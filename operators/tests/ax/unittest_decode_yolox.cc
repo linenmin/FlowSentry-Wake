@@ -1,8 +1,8 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <memory>
 #include <stdexcept>
@@ -70,7 +70,7 @@ TEST(yolox_errors, no_zero_points_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolox.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolox", properties), std::runtime_error);
 }
 
 
@@ -79,7 +79,7 @@ TEST(yolox_errors, no_scales_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "zero_points", "0" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolox.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolox", properties), std::runtime_error);
 }
 
 TEST(yolox_errors, different_scale_and_zero_point_sizes_throws)
@@ -88,7 +88,7 @@ TEST(yolox_errors, different_scale_and_zero_point_sizes_throws)
     { "zero_points", "0, 0" },
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_yolox.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolox", properties), std::runtime_error);
 }
 
 TEST(yolox_decode_scores, all_filtered_at_max_confidence)
@@ -112,7 +112,7 @@ TEST(yolox_decode_scores, all_filtered_at_max_confidence)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolox.so", properties);
+  auto decoder = Ax::LoadDecode("yolox", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -122,7 +122,7 @@ TEST(yolox_decode_scores, all_filtered_at_max_confidence)
   score_tensors.push_back(box_tensors[0]);
   score_tensors.push_back(objectness_tensors[0]);
 
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   EXPECT_EQ(actual_classes, std::vector<int32_t>{});
@@ -147,7 +147,7 @@ TEST(yolox_decode_scores, none_filtered_at_min_confidence_with_multiclass)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolox.so", properties);
+  auto decoder = Ax::LoadDecode("yolox", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -157,7 +157,7 @@ TEST(yolox_decode_scores, none_filtered_at_min_confidence_with_multiclass)
   score_tensors.push_back(box_tensors[0]);
   score_tensors.push_back(objectness_tensors[0]);
 
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 0, 1, 2, 3 };
@@ -183,7 +183,7 @@ TEST(yolox_decode_scores, all_but_first_highest_filtered_at_min_confidence_with_
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolox.so", properties);
+  auto decoder = Ax::LoadDecode("yolox", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -192,7 +192,7 @@ TEST(yolox_decode_scores, all_but_first_highest_filtered_at_min_confidence_with_
   auto objectness_tensors = tensors_from_vector(objectness, { 1, 1, 1, 1 });
   score_tensors.push_back(box_tensors[0]);
   score_tensors.push_back(objectness_tensors[0]);
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 0 };
@@ -219,7 +219,7 @@ TEST(yolox_decode_scores, with_multiclass_all_below_threshold_are_filtered)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolox.so", properties);
+  auto decoder = Ax::LoadDecode("yolox", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -228,7 +228,7 @@ TEST(yolox_decode_scores, with_multiclass_all_below_threshold_are_filtered)
   auto objectness_tensors = tensors_from_vector(objectness, { 1, 1, 1, 1 });
   score_tensors.push_back(box_tensors[0]);
   score_tensors.push_back(objectness_tensors[0]);
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 1, 3 };
@@ -255,7 +255,7 @@ TEST(yolox_decode_scores, with_num_classes_2)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolox.so", properties);
+  auto decoder = Ax::LoadDecode("yolox", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -264,7 +264,7 @@ TEST(yolox_decode_scores, with_num_classes_2)
   auto objectness_tensors = tensors_from_vector(objectness, { 1, 1, 1, 1 });
   score_tensors.push_back(box_tensors[0]);
   score_tensors.push_back(objectness_tensors[0]);
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 1 };
@@ -292,7 +292,7 @@ TEST(yolox_decode_scores, with_num_classes_80)
     { "model_height", "640" },
     { "scale_up", "1" },
   };
-  Decoder decoder("libdecode_yolox.so", properties);
+  auto decoder = Ax::LoadDecode("yolox", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
@@ -301,7 +301,7 @@ TEST(yolox_decode_scores, with_num_classes_80)
   auto objectness_tensors = tensors_from_vector(objectness, { 1, 1, 1, 1 });
   score_tensors.push_back(box_tensors[0]);
   score_tensors.push_back(objectness_tensors[0]);
-  decoder.decode_to_meta(score_tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(score_tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   auto expected_classes = std::vector<int32_t>{ 1, 3 };

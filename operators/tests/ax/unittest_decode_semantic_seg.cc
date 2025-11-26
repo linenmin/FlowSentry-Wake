@@ -1,8 +1,8 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <string>
 #include <unordered_map>
@@ -89,13 +89,13 @@ TEST(semantic_segmentation_decode, probability_out)
     { "meta_key", meta_identifier },
     { "class_map_out", "0" },
   };
-  Decoder decoder("libdecode_semantic_seg.so", properties);
+  auto decoder = Ax::LoadDecode("semantic_seg", properties);
 
   AxVideoInterface video_info{ { 10, 10, 3, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto probs_tensor = tensors_from_vector(probs, { 1, 10, 10, 5 });
 
-  decoder.decode_to_meta(probs_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(probs_tensor, 0, 1, map, video_info);
 
   auto [actual_class_ids, actual_probs, actual_shape]
       = get_semantic_seg_meta(map, meta_identifier, true);
@@ -124,13 +124,13 @@ TEST(semantic_segmentation_decode, happy_path)
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
   };
-  Decoder decoder("libdecode_semantic_seg.so", properties);
+  auto decoder = Ax::LoadDecode("semantic_seg", properties);
 
   AxVideoInterface video_info{ { 10, 10, 3, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto probs_tensor = tensors_from_vector(probs, { 1, 10, 10, 5 });
 
-  decoder.decode_to_meta(probs_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(probs_tensor, 0, 1, map, video_info);
 
   auto [actual_class_ids, actual_probs, actual_shape]
       = get_semantic_seg_meta(map, meta_identifier);
@@ -161,13 +161,13 @@ TEST(semantic_segmentation_decode, binary_path)
     { "meta_key", meta_identifier },
     { "threshold", "0.5" },
   };
-  Decoder decoder("libdecode_semantic_seg.so", properties);
+  auto decoder = Ax::LoadDecode("semantic_seg", properties);
 
   AxVideoInterface video_info{ { 10, 10, 3, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto probs_tensor = tensors_from_vector(probs, { 1, 10, 10, 1 });
 
-  decoder.decode_to_meta(probs_tensor, 0, 1, map, video_info);
+  decoder->decode_to_meta(probs_tensor, 0, 1, map, video_info);
 
   auto [actual_class_ids, actual_probs, actual_shape]
       = get_semantic_seg_meta(map, meta_identifier);

@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <gtest/gtest.h>
 
 #include <gmodule.h>
@@ -73,39 +73,52 @@ has_dma_heap()
   return fs::is_directory("/dev/dma_heap");
 }
 
-class Plugin
-{
-  static std::string get_plugin_path(std::string plugin)
-  {
-    const auto val = std::getenv("AX_SUBPLUGIN_PATH");
-    return Ax::libname(val && val[0] ? std::string{ fs::path(val) / plugin } : plugin);
-  }
-
-  public:
-  explicit Plugin(const std::string &path,
-      const std::unordered_map<std::string, std::string> &input)
-      : plugin(logger, get_plugin_path(path))
-  {
-
-    std::shared_ptr<void> (*p_init_and_set_static_properties)(
-        const std::unordered_map<std::string, std::string> &input,
-        Ax::Logger &logger, void *display)
-        = nullptr;
-    plugin.initialise_function("init_and_set_static_properties", p_init_and_set_static_properties);
-
-    properties = p_init_and_set_static_properties(input, logger, nullptr);
-
-    void (*p_set_dynamic_properties)(const std::unordered_map<std::string, std::string> &input,
-        void *data, Ax::Logger &logger)
-        = nullptr;
-    plugin.initialise_function("set_dynamic_properties", p_set_dynamic_properties, false);
-    if (p_set_dynamic_properties) {
-      p_set_dynamic_properties(input, properties.get(), logger);
-    }
-  }
-
-  protected:
-  std::shared_ptr<void> properties;
-  Ax::Logger logger{ Ax::Severity::error, nullptr, nullptr };
-  Ax::SharedLib plugin;
+struct FormatParam {
+  AxVideoFormat format;
+  int out_format;
 };
+
+namespace Ax
+{
+inline std::string
+StringMapAsOptions(const StringMap &m)
+{
+  std::vector<std::string> pairs;
+  pairs.reserve(m.size());
+  for (const auto &p : m) {
+    pairs.push_back(p.first + ":" + p.second);
+  }
+  return Ax::Internal::join(pairs, ";");
+}
+
+template <typename Loaded, typename Plugin>
+std::unique_ptr<Plugin>
+LoadPlugin(std::string name, const StringMap &input)
+{
+  static Ax::Logger logger{ Ax::Severity::error, nullptr, nullptr };
+  name = Ax::libname("lib" + name + ".so"); // replace .so with .so/.dll/.dylib etc
+  const auto plugin_path = Ax::get_env("AX_SUBPLUGIN_PATH", "");
+  name = plugin_path.empty() ? std::string{ fs::path(plugin_path) / name } : name;
+  Ax::SharedLib shared(logger, name);
+  auto opts = StringMapAsOptions(input);
+  return std::make_unique<Loaded>(logger, std::move(shared), std::move(opts), nullptr);
+}
+
+inline auto
+LoadInPlace(const std::string &name, const StringMap &input)
+{
+  return LoadPlugin<Ax::LoadedInPlace, Ax::InPlace>("inplace_" + name, input);
+}
+
+inline auto
+LoadTransform(const std::string &name, const StringMap &input)
+{
+  return LoadPlugin<Ax::LoadedTransform, Ax::Transform>("transform_" + name, input);
+}
+
+inline auto
+LoadDecode(const std::string &name, const StringMap &input)
+{
+  return LoadPlugin<Ax::LoadedDecode, Ax::Decode>("decode_" + name, input);
+}
+} // namespace Ax

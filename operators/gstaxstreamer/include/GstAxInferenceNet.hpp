@@ -1,8 +1,11 @@
+// Copyright Axelera AI, 2025
 #pragma once
 
+#include <atomic>
 #include <gst/gst.h>
 #include <memory>
 #include <queue>
+#include <unordered_set>
 #include "GstAxStreamerUtils.hpp"
 
 G_BEGIN_DECLS
@@ -47,6 +50,9 @@ struct _GstAxInferenceNet {
   Ax::GstHandle<GstAllocator> allocator;
   Ax::GstHandle<GstBufferPool> pool;
   bool at_eos = false;
+  gboolean loop = false;
+  std::unique_ptr<std::unordered_set<GstPad *>> flushing_pads;
+  std::unique_ptr<std::mutex> flushing_mutex;
   std::unique_ptr<GstAxStreamSelect> stream_select;
   std::unique_ptr<Ax::Logger> logger;
 };

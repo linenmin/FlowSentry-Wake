@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import abc
+import collections
 import itertools
 from pathlib import Path
 import threading
@@ -14,17 +15,27 @@ if TYPE_CHECKING:
     from . import frame_data, graph, io
     from .. import config, device_manager
 
-    ResultCallback = Callable[[frame_data.FrameResult | None], None]
+    EventCallback = Callable[[frame_data.FrameEvent], bool]
 
 LOG = logging_utils.getLogger(__name__)
 
 
 class SourceIdAllocator:
+    '''A simple allocator for source IDs, which can be reused after deallocation.'''
+
     def __init__(self):
         self._next = iter(itertools.count())
+        self._free = collections.deque()
 
     def allocate(self) -> int:
+        '''Return the next available source ID, and reserve it.'''
+        if self._free:
+            return self._free.popleft()
         return next(self._next)
+
+    def deallocate(self, sid: int) -> None:
+        '''Make the given source ID available for reuse.'''
+        self._free.append(sid)
 
 
 class Pipe(abc.ABC):
@@ -36,7 +47,7 @@ class Pipe(abc.ABC):
     model_infos: network.ModelInfos
     task_graph: graph.DependencyGraph
     output: io.PipeOutput = None
-    _result_ready: ResultCallback | None = None
+    _on_event: EventCallback | None = None
 
     def __init__(
         self,
@@ -46,7 +57,7 @@ class Pipe(abc.ABC):
         hardware_caps,
         pipeline_config: config.PipelineConfig,
         task_graph,
-        result_ready_callback: ResultCallback | None,
+        on_event: EventCallback | None,
         pipein: io.PipeInput,
     ) -> None:
         self.device_man = device_man
@@ -56,8 +67,11 @@ class Pipe(abc.ABC):
         self.hardware_caps = hardware_caps or {}
         self.config = pipeline_config
         self.task_graph = task_graph
-        self._result_ready = result_ready_callback
+        self._on_event = on_event
         self._pipein = pipein
+        self._stop_event = None
+        self._thread = None
+        self._loopfn = None
 
     def init(self):
         self._stop_event = threading.Event()
@@ -68,8 +82,10 @@ class Pipe(abc.ABC):
         self._thread.start()
 
     def stop(self):
-        self._stop_event.set()
-        self._thread.join()
+        if self._stop_event is not None:
+            self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join()
         for task in self.nn.tasks:
             if task.inference:
                 task.inference.release()
@@ -108,7 +124,7 @@ def create_pipe(
     logging_dir: Path,
     hardware_caps: config.HardwareCaps,
     task_graph: graph.DependencyGraph,
-    result_ready_callback: ResultCallback | None,
+    result_ready_callback: EventCallback | None,
     pipein: io.PipeInput,
 ) -> Pipe:
     '''Factory function for AxPipe.'''

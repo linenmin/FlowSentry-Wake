@@ -1,9 +1,10 @@
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
 # Metadata for tracker
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional
+import importlib
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -12,6 +13,7 @@ from axelera.app.meta.keypoint import CocoBodyKeypointsMeta
 
 from .. import display, eval_interfaces, plot_utils
 from .base import AxTaskMeta, MetaObject, class_as_label
+from .gst_decode_utils import decode_bbox
 
 
 class TrackedObject(MetaObject):
@@ -36,7 +38,7 @@ _red = (255, 0, 0, 255)
 _yellow = (255, 255, 0, 255)
 
 
-def _track_id_as_label(track_id: int, labels: Optional[list] = None) -> str:
+def _track_id_as_label(track_id: int, labels: list | None = None) -> str:
     if not labels:
         return f'id:{track_id}'
     return f"{track_id}"
@@ -48,15 +50,16 @@ class TrackerMeta(AxTaskMeta):
     """Metadata for tracker task"""
 
     Object: ClassVar[MetaObject] = TrackedObject
+    META_TYPE: ClassVar[str] = 'tracking_meta'
 
     # key is the track id, value is the bbox history
-    tracking_history: Dict[int, np.ndarray] = field(default_factory=dict)
-    class_ids: List[int] = field(default_factory=list)
-    object_meta: Dict[str, Dict[int, AxTaskMeta]] = field(default_factory=dict)
-    frame_object_meta: Dict[str, Dict[int, AxTaskMeta]] = field(default_factory=dict)
-    labels: Optional[list] = field(default_factory=lambda: None, repr=False)
-    labels_dict: Dict[str, list] = field(default_factory=dict)
-    extra_info: Dict[str, Any] = field(default_factory=dict)
+    tracking_history: dict[int, np.ndarray] = field(default_factory=dict)
+    class_ids: list[int] = field(default_factory=list)
+    object_meta: dict[str, dict[int, AxTaskMeta]] = field(default_factory=dict)
+    frame_object_meta: dict[str, dict[int, AxTaskMeta]] = field(default_factory=dict)
+    labels: list | None = field(default_factory=lambda: None, repr=False)
+    labels_dict: dict[str, list] = field(default_factory=dict)
+    extra_info: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         assert len(self.tracking_history) == len(
@@ -116,8 +119,70 @@ class TrackerMeta(AxTaskMeta):
                 if isinstance(value, CocoBodyKeypointsMeta):
                     value.draw(draw)
 
+    @classmethod
+    def decode(cls, data: dict[str, bytes | bytearray]) -> 'TrackerMeta':
+        meta_module = importlib.import_module('axelera.app.meta')
+        tracking_history: dict[int, np.ndarray] = {}
+        class_ids: list[int] = []
+        object_meta: dict[str, dict[int, AxTaskMeta]] = {}
+        frame_object_meta: dict[str, dict[int, AxTaskMeta]] = {}
+        objmeta_key_to_string: dict[int, str] = {}
+
+        key_data = data.get('objmeta_keys', b'') or b''
+        key_data_size = len(key_data)
+        while key_data_size > 0:
+            objmeta_key = int(np.frombuffer(key_data[:1], dtype=np.uint8)[0])
+            objmeta_string_size = int(np.frombuffer(key_data[1:9], dtype=np.uint64)[0])
+            start = 9
+            end = start + objmeta_string_size
+            objmeta_string = key_data[start:end].decode('utf-8')
+            objmeta_key_to_string[objmeta_key] = objmeta_string
+            key_data = key_data[end:]
+            key_data_size = len(key_data)
+
+        for key, track_data in data.items():
+            if not key.startswith('track_'):
+                continue
+            track_id = int(key[6:])
+            class_id = int(np.frombuffer(track_data[:4], dtype=np.int32)[0])
+            class_ids.append(class_id)
+            num_boxes = int(np.frombuffer(track_data[4:8], dtype=np.int32)[0])
+            bbox_start = 8
+            bbox_end = bbox_start + num_boxes * 16
+            bbox_data = {'bbox': track_data[bbox_start:bbox_end]}
+            tracking_history[track_id] = decode_bbox(bbox_data)
+            offset = bbox_end
+            offset = _process_object_metadata(
+                track_id,
+                meta_module,
+                frame_object_meta,
+                objmeta_key_to_string,
+                track_data,
+                offset,
+            )
+            offset = _process_object_metadata(
+                track_id,
+                meta_module,
+                object_meta,
+                objmeta_key_to_string,
+                track_data,
+                offset,
+            )
+
+        return cls(
+            tracking_history=tracking_history,
+            class_ids=class_ids,
+            object_meta=object_meta,
+            frame_object_meta=frame_object_meta,
+        )
+
     @property
-    def objects(self) -> List[TrackedObject]:
+    def boxes(self) -> dict[int, np.ndarray]:
+        """Returns the current boxes for all tracks as a dict mapping track_id to box."""
+        return {track_id: history[-1] for track_id, history in self.tracking_history.items()}
+
+    @property
+    def objects(self) -> list[TrackedObject]:
         if not self._objects:
             self._objects.extend(
                 self.Object(self, idx, track_id)
@@ -126,7 +191,7 @@ class TrackerMeta(AxTaskMeta):
         return self._objects
 
     def to_evaluation(self):
-        if not (ground_truth := self.access_ground_truth()):
+        if not self.access_ground_truth():
             raise ValueError("Ground truth is not set")
 
         bboxes = []
@@ -148,3 +213,61 @@ class TrackerMeta(AxTaskMeta):
             prediction = eval_interfaces.TrackerEvalSample()
 
         return prediction
+
+
+def _process_object_metadata(
+    track_id: int,
+    meta_module,
+    destination: dict[str, dict[int, AxTaskMeta]],
+    objmeta_key_to_string: dict[int, str],
+    track_data: bytes | bytearray,
+    offset: int,
+) -> int:
+    num_objmeta = int(np.frombuffer(track_data[offset : offset + 4], dtype=np.int32)[0])
+    offset += 4
+    if num_objmeta <= 0:
+        return offset
+
+    results_objmeta: dict[tuple[str, str], dict[str, bytes | bytearray]] = {}
+    for _ in range(num_objmeta):
+        objmeta_key = int(np.frombuffer(track_data[offset : offset + 1], dtype=np.uint8)[0])
+        offset += 1
+        objmeta_string = objmeta_key_to_string.get(objmeta_key, f"key_{objmeta_key}")
+
+        metavec_size = int(np.frombuffer(track_data[offset : offset + 4], dtype=np.int32)[0])
+        offset += 4
+
+        for _ in range(metavec_size):
+            objmeta_type_size = int(
+                np.frombuffer(track_data[offset : offset + 4], dtype=np.int32)[0]
+            )
+            offset += 4
+            objmeta_type = track_data[offset : offset + objmeta_type_size].decode('utf-8')
+            offset += objmeta_type_size
+
+            objmeta_subtype_size = int(
+                np.frombuffer(track_data[offset : offset + 4], dtype=np.int32)[0]
+            )
+            offset += 4
+            objmeta_subtype = track_data[offset : offset + objmeta_subtype_size].decode('utf-8')
+            offset += objmeta_subtype_size
+
+            objmeta_size = int(np.frombuffer(track_data[offset : offset + 4], dtype=np.int32)[0])
+            offset += 4
+            objmeta_data = track_data[offset : offset + objmeta_size]
+            offset += objmeta_size
+            if objmeta_size == 0:
+                continue
+
+            results_key = (objmeta_string, objmeta_type)
+            entry = results_objmeta.setdefault(results_key, {})
+            if objmeta_subtype in entry:
+                objmeta_data = entry[objmeta_subtype] + objmeta_data
+            entry[objmeta_subtype] = objmeta_data
+
+    for (objmeta_name, meta_type), results_data in results_objmeta.items():
+        meta_class = getattr(meta_module, meta_type)
+        decoded_meta = meta_class.decode(results_data)
+        destination.setdefault(objmeta_name, {})[track_id] = decoded_meta
+
+    return offset

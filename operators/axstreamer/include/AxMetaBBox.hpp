@@ -9,7 +9,13 @@
 #include "AxMeta.hpp"
 #include "AxUtils.hpp"
 
-enum class box_format { xyxy = 0, xywh = 1, ltxywh = 2 };
+enum class box_format {
+  xyxy = 0,
+  xywh = 1,
+  ltxywh = 2,
+  xyxyxyxy = 3,
+  xywhr = 4
+};
 
 struct box_xyxy {
   int x1;
@@ -18,6 +24,24 @@ struct box_xyxy {
   int y2;
 };
 
+struct box_xyxyxyxy {
+  int x11;
+  int y11;
+  int x12;
+  int y12;
+  int x21;
+  int y21;
+  int x22;
+  int y22;
+};
+
+struct __attribute__((packed)) box_xywhr {
+  int x;
+  int y;
+  int w;
+  int h;
+  float r;
+};
 struct box_xywh {
   int x;
   int y;
@@ -34,6 +58,12 @@ struct box_ltxywh {
 
 using BboxXyxy = box_xyxy;
 using BboxXyxyVector = std::vector<BboxXyxy>;
+
+using BboxXyxyxyxy = box_xyxyxyxy;
+using BboxXyxyxyxyVector = std::vector<BboxXyxyxyxy>;
+
+using BboxXywhr = box_xywhr;
+using BboxXywhrVector = std::vector<BboxXywhr>;
 
 class AxMetaBbox : public virtual AxMetaBase
 {
@@ -60,35 +90,6 @@ class AxMetaBbox : public virtual AxMetaBase
     }
   }
 
-  void extend(const BboxXyxyVector &boxes, const std::vector<float> &scores,
-      const std::vector<int> &classes)
-  {
-    if (boxes.size() != scores.size()) {
-      throw std::runtime_error("Boxes and scores must have the same size in extend of AxMetaBbox");
-    }
-    if (classes_.empty() && !classes.empty()) {
-      throw std::runtime_error(
-          "Classes must not be provided in extend of AxMetaBbox if the existing meta does not have classes");
-    } else if (!classes_.empty() && classes.size() != boxes.size()) {
-      throw std::runtime_error(
-          "Boxes and classes must have the same size in extend of AxMetaBbox");
-    }
-    bboxvec.insert(bboxvec.end(), boxes.begin(), boxes.end());
-    scores_.insert(scores_.end(), scores.begin(), scores.end());
-    classes_.insert(classes_.end(), classes.begin(), classes.end());
-  }
-
-  void extend(const AxMetaBbox &other)
-  {
-    if (other.bboxvec.size() != other.scores_.size()) {
-      throw std::runtime_error(
-          "Other bbox and scores must have the same size in extend of AxMetaBbox");
-    }
-    bboxvec.insert(bboxvec.end(), other.bboxvec.begin(), other.bboxvec.end());
-    scores_.insert(scores_.end(), other.scores_.begin(), other.scores_.end());
-    classes_.insert(classes_.end(), other.classes_.begin(), other.classes_.end());
-    ids.insert(ids.end(), other.ids.begin(), other.ids.end());
-  }
 
   void draw(const AxVideoInterface &video,
       const std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map) override
@@ -120,7 +121,6 @@ class AxMetaBbox : public virtual AxMetaBase
     return { { "bbox", "bbox", int(bboxvec.size() * sizeof(BboxXyxy)),
         reinterpret_cast<const char *>(bboxvec.data()) } };
   }
-
   ///
   /// @brief Get the elements score at the given index. No bounds checking is
   /// performed. The behaviour is undefined if idx is out of range
@@ -299,9 +299,308 @@ class AxMetaBbox : public virtual AxMetaBase
     return bboxvec.size();
   }
 
+  void extend(const AxMetaBbox &other)
+  {
+    if (other.bboxvec.size() != other.scores_.size()) {
+      throw std::runtime_error(
+          "Other bbox and scores must have the same size in extend of AxMetaBbox");
+    }
+    bboxvec.insert(bboxvec.end(), other.bboxvec.begin(), other.bboxvec.end());
+    scores_.insert(scores_.end(), other.scores_.begin(), other.scores_.end());
+    classes_.insert(classes_.end(), other.classes_.begin(), other.classes_.end());
+    ids.insert(ids.end(), other.ids.begin(), other.ids.end());
+  }
+
   protected:
+  // Protected accessors for derived classes
+  size_t scores_size() const
+  {
+    return scores_.size();
+  }
+  size_t classes_size() const
+  {
+    return classes_.size();
+  }
+  bool classes_empty() const
+  {
+    return classes_.empty();
+  }
+  const float *scores_data() const
+  {
+    return scores_.data();
+  }
+  const int *classes_data() const
+  {
+    return classes_.data();
+  }
+
   BboxXyxyVector bboxvec;
   std::vector<float> scores_;
   std::vector<int> classes_;
   std::vector<int> ids;
+};
+
+class AxMetaBboxOBBBase : public virtual AxMetaBase
+{
+  public:
+  AxMetaBboxOBBBase() = default;
+
+  virtual ~AxMetaBboxOBBBase() = default;
+
+  protected:
+  AxMetaBboxOBBBase(std::vector<float> scores, std::vector<int> classes, std::vector<int> ids)
+      : scores_(std::move(scores)), classes_(std::move(classes)), ids(std::move(ids))
+  {
+  }
+
+  // Protected accessors for derived classes
+  size_t scores_size() const
+  {
+    return scores_.size();
+  }
+  size_t classes_size() const
+  {
+    return classes_.size();
+  }
+  size_t ids_size() const
+  {
+    return ids.size();
+  }
+  bool classes_empty() const
+  {
+    return classes_.empty();
+  }
+  bool ids_empty() const
+  {
+    return ids.empty();
+  }
+  const float *scores_data() const
+  {
+    return scores_.data();
+  }
+  const int *classes_data() const
+  {
+    return classes_.data();
+  }
+  const int *ids_data() const
+  {
+    return ids.data();
+  }
+
+  public:
+  virtual size_t num_elements() const = 0;
+
+  void draw(const AxVideoInterface &video,
+      const std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map) override
+  {
+  }
+
+  float score(size_t idx) const
+  {
+    return scores_[idx];
+  }
+
+  float score_at(size_t idx) const
+  {
+    return scores_.at(idx);
+  }
+
+  void set_score(size_t idx, float score)
+  {
+    scores_[idx] = score;
+  }
+
+  int class_id(size_t idx) const
+  {
+    return classes_.empty() ? -1 : classes_[idx];
+  }
+
+  int class_id_at(size_t idx) const
+  {
+    return classes_.empty() ? -1 : classes_.at(idx);
+  }
+
+  bool has_class_id() const
+  {
+    return !classes_.empty();
+  }
+
+  bool is_multi_class() const
+  {
+    return has_class_id();
+  }
+
+  void set_id(size_t idx, int id)
+  {
+    if (ids.size() < num_elements()) {
+      ids.resize(num_elements(), -1);
+    }
+    ids[idx] = id;
+  }
+
+  int get_id(size_t idx) const
+  {
+    if (idx >= num_elements()) {
+      throw std::out_of_range("Index out of range");
+    }
+    if (idx >= ids.size()) {
+      return -1;
+    }
+    return ids[idx];
+  }
+
+  size_t get_number_of_subframes() const override
+  {
+    return num_elements();
+  }
+
+  private:
+  std::vector<float> scores_;
+  std::vector<int> classes_;
+  std::vector<int> ids;
+};
+
+class AxMetaBboxOBBXYXYXYXY : public AxMetaBboxOBBBase
+{
+  public:
+  AxMetaBboxOBBXYXYXYXY() = default;
+
+  explicit AxMetaBboxOBBXYXYXYXY(BboxXyxyxyxyVector boxes,
+      std::vector<float> scores, std::vector<int> classes, std::vector<int> ids)
+      : AxMetaBboxOBBBase(std::move(scores), std::move(classes), std::move(ids)),
+        bboxvec_xyxyxyxy(std::move(boxes))
+  {
+
+    if (num_elements() != classes_size() && !classes_empty()) {
+      throw std::logic_error("AxMetaBboxOBBXYXYXYXY: scores and classes must have the same size as boxes. num_elements: "
+                             + std::to_string(num_elements())
+                             + " classes: " + std::to_string(classes_size()));
+    }
+
+    if (!ids_empty() && ids_size() != bboxvec_xyxyxyxy.size()) {
+      throw std::runtime_error(
+          "When constructing AxMetaBboxOBBXYXYXYXY with ids, the number of ids must match the number of boxes");
+    }
+    if (num_elements() != scores_size()) {
+      throw std::logic_error(
+          "AxMetaBboxOBBXYXYXYXY: scores and classes must have the same size as boxes");
+    }
+  }
+
+
+  size_t num_elements() const override
+  {
+    return bboxvec_xyxyxyxy.size();
+  }
+
+  std::vector<extern_meta> get_extern_meta() const override
+  {
+    return { { "bbox_obb", "bbox_obb",
+                 static_cast<int>(bboxvec_xyxyxyxy.size() * sizeof(BboxXyxyxyxy)),
+                 reinterpret_cast<const char *>(bboxvec_xyxyxyxy.data()) },
+      { "is_xywhr", "is_xywhr", static_cast<int>(sizeof(is_xywhr)),
+          reinterpret_cast<const char *>(&is_xywhr) } };
+  }
+
+  BboxXyxyxyxy get_box_xyxyxyxy(size_t idx) const
+  {
+    return bboxvec_xyxyxyxy[idx];
+  }
+
+  void set_box_xyxyxyxy(size_t idx, const BboxXyxyxyxy &box)
+  {
+    bboxvec_xyxyxyxy[idx] = box;
+  }
+
+  BboxXyxyxyxy get_box_xyxyxyxy_at(size_t idx) const
+  {
+    return bboxvec_xyxyxyxy.at(idx);
+  }
+
+  BboxXywhr to_xywhr(const BboxXyxyxyxy &box) const
+  {
+    std::vector<cv::Point2f> points
+        = { cv::Point2f(box.x11, box.y11), cv::Point2f(box.x12, box.y12),
+            cv::Point2f(box.x21, box.y21), cv::Point2f(box.x22, box.y22) };
+    cv::RotatedRect rect = cv::minAreaRect(points);
+    return { static_cast<int>(rect.center.x), static_cast<int>(rect.center.y),
+      static_cast<int>(rect.size.width), static_cast<int>(rect.size.height),
+      static_cast<float>(rect.angle * CV_PI / 180.0) };
+  }
+
+  const BboxXyxyxyxy *get_boxes_xyxyxyxy_data() const
+  {
+    return bboxvec_xyxyxyxy.data();
+  }
+
+  protected:
+  BboxXyxyxyxyVector bboxvec_xyxyxyxy;
+  static constexpr bool is_xywhr = false;
+};
+
+class AxMetaBboxXYWHR : public AxMetaBboxOBBBase
+{
+  public:
+  AxMetaBboxXYWHR() = default;
+
+  explicit AxMetaBboxXYWHR(BboxXywhrVector boxes, std::vector<float> scores,
+      std::vector<int> classes, std::vector<int> ids)
+      : AxMetaBboxOBBBase(std::move(scores), std::move(classes), std::move(ids)),
+        bboxvec_xywhr(std::move(boxes))
+  {
+
+    if (num_elements() != classes_size() && !classes_empty()) {
+      throw std::logic_error("AxMetaBboxXYWHR: scores and classes must have the same size as boxes. num_elements: "
+                             + std::to_string(num_elements())
+                             + " classes: " + std::to_string(classes_size()));
+    }
+
+    if (!ids_empty() && ids_size() != bboxvec_xywhr.size()) {
+      throw std::runtime_error(
+          "When constructing AxMetaBboxXYWHR with ids, the number of ids must match the number of boxes");
+    }
+    if (num_elements() != scores_size()) {
+      throw std::logic_error(
+          "AxMetaBboxXYWHR: scores and classes must have the same size as boxes");
+    }
+  }
+
+
+  size_t num_elements() const override
+  {
+    return bboxvec_xywhr.size();
+  }
+
+  std::vector<extern_meta> get_extern_meta() const override
+  {
+    return { { "bbox_obb", "bbox_obb",
+                 static_cast<int>(bboxvec_xywhr.size() * sizeof(BboxXywhr)),
+                 reinterpret_cast<const char *>(bboxvec_xywhr.data()) },
+      { "is_xywhr", "is_xywhr", static_cast<int>(sizeof(is_xywhr)),
+          reinterpret_cast<const char *>(&is_xywhr) } };
+  }
+
+  BboxXywhr get_box_xywhr(size_t idx) const
+  {
+    return bboxvec_xywhr[idx];
+  }
+
+  void set_box_xywhr(size_t idx, const BboxXywhr &box)
+  {
+    bboxvec_xywhr[idx] = box;
+  }
+
+  BboxXywhr get_box_xywhr_at(size_t idx) const
+  {
+    return bboxvec_xywhr.at(idx);
+  }
+
+  const BboxXywhr *get_boxes_xywhr_data() const
+  {
+    return bboxvec_xywhr.data();
+  }
+
+  protected:
+  BboxXywhrVector bboxvec_xywhr;
+  static constexpr bool is_xywhr = true;
 };

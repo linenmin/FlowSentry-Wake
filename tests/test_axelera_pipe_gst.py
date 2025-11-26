@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
 # Construct GStreamer application pipeline
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import call, patch
 import pytest
 
 from axelera.app import config, gst_builder, operators, pipe, pipeline
-from axelera.app.pipe import gst, gst_helper, io
+from axelera.app.pipe import FrameEvent, gst, gst_helper, io
 
 # isort: off
 from gi.repository import Gst
@@ -42,7 +42,7 @@ def test_iteration_appsinks(num_sinks):
 
 
 def _expected_rtsp_input_builder(source_id_offset=0):
-    exp = gst_builder.Builder(None, None, 4)
+    exp = gst_builder.Builder(None, None, 4, 'auto')
     exp.rtspsrc(
         {'user-id': '', 'user-pw': ''},
         location='rtsp://localhost:8554/test',
@@ -69,7 +69,7 @@ def _expected_rtsp_input_builder(source_id_offset=0):
 
 def test_build_input_with_normal_input():
     pipein = io.SinglePipeInput('gst', config.Source('rtsp://localhost:8554/test'))
-    builder = gst_builder.Builder(None, None, 4)
+    builder = gst_builder.Builder(None, None, 4, 'auto')
     task = pipeline.AxTask('task0', operators.Input())
     pipe.gst._build_input_pipeline(builder, task, pipein)
     exp = _expected_rtsp_input_builder()
@@ -79,7 +79,7 @@ def test_build_input_with_normal_input():
 
 def test_build_input_with_normal_input_with_sourceid():
     pipein = io.SinglePipeInput('gst', config.Source('rtsp://localhost:8554/test'), source_id=4)
-    builder = gst_builder.Builder(None, None, 4)
+    builder = gst_builder.Builder(None, None, 4, 'auto')
     task = pipeline.AxTask('task0', operators.Input())
     pipe.gst._build_input_pipeline(builder, task, pipein)
     exp = _expected_rtsp_input_builder(4)
@@ -213,13 +213,13 @@ def test_gstpipe_loop_with_pair_validation():
     with patch.object(GstPipe, '__init__', return_value=None):
         # Create a mock GstPipe object
         pipe = GstPipe()
-        pipe.is_pair_validation = True
         pipe._cached_ax_meta = None
+        pipe._meta_assembler = MagicMock()
         pipe.task_graph = MagicMock()
         pipe._stop_event = MagicMock()
         pipe._stop_event.is_set.side_effect = [False, False, True]  # Run loop twice then exit
         pipe.pipeout = MagicMock()
-        pipe._result_ready = MagicMock()
+        pipe._on_event = MagicMock()
 
         # Create metadata instances
         ax_meta1 = gst.meta.AxMeta('id1')
@@ -236,15 +236,17 @@ def test_gstpipe_loop_with_pair_validation():
 
         # Create two frames with metadata
         frame1 = MagicMock()
+        frame1.stream_id = 0
         frame1.meta = ax_meta1
-
         frame2 = MagicMock()
+        frame2.stream_id = 0
         frame2.meta = ax_meta2
 
         # Mock decoded metadata
         meta_info = MagicMock()
         meta_info.task_name = 'task1'
         meta_info.meta_type = pair_validation.PairValidationMeta
+        meta_info.master = None  # Set master to None to avoid validation errors
 
         task_meta1 = MagicMock()
         task_meta1.results = [embeddings1]
@@ -255,14 +257,16 @@ def test_gstpipe_loop_with_pair_validation():
         decoded_meta2 = {meta_info: task_meta2}
 
         # Create a mock stream that yields frame and decoded metadata pairs
-        stream = MagicMock(spec=GstStream)
-        stream.__iter__.return_value = [(frame1, decoded_meta1), (frame2, decoded_meta2)]
+        pipe._stream = stream = MagicMock(spec=GstStream)
+        evt1 = FrameEvent(result=frame1)
+        evt2 = FrameEvent(result=frame2)
+        stream.__iter__.return_value = [(evt1, decoded_meta1), (evt2, decoded_meta2)]
 
         # Test the _loop method's handling of pair validation
         with patch.object(
             pipe, '_handle_pair_validation', wraps=pipe._handle_pair_validation
         ) as mock_handle:
-            pipe._loop(stream)
+            pipe._loop()
 
             # Verify _handle_pair_validation was called twice
             assert mock_handle.call_count == 2

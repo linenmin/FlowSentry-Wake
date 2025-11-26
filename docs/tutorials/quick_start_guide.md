@@ -1,14 +1,18 @@
-![image](/docs/images/Ax_Page_Banner_2500x168_01.png)
+![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 
 # Voyager SDK: Quick Start Guide
 
+## Contents
 - [Voyager SDK: Quick Start Guide](#voyager-sdk-quick-start-guide)
+  - [Contents](#contents)
+  - [Prerequisites](#prerequisites)
+  - [Level](#level)
   - [Introduction](#introduction)
   - [Development environment](#development-environment)
   - [Runtime environment](#runtime-environment)
-    - [Define an ``InferenceStream`` object in your application](#define-an-inferencestream-object-in-your-application)
+    - [Define an \`\`InferenceStream\`\` object in your application](#define-an-inferencestream-object-in-your-application)
     - [Build a GStreamer pipeline](#build-a-gstreamer-pipeline)
-    - [Use the AxRuntime API to inteface with Metis directly](#use-the-axruntime-api-to-inteface-with-metis-directly)
+    - [Use the AxRuntime API to interface with Metis directly](#use-the-axruntime-api-to-interface-with-metis-directly)
   - [Setup](#setup)
     - [Linux Installation](#linux-installation)
     - [Windows Installation](#windows-installation)
@@ -16,6 +20,19 @@
     - [Measure model accuracy](#measure-model-accuracy)
   - [Next steps](#next-steps)
   - [API documentation](#api-documentation)
+  - [Next Steps](#next-steps-1)
+  - [Related Documentation](#related-documentation)
+  - [Further support](#further-support)
+
+
+## Prerequisites
+- Ubuntu 22.04+ (Linux) or Windows with WSL2
+- Python 3.10 or later
+- USB 3.0 port or PCIe slot for Metis hardware
+- Administrative/sudo privileges for installation
+
+## Level
+**Beginner** - First steps with the SDK, follow instructions to run inference
 
 ## Introduction
 
@@ -84,7 +101,7 @@ GStreamer pipeline.
 [Reference documentation](/docs/reference/pipeline_operators.md) is provided for
 all of the foundational Axelera plugins available for use in GStreamer pipelines.
 
-### Use the AxRuntime API to inteface with Metis directly
+### Use the AxRuntime API to interface with Metis directly
 
 Advanced users can directly use the [``AxRuntime``](/docs/reference/axruntime.md) C API
 or the [axelera.runtime](/docs/reference/axelera.runtime.md) Python API, which provides
@@ -179,8 +196,31 @@ API reference material:
 - [YAML pipeline operators](/docs/reference/yaml_operators.md)
 - [Axelera GStreamer pipeline elements](/docs/reference/pipeline_operators.md)
 
+
+
+## Next Steps
+- **Configure video sources**: [Video Sources Tutorial](video_sources.md)
+- **Build your first application**: [Application Integration Tutorial](application.md)
+- **Measure performance**: [Benchmarking Tutorial](benchmarking.md)
+- **Deploy custom models**: [Custom Weights Tutorial](custom_weights.md)
+- **Try different models**: Browse [Model Zoo](../reference/model_zoo.md)
+
+## Related Documentation
+**Tutorials:**
+- [Installation Guide](install.md) - Detailed installation steps (included in this guide's Setup section)
+- [Video Sources](video_sources.md) - Configure cameras and video files after first inference
+- [Application Integration](application.md) - Embed inference into your applications
+- [Windows Getting Started](windows/windows_getting_started.md) - Windows-specific setup
+
+**References:**
+- [Model Zoo](../reference/model_zoo.md) - Browse available pre-trained models
+- [AxDevice API](../reference/axdevice.md) - Verify hardware detection
+- [inference.py CLI](../reference/inference.md) - Command-line options
+
+**Examples:**
+- After completing this guide, explore [application.py](../../examples/application.py) for Python integration
+
+
 ## Further support
-
-For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
-
-For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).
+- For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+- For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

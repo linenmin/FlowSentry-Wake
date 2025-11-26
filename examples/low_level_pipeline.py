@@ -21,6 +21,9 @@ def main(window, stream):
     for frame_result in stream:
         window.show(frame_result.image, frame_result.meta, frame_result.stream_id)
 
+        if window.is_closed:
+            break
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Low-level pipeline demo")
@@ -41,7 +44,7 @@ if __name__ == "__main__":
     )
 
     with display.App(
-        visible=args.display,
+        renderer=args.display,
         opengl=stream.hardware_caps.opengl,
         buffering=not stream.is_single_image(),
     ) as app:

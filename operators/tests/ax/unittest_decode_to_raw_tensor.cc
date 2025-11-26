@@ -2,7 +2,7 @@
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <cstring>
 #include <memory>
@@ -170,10 +170,10 @@ class DecodeToRawTensorTest : public ::testing::Test
 TEST_F(DecodeToRawTensorTest, SingleFloatTensor)
 {
   std::unordered_map<std::string, std::string> properties = { { "meta_key", m_meta_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(map, m_meta_key));
 
@@ -190,10 +190,10 @@ TEST_F(DecodeToRawTensorTest, MultipleFloatTensors)
   SetupMultipleTensors();
 
   std::unordered_map<std::string, std::string> properties = { { "meta_key", m_meta_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(map, m_meta_key));
   auto *wrapper = dynamic_cast<AxMetaRawTensor *>(map[m_meta_key].get());
@@ -210,10 +210,10 @@ TEST_F(DecodeToRawTensorTest, CustomMetaKey)
 {
   std::string custom_key = "MyRawTensors";
   std::unordered_map<std::string, std::string> properties = { { "meta_key", custom_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info); // Uses single tensor from SetUp
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info); // Uses single tensor from SetUp
 
   // Check using the custom key
   ASSERT_TRUE(check_meta_exists(map, custom_key));
@@ -232,10 +232,10 @@ TEST_F(DecodeToRawTensorTest, EmptyInput)
   m_tensors.clear(); // No input tensors
 
   std::unordered_map<std::string, std::string> properties = { { "meta_key", m_meta_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   // Meta should still be created, but empty
   ASSERT_TRUE(check_meta_exists(map, m_meta_key));
@@ -255,10 +255,10 @@ TEST_F(DecodeToRawTensorTest, Int8Tensor)
   std::vector<int64_t> int8_dims(int8_shape.begin(), int8_shape.end());
 
   std::unordered_map<std::string, std::string> properties = { { "meta_key", m_meta_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(map, m_meta_key));
   auto *wrapper = dynamic_cast<AxMetaRawTensor *>(map[m_meta_key].get());
@@ -278,10 +278,10 @@ TEST_F(DecodeToRawTensorTest, Int16Tensor)
   std::vector<int64_t> int16_dims(int16_shape.begin(), int16_shape.end());
 
   std::unordered_map<std::string, std::string> properties = { { "meta_key", m_meta_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(map, m_meta_key));
   auto *wrapper = dynamic_cast<AxMetaRawTensor *>(map[m_meta_key].get());
@@ -301,10 +301,10 @@ TEST_F(DecodeToRawTensorTest, Float64Tensor)
   std::vector<int64_t> float64_dims(float64_shape.begin(), float64_shape.end());
 
   std::unordered_map<std::string, std::string> properties = { { "meta_key", m_meta_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(map, m_meta_key));
   auto *wrapper = dynamic_cast<AxMetaRawTensor *>(map[m_meta_key].get());
@@ -329,10 +329,10 @@ TEST_F(DecodeToRawTensorTest, MixedTensors)
   std::vector<int64_t> dims(shape.begin(), shape.end());
 
   std::unordered_map<std::string, std::string> properties = { { "meta_key", m_meta_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(map, m_meta_key));
   auto *wrapper = dynamic_cast<AxMetaRawTensor *>(map[m_meta_key].get());
@@ -355,10 +355,10 @@ TEST_F(DecodeToRawTensorTest, SkipEmptyTensorData)
   m_tensors.push_back(std::move(empty_tensor_interface[0]));
 
   std::unordered_map<std::string, std::string> properties = { { "meta_key", m_meta_key } };
-  Decoder decoder("libdecode_to_raw_tensor.so", properties);
+  auto decoder = Ax::LoadDecode("to_raw_tensor", properties);
 
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
-  decoder.decode_to_meta(m_tensors, 0, 1, map, m_video_info);
+  decoder->decode_to_meta(m_tensors, 0, 1, map, m_video_info);
 
   ASSERT_TRUE(check_meta_exists(map, m_meta_key));
   auto *wrapper = dynamic_cast<AxMetaRawTensor *>(map[m_meta_key].get());

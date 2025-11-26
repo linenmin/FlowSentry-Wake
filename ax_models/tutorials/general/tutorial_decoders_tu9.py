@@ -12,6 +12,7 @@ from axelera.app.operators import AxOperator, PipelineContext
 
 LOG = logging_utils.getLogger(__name__)
 
+
 # Tutorial-10: Decoder for submodel in cascaded pipeline
 class TopKDecoderCascadedWithMyGstPlugin(AxOperator):
     def _post_init(self):
@@ -23,7 +24,7 @@ class TopKDecoderCascadedWithMyGstPlugin(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(

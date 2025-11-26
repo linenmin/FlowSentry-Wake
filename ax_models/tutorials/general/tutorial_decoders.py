@@ -59,7 +59,7 @@ class TopKDecoderOutputMeta(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
@@ -111,7 +111,7 @@ class TopKDecoderWithMySimplifiedGstPlugin(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(
@@ -153,7 +153,7 @@ class TopKDecoderWithMyGstPlugin(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph: graph.DependencyGraph,
     ):
         super().configure_model_and_context_info(

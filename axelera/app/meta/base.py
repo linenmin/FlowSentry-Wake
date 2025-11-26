@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Base dataclasses used to represent metadata
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ import functools
 import itertools
 from typing import TYPE_CHECKING, Any, ClassVar, Iterator, Type, TypeVar, final
 
+from axelera import types
+
 from .. import config, display, exceptions, logging_utils, plot_utils, utils
+from ..model_utils.box import convert
 
 if TYPE_CHECKING:
     from ..eval_interfaces import BaseEvalSample
@@ -97,6 +100,26 @@ def _draw_bounding_box(box, score, cls, labels, draw, bbox_label_format, color_m
     draw.labelled_box(p1, p2, txt, color)
 
 
+def _draw_oriented_bounding_box(box, score, cls, labels, draw, bbox_label_format, color_map):
+    if len(box) != 8 and len(box) != 5:
+        raise ValueError(
+            f"Oriented bounding box must have 5 (xywhr) or 8 (xyxyxyxy) coordinates, got {len(box)}"
+        )
+
+    if len(box) == 5:
+        box = convert(box.reshape(1, 5), types.BoxFormat.XYWHR, types.BoxFormat.XYXYXYXY)
+
+    box = box.reshape(4, 2).astype(int)
+    label = class_as_label(labels, cls)
+    color = _class_as_color(label, int(cls), color_map)
+    # An id less than zero is a manufactured box, so do not label
+    if cls < 0:
+        txt = ''
+    else:
+        txt = bbox_label_format.format(label=label, score=score, scorep=score * 100, scoreunit='%')
+    draw.labelled_polygon(box, txt, color)
+
+
 _SHOW_OPTIONS = {(False, False): '', (False, True): '{score:.2f}', (True, False): '{label}'}
 
 
@@ -123,7 +146,10 @@ def draw_bounding_boxes(meta, draw, show_labels=True, show_annotations=True):
 
     if show_annotations:
         for box, score, cls in zip(meta.boxes, meta.scores, class_ids):
-            _draw_bounding_box(box, score, cls, labels, draw, fmt, color_map)
+            if len(box) == 4:
+                _draw_bounding_box(box, score, cls, labels, draw, fmt, color_map)
+            else:
+                _draw_oriented_bounding_box(box, score, cls, labels, draw, fmt, color_map)
 
 
 class RestrictedDict(dict):
@@ -310,7 +336,7 @@ class MetaObject(abc.ABC):
             self._meta.labels, utils.FrozenIntEnumMeta
         ):
             return sorted(
-                set(super().__dir__() + [f"is_{l}" for l in self._meta.labels.__members__.keys()])
+                set(super().__dir__() + [f"is_{i}" for i in self._meta.labels.__members__.keys()])
             )
         return super().__dir__()
 
@@ -325,7 +351,7 @@ class MetaObject(abc.ABC):
         True
         '''
         labels = label_or_labels if isinstance(label_or_labels, tuple) else (label_or_labels,)
-        return any(getattr(self, f'is_{l}') for l in labels)
+        return any(getattr(self, f'is_{i}') for i in labels)
 
     def __init_subclass__(cls) -> None:
         MetaObject._subclasses[cls.__name__] = cls
@@ -478,7 +504,7 @@ class AxBaseTaskMeta:
             for meta in metas:
                 try:
                     meta.visit(callable, *args, **kwargs)
-                except exceptions.NotSupportedForTask as e:
+                except exceptions.NotSupportedForTask:
                     pass
 
     @property
@@ -526,7 +552,7 @@ class AxTaskMeta(AxBaseTaskMeta):
             ValueError: If ground truth is not set.
             NotImplementedError: If the subclass does not implement this method.
         """
-        if not (ground_truth := self.access_ground_truth()):
+        if not self.access_ground_truth():
             raise ValueError("Ground truth is not set")
         raise NotImplementedError(f"Implement to_evaluation() for {self.__class__.__name__}")
 
@@ -586,9 +612,12 @@ class AxTaskMeta(AxBaseTaskMeta):
             self._objects.extend(self.Object(self, i) for i in range(len(self)))
         return self._objects
 
-    def __init_subclass__(cls) -> None:
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
         AxTaskMeta._subclasses[cls.__name__] = cls
-        return super().__init_subclass__()
+        meta_type = getattr(cls, 'META_TYPE', None)
+        if meta_type:
+            AxTaskMeta._subclasses[meta_type] = cls
 
 
 AxTaskMeta._subclasses = {}

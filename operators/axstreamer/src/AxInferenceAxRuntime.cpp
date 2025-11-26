@@ -3,10 +3,8 @@
 #include "AxStreamerUtils.hpp"
 
 #include <algorithm>
-#include <fstream>
-
-#if defined(AXELERA_ENABLE_AXRUNTIME)
 #include <axruntime/axruntime.hpp>
+#include <fstream>
 
 using namespace std::string_literals;
 using axr::to_ptr;
@@ -20,15 +18,6 @@ fill_char_array(char (&arr)[N], const std::string &str)
 {
   std::fill(std::begin(arr), std::end(arr), 0);
   std::copy(str.begin(), str.begin() + std::min(N - 1, str.size()), arr);
-}
-
-AxTensorInterface
-to_axtensorinfo(const axrTensorInfo &info)
-{
-  AxTensorInterface tensor;
-  tensor.sizes.assign(info.dims, info.dims + info.ndims);
-  tensor.bytes = info.bits / 8;
-  return tensor;
 }
 
 axr::ptr<axrProperties>
@@ -54,7 +43,7 @@ create_conn_properties(axrContext *context)
 
 static std::mutex second_slice_workaround_mutex;
 
-class AxRuntimeInference : public Ax::Inference
+class AxRuntimeInference : public Ax::BasicInference
 {
   public:
   AxRuntimeInference(Ax::Logger &logger, axrContext *ctx, axrModel *model,
@@ -67,14 +56,9 @@ class AxRuntimeInference : public Ax::Inference
     // Proper fix tracked here https://axeleraai.atlassian.net/browse/SDK-6708
     std::lock_guard lock(second_slice_workaround_mutex);
     auto inputs = axr_num_model_inputs(model);
-    for (int n = 0; n != inputs; ++n) {
-      input_shapes_.push_back(to_axtensorinfo(axr_get_model_input(model, n)));
-    }
+    auto input0 = axr_get_model_input(model, 0);
     input_args.resize(inputs);
     auto outputs = axr_num_model_outputs(model);
-    for (int n = 0; n != outputs; ++n) {
-      output_shapes_.push_back(to_axtensorinfo(axr_get_model_output(model, n)));
-    }
     output_args.resize(outputs);
     logger(AX_INFO) << "Loaded model " << props.model << " with " << inputs
                     << " inputs and " << outputs << " outputs" << std::endl;
@@ -82,8 +66,7 @@ class AxRuntimeInference : public Ax::Inference
     auto device = axrDeviceInfo{};
     fill_char_array(device.name, props.devices);
     const auto *pdevice = props.devices.empty() ? nullptr : &device;
-    // (batch_size is virtual so don't use it)
-    const auto num_sub_devices = input_shapes_.front().sizes.front();
+    const auto num_sub_devices = input0.dims[0];
     const auto conn_props = create_conn_properties(ctx);
     connection = to_ptr(
         axr_device_connect(ctx, pdevice, num_sub_devices, conn_props.get()));
@@ -101,54 +84,33 @@ class AxRuntimeInference : public Ax::Inference
     }
   }
 
-  int batch_size() const override
+  Ax::InferenceParams execute(Ax::InferenceParams p) override
   {
-    return input_shapes_.front().sizes.front();
-  }
-
-  const AxTensorsInterface &input_shapes() const override
-  {
-    return input_shapes_;
-  }
-
-  const AxTensorsInterface &output_shapes() const override
-  {
-    return output_shapes_;
-  }
-
-  void dispatch(const std::vector<std::shared_ptr<void>> &input_ptrs,
-      const std::vector<Ax::SharedFD> &input_fds,
-      const std::vector<std::shared_ptr<void>> &output_ptrs,
-      const std::vector<Ax::SharedFD> &output_fds) override
-  {
-    const auto use_fds = input_ptrs.empty();
-    assert(use_fds ? input_fds.size() == input_shapes().size() :
-                     input_ptrs.size() == input_shapes().size());
-    assert(use_fds ? input_ptrs.size() == 0 : input_fds.size() == 0);
-    if (use_fds) {
-      for (auto &&[i, shared_fd] : Ax::Internal::enumerate(input_fds)) {
+    if (p.input_ptrs.empty()) {
+      assert(p.input_fds.size() == input_args.size());
+      for (auto &&[i, shared_fd] : Ax::Internal::enumerate(p.input_fds)) {
         input_args[i].fd = shared_fd->fd;
         input_args[i].ptr = nullptr;
         input_args[i].offset = 0;
       }
     } else {
-      for (auto &&[i, ptr] : Ax::Internal::enumerate(input_ptrs)) {
+      assert(p.input_ptrs.size() == input_args.size());
+      for (auto &&[i, ptr] : Ax::Internal::enumerate(p.input_ptrs)) {
         input_args[i].fd = 0;
         input_args[i].ptr = ptr.get();
         input_args[i].offset = 0;
       }
     }
-    if (!output_ptrs.empty()) {
-      assert(output_ptrs.size() == output_shapes().size());
-      for (auto &&[i, ptr] : Ax::Internal::enumerate(output_ptrs)) {
+    if (!p.output_ptrs.empty()) {
+      assert(p.output_ptrs.size() == output_args.size());
+      for (auto &&[i, ptr] : Ax::Internal::enumerate(p.output_ptrs)) {
         output_args[i].fd = 0;
         output_args[i].ptr = ptr.get();
         output_args[i].offset = 0;
       }
-    } else if (!output_fds.empty()) {
-      assert(output_fds.size() == output_shapes().size());
-      int i = 0;
-      for (auto &&[i, shared_fd] : Ax::Internal::enumerate(output_fds)) {
+    } else if (!p.output_fds.empty()) {
+      assert(p.output_fds.size() == output_args.size());
+      for (auto &&[i, shared_fd] : Ax::Internal::enumerate(p.output_fds)) {
         output_args[i].fd = shared_fd->fd;
         output_args[i].ptr = nullptr;
         output_args[i].offset = 0;
@@ -160,10 +122,7 @@ class AxRuntimeInference : public Ax::Inference
       throw std::runtime_error("axr_run_model failed with "s
                                + axr_last_error_string(AXR_OBJECT(instance.get())));
     }
-  }
-
-  void collect(const std::vector<std::shared_ptr<void>> &output_ptrs) override
-  {
+    return p;
   }
 
   private:
@@ -172,22 +131,12 @@ class AxRuntimeInference : public Ax::Inference
   axr::ptr<axrModelInstance> instance;
   std::vector<axrArgument> input_args;
   std::vector<axrArgument> output_args;
-  AxTensorsInterface input_shapes_;
-  AxTensorsInterface output_shapes_;
 };
 } // namespace
 
-std::unique_ptr<Ax::Inference>
+std::unique_ptr<Ax::BasicInference>
 Ax::create_axruntime_inference(Ax::Logger &logger, axrContext *ctx,
     axrModel *model, const InferenceProperties &props)
 {
   return std::make_unique<AxRuntimeInference>(logger, ctx, model, props);
 }
-#else
-std::unique_ptr<Ax::Inference>
-Ax::create_axruntime_inference(Ax::Logger &logger, axrContext *ctx,
-    axrModel *model, const InferenceProperties &props)
-{
-  throw std::runtime_error("Axelera AI runtime not installed at compile time");
-}
-#endif

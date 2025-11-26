@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Operators that convert YOLO-SEG-specific tensor output to
 # generalized metadata representation
 
@@ -41,18 +41,6 @@ class DecodeYoloSeg(AxOperator):
     nms_top_k: int = 30
     unpad: bool = True
 
-    @classmethod
-    def handles_dequantization_and_depadding(cls):
-        return True
-
-    @classmethod
-    def handles_transpose(cls):
-        return True
-
-    @classmethod
-    def handles_postamble(cls):
-        return True
-
     def _post_init(self):
         self.label_filter = utils.parse_labels_filter(self.label_filter)
         self.label_exclude = utils.parse_labels_filter(self.label_exclude)
@@ -71,7 +59,7 @@ class DecodeYoloSeg(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -201,7 +189,12 @@ class DecodeYoloSeg(AxOperator):
                 label_filter=self.label_filter,
             )
 
-            (boxes, scores, classes, masks,) = state.organize_bboxes_and_instance_seg(
+            (
+                boxes,
+                scores,
+                classes,
+                masks,
+            ) = state.organize_bboxes_and_instance_seg(
                 boxes, scores, classes, mask_coef, proto, False
             )
 

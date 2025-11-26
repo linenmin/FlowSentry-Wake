@@ -1,9 +1,9 @@
 
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <filesystem>
 #include "AxDataInterface.h"
@@ -60,7 +60,7 @@ TEST(rtmdet_errors, no_zero_points_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_rtmdet.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("rtmdet", properties), std::runtime_error);
 }
 
 TEST(rtmdet_errors, no_scales_throws)
@@ -68,7 +68,7 @@ TEST(rtmdet_errors, no_scales_throws)
   std::unordered_map<std::string, std::string> properties = {
     { "zero_points", "0" },
   };
-  EXPECT_THROW(Decoder("libdecode_rtmdet.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("rtmdet", properties), std::runtime_error);
 }
 
 
@@ -81,7 +81,7 @@ TEST(rtmdet_errors, different_scale_and_zero_point_sizes_throws)
     { "zero_points", "0, 0" },
     { "scales", "1" },
   };
-  EXPECT_THROW(Decoder("libdecode_rtmdet.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("rtmdet", properties), std::runtime_error);
 }
 
 TEST(rtmdet_decode_scores, invalid_tensor_size)
@@ -96,12 +96,12 @@ TEST(rtmdet_decode_scores, invalid_tensor_size)
     { "scales", "1" },
     { "confidence_threshold", "1.0" },
   };
-  Decoder decoder("libdecode_rtmdet.so", properties);
+  auto decoder = Ax::LoadDecode("rtmdet", properties);
 
   AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto tensors = tensors_from_vector(yolo, { 1, 9, 1, 1 });
-  EXPECT_THROW(decoder.decode_to_meta(tensors, 0, 1, map, video_info), std::runtime_error);
+  EXPECT_THROW(decoder->decode_to_meta(tensors, 0, 1, map, video_info), std::runtime_error);
 }
 TEST(rtmdet_decode_scores, all_filtered_at_max_confidence)
 {
@@ -114,13 +114,13 @@ TEST(rtmdet_decode_scores, all_filtered_at_max_confidence)
     { "scales", "1.0,1.0,1.0,1.0,1.0,1.0" },
     { "confidence_threshold", "0.5" },
   };
-  Decoder decoder("libdecode_rtmdet.so", properties);
+  auto decoder = Ax::LoadDecode("rtmdet", properties);
 
   AxVideoInterface video_info{ { 1920, 1080, 1920, 0, AxVideoFormat::BGRA }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto tensors = tensors_from_vector(rtmdet, { 268800, 1, 1, 1 });
 
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
   EXPECT_EQ(actual_classes, std::vector<int32_t>{});
   EXPECT_EQ(actual_scores, std::vector<float>{});
@@ -142,13 +142,13 @@ TEST(rtmdet_decode_scores, one_detection)
     { "scales", "1.0,1.0,1.0,1.0,1.0,1.0" },
     { "confidence_threshold", "0.5" },
   };
-  Decoder decoder("libdecode_rtmdet.so", properties);
+  auto decoder = Ax::LoadDecode("rtmdet", properties);
 
   AxVideoInterface video_info{ { 1920, 1080, 1920, 0, AxVideoFormat::BGRA }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
   auto tensors = tensors_from_vector(rtmdet, { 268800, 1, 1, 1 });
 
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
   auto [actual_boxes, actual_scores, actual_classes] = get_meta(map, meta_identifier);
   EXPECT_EQ(actual_classes.size(), 2);
   EXPECT_EQ(actual_scores.size(), 2);

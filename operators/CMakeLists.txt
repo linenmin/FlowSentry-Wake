@@ -1,3 +1,6 @@
+# Option to enable sanitizer
+option(ENABLE_SANITIZER "Enable address sanitizer" OFF)
+
 # Copyright Axelera AI, 2025
 cmake_minimum_required(VERSION 3.12)
 project(axsubplugins LANGUAGES C CXX VERSION 0.8)
@@ -14,6 +17,7 @@ add_compile_options(
     -Werror
     -Wno-sign-compare
     -Wno-unused-variable
+    -Wimplicit-fallthrough
 )
 add_compile_options(
     $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-enum-enum-conversion>
@@ -24,16 +28,19 @@ add_compile_options(
     $<$<COMPILE_LANGUAGE:CXX>:-Wno-maybe-uninitialized>
     $<$<COMPILE_LANGUAGE:CXX>:-Wno-error=class-memaccess>
 )
-# add_compile_options(-fsanitize=address,undefined)
-# add_link_options(-fsanitize=address,undefined)
-
+if(ENABLE_SANITIZER)
+    add_compile_options(-fsanitize=address,undefined)
+    add_link_options(-fsanitize=address,undefined)
+endif()
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(OpenCL OpenCL)
 pkg_check_modules(opencv4 REQUIRED opencv4)
 pkg_check_modules(nlohmann_json REQUIRED nlohmann_json)
 pkg_check_modules(libva libva)
-
+if (OpenCL_FOUND)
+    add_compile_definitions(HAVE_OPENCL)
+endif()
 if (libva_FOUND)
     add_compile_definitions(HAVE_LIBVA)
 endif()
@@ -54,13 +61,12 @@ pkg_check_modules(GMODULE gmodule-2.0)
 pkg_check_modules(GLIB glib-2.0)
 pkg_check_modules(GST gstreamer-1.0)
 pkg_check_modules(GST_VIDEO gstreamer-video-1.0)
-if(glib-2.0_FOUND AND glib-2.0_VERSION VERSION_GREATER_EQUAL "2.68.0")
+if(GLIB_FOUND AND GLIB_VERSION VERSION_GREATER_EQUAL "2.68.0")
     add_compile_definitions(GLIB_USE_G_MEMDUP2)
 endif()
-if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND)
-    add_subdirectory(gstaxstreamer)
-    install(TARGETS gstaxstreamer LIBRARY DESTINATION lib)
-endif()
+
+add_subdirectory(gstaxstreamer)
+install(TARGETS gstaxstreamer LIBRARY DESTINATION lib)
 
 # Libraries
 set(subplugin_prefix ${CMAKE_INSTALL_PREFIX})
@@ -121,6 +127,7 @@ create_shared_library(decode_to_raw_tensor src/AxDecodeToRawTensor.cpp)
 create_shared_library(decode_yolo "src/AxDecodeYolo.cpp;src/AxOnnxRuntimeHelper.cpp")
 create_shared_library(decode_yolov5 src/AxDecodeYolo5.cpp)
 create_shared_library(decode_yolov8 src/AxDecodeYolo8.cpp)
+create_shared_library(decode_yolov_obb src/AxDecodeYoloOBB.cpp)
 create_shared_library(decode_yolov10_simple src/AxDecodeYolo10Simple.cpp)
 create_shared_library(decode_yolov8seg src/AxDecodeYolo8Seg.cpp)
 create_shared_library(decode_yolox src/AxDecodeYoloX.cpp)
@@ -146,12 +153,14 @@ create_shared_library(transform_yolopreproc src/AxTransformYoloPreProc.cpp)
 create_shared_library(decode_multihead src/AxDecodeMultihead.cc)
 create_shared_library(decode_embeddings src/AxDecodeEmbeddings.cc)
 create_shared_library(decode_facenet src/AxDecodeFacenet.cc)
+create_shared_library(transform_polar src/AxTransformPolar.cpp)
 if (OpenCL_FOUND)
     create_shared_library(transform_barrelcorrect_cl src/AxTransformBarrelCorrectCl.cpp)
     create_shared_library(transform_colorconvert_cl src/AxTransformColorConvertCl.cpp)
     create_shared_library(transform_normalize_cl src/AxTransformNormalizeCl.cpp)
     create_shared_library(transform_perspective_cl src/AxTransformPerspectiveCl.cpp)
     create_shared_library(transform_resize_cl src/AxTransformResizeCl.cpp)
+    create_shared_library(transform_polar_cl src/AxTransformPolarCl.cpp)
 endif()
 
 add_compile_options(-march=native)
@@ -225,7 +234,9 @@ set(path_ax_plugin_prefix ${CMAKE_BINARY_DIR})
 
 add_definitions(-DAX_SUBPLUGIN_PATH=${path_ax_plugin_prefix})
 
-include(CTest)
+if(NOT ENABLE_SANITIZER)
+    include(CTest)
+endif()
 
 # Set unittest install dir
 set(unittest_install_dir "${CMAKE_SOURCE_DIR}/tests")
@@ -235,6 +246,7 @@ pkg_check_modules(GMODULE gmodule-2.0 REQUIRED)
 
 # gtest
 find_package(GTest)
+
 pkg_check_modules(GMOCK gmock)
 if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOUND AND GMOCK_FOUND)
     # For now the unit tests are gstreamer dependendent. Its not strictly necessary
@@ -250,11 +262,13 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
 
     if (OpenCL_FOUND)
     set(OPENCL_TEST_FILES
+        tests/ax/unittest_opencl.cc
         tests/ax/unittest_transform_colorconvert_cl.cc
         tests/ax/unittest_transform_normalize_cl.cc
         tests/ax/unittest_transform_barrelcorrect_cl.cc
         tests/ax/unittest_transform_perspective_cl.cc
         tests/ax/unittest_transform_resize_cl.cc
+        tests/ax/unittest_transform_polar_cl.cc
     )
     else()
         set(OPENCL_TEST_FILES "")
@@ -293,6 +307,7 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
         tests/ax/unittest_transform_resize.cc
         tests/ax/unittest_transform_resizeratiocropexcess.cc
         tests/ax/unittest_transform_facealign.cc
+        tests/ax/unittest_transform_roicrop.cc
         tests/ax/unittest_utils.cc
         ${OPENCL_TEST_FILES}
     )
@@ -329,16 +344,17 @@ if (GMODULE_FOUND AND GLIB_FOUND AND GST_FOUND AND GST_VIDEO_FOUND AND GTEST_FOU
 
     add_test(NAME unittest_ax COMMAND unittest_ax)
 
-    add_custom_target( run_unit_tests ALL
-        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/RunUnitTests.touch
-    )
-
-    add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/RunUnitTests.touch
-        COMMAND ${CMAKE_COMMAND} -E env LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}:${CMAKE_CURRENT_BINARY_DIR}/axstreamer:${CMAKE_CURRENT_BINARY_DIR}/gstaxstreamer:$ENV{LD_LIBRARY_PATH} ${CMAKE_CTEST_COMMAND} --output-on-failure
-        COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/RunUnitTests.touch
-        DEPENDS unittest_ax ${shared_libs}
-    )
+    if (NOT ENABLE_SANITIZER)
+        add_custom_target( run_unit_tests ALL
+            DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/RunUnitTests.touch
+        )
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/RunUnitTests.touch
+            COMMAND ${CMAKE_COMMAND} -E env LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}:${CMAKE_CURRENT_BINARY_DIR}/axstreamer:${CMAKE_CURRENT_BINARY_DIR}/gstaxstreamer:$ENV{LD_LIBRARY_PATH} ${CMAKE_CTEST_COMMAND} --output-on-failure
+            COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/RunUnitTests.touch
+            DEPENDS unittest_ax ${shared_libs}
+        )
+    endif()
 
     # Create assets directory in build directory
     file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/assets)

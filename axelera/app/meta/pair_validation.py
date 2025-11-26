@@ -1,13 +1,16 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import TYPE_CHECKING, List
 
 import numpy as np
 
 from ..eval_interfaces import PairValidationEvalSample
 from .base import AggregationNotRequiredForEvaluation, AxTaskMeta
+
+if TYPE_CHECKING:
+    from .classification import EmbeddingsMeta
 
 
 @dataclass(frozen=True)
@@ -45,7 +48,7 @@ class PairValidationMeta(AxTaskMeta):
         raise AggregationNotRequiredForEvaluation(cls)
 
     @classmethod
-    def decode(cls, data: Dict[str, Union[bytes, bytearray]]) -> EmbeddingsMeta:
+    def decode(cls, data: dict[str, bytes | bytearray]) -> EmbeddingsMeta:
         buffer = data.get("data", b"")
         num_of_embeddings = data.get("num_of_embeddings", b"")
         embeddings = np.frombuffer(buffer, dtype=np.float32)

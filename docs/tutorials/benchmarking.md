@@ -1,18 +1,37 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
 # Benchmarking and Performance Evaluation
 
+## Contents
 - [Benchmarking and Performance Evaluation](#benchmarking-and-performance-evaluation)
+  - [Contents](#contents)
+  - [Prerequisites](#prerequisites)
+  - [Level](#level)
+  - [Overview](#overview)
   - [Compare Pipeline Accuracy](#compare-pipeline-accuracy)
   - [Optimize and Measure Pipeline Performance](#optimize-and-measure-pipeline-performance)
     - [Determining the Bottleneck](#determining-the-bottleneck)
+  - [Next Steps](#next-steps)
+  - [Related Documentation](#related-documentation)
+  - [Further support](#further-support)
 
+## Prerequisites
+- Complete [Quick Start Guide](quick_start_guide.md) and [Application Integration](application.md)
+- SDK installed and virtual environment activated
+- Hardware connected and working inference pipeline
+- Understanding of FPS, latency, and accuracy metrics
+
+## Level
+**Intermediate** - Requires understanding of performance metrics and dataset preparation
+
+## Overview
 In this section, we'll discuss in-depth the different ways you can evaluate performance and accuracy
 of each model with Metis. You can compare our performance to competitors, and see how our
 state-of-the-art quantization minimizes accuracy loss when compared to the original FP32 models.
 
+**Examples:**
+- All application examples can be benchmarked using techniques from this guide
 
 ## Compare Pipeline Accuracy
-
 The Voyager SDK offers three different modes for running each model and its associated pipeline.
 This is specified with the `--pipe` argument to `inference.py`, and there are three options: `gst`,
 `torch-aipu`, and `torch`. The default setting that you've used so far is `gst`, which runs
@@ -194,8 +213,31 @@ such as VA-API usually support a limited number of configuration parameters and 
 reduced when a pipeline element does not implement precisely the same algorithm that was used
 originally during training. For example, the following article explains why accuracy is lost if the
 pipeline compiler is unable to match a resize algorithm used during training (as is specified in the
-YAML pipeline) with a target VA-API configuration option:
-[The dangers behind image resizing](https://zuru.tech/blog/the-dangers-behind-image-resizing).
+YAML pipeline) with a target VA-API configuration option.
+
 In general, therefore, at the system level there is always the need to consider performance-accuracy
 tradeoffs. The Voyager SDK makes it easy to measure and track performance and accuracy throughout
 the full product development lifecycle.
+
+## Next Steps
+- **Monitor hardware during inference**: [AxMonitor Tutorial](axmonitor.md)
+- **Optimize thermal performance**: [Thermal Guide](../reference/thermal_guide.md)
+- **Deploy custom models**: [Custom Weights Tutorial](custom_weights.md)
+- **Build production applications**: [Application Integration](application.md)
+
+## Related Documentation
+**Tutorials:**
+- [Application Integration](application.md) - Build application before benchmarking
+- [AxMonitor](axmonitor.md) - Monitor hardware utilization during benchmarks
+- [Video Sources](video_sources.md) - The `dataset` source is used for accuracy evaluation
+- [Custom Weights](custom_weights.md) - Optimize custom models based on benchmark results
+
+**References:**
+- [Model Zoo](../reference/model_zoo.md) - Reference accuracy metrics for pre-trained models
+- [Thermal Guide](../reference/thermal_guide.md) - Manage thermal state during sustained benchmarks
+- [inference.py CLI](../reference/inference.md) - Command-line options for benchmarking modes
+
+
+## Further support
+- For blog posts, projects and technical support please visit [Axelera AI Community](https://community.axelera.ai/).
+- For technical documents and guides please visit [Customer Portal](https://support.axelera.ai/).

@@ -1,6 +1,6 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include "gmock/gmock.h"
-#include "unittest_inplace_common.h"
+#include "unittest_ax_common.h"
 
 #include <string>
 #include "AxMetaObjectDetection.hpp"
@@ -42,10 +42,10 @@ TEST(full_screen, should_return_all_tiles_plus)
     { "tile_overlap", "0" },
     { "tile_position", "none" },
   };
-  Inplacer tiler("libinplace_addtiles.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto tiler = Ax::LoadInPlace("addtiles", input);
+  Ax::MetaMap metadata;
   AxVideoInterface video_info{ { 1280, 720, 1280 * 4, 0, AxVideoFormat::RGBA }, nullptr };
-  tiler.inplace(video_info, metadata, 0, 1);
+  tiler->inplace(video_info, 0, 1, metadata);
   auto boxes = get_meta(metadata, meta_identifier);
   std::vector<uint32_t> expected = {
     // clang-format off
@@ -71,10 +71,10 @@ TEST(left, should_return_left_tiles_plus)
     { "tile_overlap", "0" },
     { "tile_position", "left" },
   };
-  Inplacer tiler("libinplace_addtiles.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto tiler = Ax::LoadInPlace("addtiles", input);
+  Ax::MetaMap metadata;
   AxVideoInterface video_info{ { 1280, 720, 1280 * 4, 0, AxVideoFormat::RGBA }, nullptr };
-  tiler.inplace(video_info, metadata, 0, 1);
+  tiler->inplace(video_info, 0, 1, metadata);
   auto boxes = get_meta(metadata, meta_identifier);
   std::vector<uint32_t> expected = {
     // clang-format off
@@ -98,10 +98,10 @@ TEST(right, should_return_right_tiles_plus)
     { "tile_overlap", "0" },
     { "tile_position", "right" },
   };
-  Inplacer tiler("libinplace_addtiles.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto tiler = Ax::LoadInPlace("addtiles", input);
+  Ax::MetaMap metadata;
   AxVideoInterface video_info{ { 1280, 720, 1280 * 4, 0, AxVideoFormat::RGBA }, nullptr };
-  tiler.inplace(video_info, metadata, 0, 1);
+  tiler->inplace(video_info, 0, 1, metadata);
   auto boxes = get_meta(metadata, meta_identifier);
   std::vector<uint32_t> expected = {
     // clang-format off
@@ -125,10 +125,10 @@ TEST(top, should_return_top_tiles_plus)
     { "tile_overlap", "0" },
     { "tile_position", "top" },
   };
-  Inplacer tiler("libinplace_addtiles.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto tiler = Ax::LoadInPlace("addtiles", input);
+  Ax::MetaMap metadata;
   AxVideoInterface video_info{ { 1280, 720, 1280 * 4, 0, AxVideoFormat::RGBA }, nullptr };
-  tiler.inplace(video_info, metadata, 0, 1);
+  tiler->inplace(video_info, 0, 1, metadata);
   auto boxes = get_meta(metadata, meta_identifier);
   std::vector<uint32_t> expected = {
     // clang-format off
@@ -151,10 +151,10 @@ TEST(bottom, should_return_bottom_tiles_plus)
     { "tile_overlap", "0" },
     { "tile_position", "bottom" },
   };
-  Inplacer tiler("libinplace_addtiles.so", input);
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
+  auto tiler = Ax::LoadInPlace("addtiles", input);
+  Ax::MetaMap metadata;
   AxVideoInterface video_info{ { 1280, 720, 1280 * 4, 0, AxVideoFormat::RGBA }, nullptr };
-  tiler.inplace(video_info, metadata, 0, 1);
+  tiler->inplace(video_info, 0, 1, metadata);
   auto boxes = get_meta(metadata, meta_identifier);
   std::vector<uint32_t> expected = {
     // clang-format off

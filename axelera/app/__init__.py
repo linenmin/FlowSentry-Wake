@@ -29,3 +29,14 @@ try:
     import onnxruntime  # noqa - prevents a crash in the compiler
 except ImportError:
     pass
+
+# Make these commonly used classes available in the axelera.app namespace
+from .pipe import FrameEvent, FrameEventType, FrameResult  # noqa: E402
+from .stream import create_inference_stream  # noqa: E402
+
+__all__ = [
+    'FrameEvent',
+    'FrameEventType',
+    'FrameResult',
+    'create_inference_stream',
+]

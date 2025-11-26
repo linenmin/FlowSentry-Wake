@@ -1,7 +1,9 @@
+// Copyright Axelera AI, 2025
 #ifndef OC_SORT_CPP_KALMANBOXTRACKER_HPP
 #define OC_SORT_CPP_KALMANBOXTRACKER_HPP
 ////////////// KalmanBoxTracker /////////////
 #include <map>
+#include <memory>
 #include <set>
 #include "../include/KalmanFilter.hpp"
 #include "../include/Utilities.hpp"
@@ -20,7 +22,7 @@ class KalmanBoxTracker
   KalmanBoxTracker(){};
   KalmanBoxTracker(Eigen::VectorXf bbox_, const Eigen::VectorXf &emb_, int cls_,
       int det_id, int delta_t_ = 3);
-  void update(Eigen::Matrix<float, 5, 1> *bbox_, int cls_, int det_id);
+  void update(Eigen::Matrix<float, 5, 1> *bbox_, int cls_, int det_id, int frame_id);
   void update_emb(const Eigen::VectorXf &emb_, float alpha = 0.9);
   Eigen::VectorXf get_emb() const;
   void apply_affine_correction(const Eigen::Matrix<float, 2, 3> &affine);
@@ -40,8 +42,9 @@ class KalmanBoxTracker
   Eigen::VectorXf bbox; // [5,1]
   Eigen::VectorXf emb;
 
-  KalmanFilterNew *kf;
+  std::shared_ptr<KalmanFilterNew> kf;
   int time_since_update;
+  int frame_of_last_update;
   int id;
   std::vector<Eigen::VectorXf> history;
   int hits;

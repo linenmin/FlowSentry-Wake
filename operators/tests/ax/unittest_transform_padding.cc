@@ -1,7 +1,7 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <algorithm>
 #include <gmock/gmock.h>
-#include "unittest_transform_common.h"
+#include "unittest_ax_common.h"
 
 std::vector<std::uint8_t>
 range(size_t n)
@@ -13,11 +13,11 @@ range(size_t n)
 
 TEST(transform_padding, non_tensor_input)
 {
-  Transformer transformer("libtransform_padding.so", {});
+  auto xform = Ax::LoadTransform("padding", {});
   AxDataInterface inp_empty;
-  EXPECT_THROW(transformer.set_output_interface(inp_empty), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(inp_empty), std::runtime_error);
   AxVideoInterface inp_video{ {}, nullptr };
-  EXPECT_THROW(transformer.set_output_interface(inp_video), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(inp_video), std::runtime_error);
 }
 
 void
@@ -28,13 +28,13 @@ check_init_failures(const std::string &padding,
     { "padding", padding },
     { "fill", "42" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   AxTensorsInterface inp;
   for (auto shape : shapes) {
     inp.push_back({ shape, bytes, nullptr });
   }
   try {
-    transformer.set_output_interface(inp);
+    xform->set_output_interface(inp);
   } catch (const std::runtime_error &e) {
     auto s = std::string{ e.what() };
     EXPECT_THAT(s, testing::MatchesRegex(regex));
@@ -80,7 +80,7 @@ TEST_P(remove_padding_fixture, test_remove_padding_and_reshape)
     { "padding", "0,0," + std::to_string(left) + "," + std::to_string(right) },
     { "fill", "42" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   auto inp_data = range(1024);
   const auto out_size = int(inp_data.size()) + left + right;
   std::vector<std::uint8_t> out_data(out_size);
@@ -89,11 +89,12 @@ TEST_P(remove_padding_fixture, test_remove_padding_and_reshape)
   AxTensorsInterface inp{ { { 1, 1, 1, 1024 }, 1, inp_data.data() } };
   AxTensorsInterface out{ { { 1, out_size }, 1, out_data.data() } };
 
-  auto out_iface = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out_iface = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out_iface.size(), 1);
   EXPECT_EQ(out_iface[0].sizes, std::vector<int>({ 1, out_size }));
   EXPECT_EQ(out_iface[0].bytes, 1);
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   EXPECT_EQ(expected, out_data);
 }
@@ -116,7 +117,7 @@ TEST_P(add_padding_fixture, test_add_padding_2d)
     { "padding", "0,0," + std::to_string(left) + "," + std::to_string(right) },
     { "fill", "42" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   auto inp_data = range(1000);
   const auto out_size = int(inp_data.size()) + left + right;
   std::vector<std::uint8_t> out_data(inp_data.size() + left + right);
@@ -127,11 +128,12 @@ TEST_P(add_padding_fixture, test_add_padding_2d)
   AxTensorsInterface inp{ { { 1, int(inp_data.size()) }, 1, inp_data.data() } };
   AxTensorsInterface out{ { { 1, out_size }, 1, out_data.data() } };
 
-  auto out_iface = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out_iface = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out_iface.size(), 1);
   EXPECT_EQ(out_iface[0].sizes, std::vector<int>({ 1, out_size }));
   EXPECT_EQ(out_iface[0].bytes, 1);
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   EXPECT_EQ(expected, out_data);
 }
@@ -147,7 +149,7 @@ TEST(optional_padding, test_add_padding_2d)
   std::unordered_map<std::string, std::string> input = {
     { "padding", "0,0,2,3" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   auto in_size = 4;
   auto inp_data = range(in_size);
   const auto out_size = int(inp_data.size()) + left + right;
@@ -156,11 +158,12 @@ TEST(optional_padding, test_add_padding_2d)
   AxTensorsInterface inp{ { { 1, 1, 1, in_size }, 1, inp_data.data() } };
   AxTensorsInterface out{ { { 1, out_size }, 1, out_data.data() } };
 
-  auto out_iface = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out_iface = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
   ASSERT_EQ(out_iface.size(), 1);
   EXPECT_EQ(out_iface[0].sizes, std::vector<int>({ 1, out_size }));
   EXPECT_EQ(out_iface[0].bytes, 1);
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   EXPECT_EQ(expected, out_data);
 }
@@ -171,11 +174,11 @@ TEST(input_shape, incompatible)
     { "padding", "0,0,0,0" },
     { "input_shape", "1,1,4,1" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   auto in_size = 4;
   auto inp_data = range(in_size);
   AxTensorsInterface inp{ { { 1, 1, 1, 3 }, 1, inp_data.data() } };
-  EXPECT_THROW(transformer.set_output_interface(inp), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(inp), std::runtime_error);
 }
 
 TEST(output_shape, incompatible)
@@ -184,11 +187,11 @@ TEST(output_shape, incompatible)
     { "padding", "0,0,0,0" },
     { "output_shape", "1,1,4,1" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   auto in_size = 4;
   auto inp_data = range(in_size);
   AxTensorsInterface inp{ { { 1, 1, 1, 3 }, 1, inp_data.data() } };
-  EXPECT_THROW(transformer.set_output_interface(inp), std::runtime_error);
+  EXPECT_THROW(xform->set_output_interface(inp), std::runtime_error);
 }
 
 TEST(input_shape, is_output_when_no_output_shape)
@@ -197,11 +200,11 @@ TEST(input_shape, is_output_when_no_output_shape)
     { "padding", "0,0,0,0,0,0,0,0" },
     { "input_shape", "4,2,6,1" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   auto in_size = 4;
   auto inp_data = range(in_size);
   AxTensorsInterface inp{ { { 4, 2, 2, 3 }, 1, inp_data.data() } };
-  auto interface = transformer.set_output_interface(inp);
+  auto interface = xform->set_output_interface(inp);
   auto out = std::get<AxTensorsInterface>(interface);
   ASSERT_EQ(out[0].sizes, std::vector<int>({ 4, 2, 6, 1 }));
 }
@@ -213,11 +216,11 @@ TEST(input_shape, reshaped_padding)
     { "input_shape", "1,1,6,1" },
     { "fill", "99" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   auto in_size = 4;
   auto inp_data = range(in_size);
   AxTensorsInterface inp{ { { 1, 1, 2, 3 }, 1, inp_data.data() } };
-  auto interface = transformer.set_output_interface(inp);
+  auto interface = xform->set_output_interface(inp);
   auto out = std::get<AxTensorsInterface>(interface);
   ASSERT_EQ(out[0].sizes, std::vector<int>({ 1, 1, 10, 1 }));
 }
@@ -229,7 +232,7 @@ TEST(input_shape, reshaped_padding_values)
     { "input_shape", "1,1,6,1" },
     { "fill", "99" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
   auto in_size = 6;
   auto inp_data = range(in_size);
   AxTensorsInterface inp{ { { 1, 1, 2, 3 }, 1, inp_data.data() } };
@@ -238,8 +241,9 @@ TEST(input_shape, reshaped_padding_values)
   std::vector<std::uint8_t> expected{ 99, 0, 1, 2, 3, 4, 5, 99, 99, 99 };
   AxTensorsInterface out{ { { 1, out_size }, 1, out_data.data() } };
 
-  auto interface = transformer.set_output_interface(inp);
-  transformer.transform(inp, out);
+  auto interface = xform->set_output_interface(inp);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
   ASSERT_EQ(expected, out_data);
 }
 
@@ -250,7 +254,7 @@ TEST(multi_tensor_padding, test_different_padding_for_each_tensor)
     { "padding", "0,0,2,2|0,0,1,3|0,0,0,4" },
     { "fill", "42" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
 
   // Create three input tensors with different sizes
   const int tensor1_size = 4;
@@ -289,7 +293,7 @@ TEST(multi_tensor_padding, test_different_padding_for_each_tensor)
     { { 1, out_size2 }, 1, out_data2.data() },
     { { 1, out_size3 }, 1, out_data3.data() } };
 
-  auto out_iface = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out_iface = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
 
   // Verify output interface has the correct sizes
   ASSERT_EQ(out_iface.size(), 3);
@@ -298,7 +302,8 @@ TEST(multi_tensor_padding, test_different_padding_for_each_tensor)
   EXPECT_EQ(out_iface[2].sizes, std::vector<int>({ 1, out_size3 }));
 
   // Apply the transformation
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Verify the results
   EXPECT_EQ(expected1, out_data1);
@@ -313,7 +318,7 @@ TEST(multi_tensor_padding, test_fallback_padding)
     { "padding", "0,0,2,2|0,0,1,3" }, // Only 2 padding configs for 3 tensors
     { "fill", "42" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
 
   // Create three input tensors with different sizes
   const int tensor1_size = 4;
@@ -331,7 +336,7 @@ TEST(multi_tensor_padding, test_fallback_padding)
 
   // Now we expect an error when trying to set output interface
   try {
-    auto out_iface = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+    auto out_iface = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
     FAIL() << "Expected runtime_error because there are fewer padding configurations than tensors";
   } catch (const std::runtime_error &e) {
     std::string error_message = e.what();
@@ -347,7 +352,7 @@ TEST(multi_tensor_padding, test_depadding_multiple_tensors)
   std::unordered_map<std::string, std::string> input = {
     { "padding", "0,0,0,-1|0,0,-2,0|0,0,-1,-1" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
 
   // Create three input tensors
   const int tensor1_size = 8;
@@ -381,7 +386,7 @@ TEST(multi_tensor_padding, test_depadding_multiple_tensors)
     { { 1, out_size2 }, 1, out_data2.data() },
     { { 1, out_size3 }, 1, out_data3.data() } };
 
-  auto out_iface = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out_iface = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
 
   // Verify output interface has the correct sizes
   ASSERT_EQ(out_iface.size(), 3);
@@ -390,7 +395,8 @@ TEST(multi_tensor_padding, test_depadding_multiple_tensors)
   EXPECT_EQ(out_iface[2].sizes, std::vector<int>({ 1, out_size3 }));
 
   // Apply the transformation
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Verify the results
   EXPECT_EQ(expected1, out_data1);
@@ -405,7 +411,7 @@ TEST(multi_tensor_padding, test_exact_padding_match)
     { "padding", "0,0,2,2|0,0,1,3|0,0,0,4" }, // Exactly 3 padding configs for 3 tensors
     { "fill", "42" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
 
   // Create three input tensors with different sizes
   const int tensor1_size = 4;
@@ -445,7 +451,7 @@ TEST(multi_tensor_padding, test_exact_padding_match)
     { { 1, out_size3 }, 1, out_data3.data() } };
 
   // This should now work properly - no errors
-  auto out_iface = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out_iface = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
 
   // Verify output interface has the correct sizes
   ASSERT_EQ(out_iface.size(), 3);
@@ -454,7 +460,8 @@ TEST(multi_tensor_padding, test_exact_padding_match)
   EXPECT_EQ(out_iface[2].sizes, std::vector<int>({ 1, out_size3 }));
 
   // Apply the transformation
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Verify the results
   EXPECT_EQ(expected1, out_data1);
@@ -469,7 +476,7 @@ TEST(multi_tensor_padding, test_more_paddings_than_tensors)
     { "padding", "0,0,2,2|0,0,1,3|0,0,0,4|0,0,3,3" }, // 4 padding configs for 2 tensors
     { "fill", "42" },
   };
-  Transformer transformer("libtransform_padding.so", input);
+  auto xform = Ax::LoadTransform("padding", input);
 
   // Create only two input tensors
   const int tensor1_size = 4;
@@ -500,7 +507,7 @@ TEST(multi_tensor_padding, test_more_paddings_than_tensors)
     { { 1, out_size2 }, 1, out_data2.data() } };
 
   // This should work fine - it's okay to have more padding configs than needed
-  auto out_iface = std::get<AxTensorsInterface>(transformer.set_output_interface(inp));
+  auto out_iface = std::get<AxTensorsInterface>(xform->set_output_interface(inp));
 
   // Verify output interface has the correct sizes
   ASSERT_EQ(out_iface.size(), 2);
@@ -508,7 +515,8 @@ TEST(multi_tensor_padding, test_more_paddings_than_tensors)
   EXPECT_EQ(out_iface[1].sizes, std::vector<int>({ 1, out_size2 }));
 
   // Apply the transformation
-  transformer.transform(inp, out);
+  Ax::MetaMap metadata;
+  xform->transform(inp, out, 0, 1, metadata);
 
   // Verify the results
   EXPECT_EQ(expected1, out_data1);

@@ -15,10 +15,11 @@ pipeline:
         image_processing:
             - perspective:
                 stream_match: 0
-                camera_matrix: [1.019,-0.697,412.602,0.918,1.361,-610.083,0.0,0.0,1.0]
+                camera_matrix: [0.67153,0.34391,-67.264,-0.45295,0.50279,493.63,0.0,0.0,1.0]
             - perspective:
                 stream_match: 1
-                camera_matrix: [1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0]
+                invert: true
+                camera_matrix: [1.019,-0.697,412.602,0.918,1.361,-610.083,0.0,0.0,1.0]
       postprocess:
         - decodeyolo:
             max_nms_boxes: 30000

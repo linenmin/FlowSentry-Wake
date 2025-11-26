@@ -1,10 +1,13 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Construct torch application pipeline
 from __future__ import annotations
 
 from copy import deepcopy
 import time
-from typing import TYPE_CHECKING, Callable
+import traceback
+from typing import Callable
+
+from axelera import types
 
 from . import base, frame_data
 from .. import logging_utils, torch_utils, utils
@@ -17,8 +20,7 @@ LOG = logging_utils.getLogger(__name__)
 class TorchPipe(base.Pipe):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.frame_generator = self._pipein.frame_generator()
-        self.batched_data_reformatter = self._pipein.batched_data_reformatter
+        self._frame_generator = self._pipein.frame_generator()
 
     def init_loop(self) -> Callable[[], None]:
         return self._loop
@@ -26,19 +28,16 @@ class TorchPipe(base.Pipe):
     def _loop(self):
         self.device = torch.device(torch_utils.device_name('auto'))
         try:
-            for data in self.frame_generator:
+            for data in self._frame_generator:
+                assert isinstance(data, types.FrameInput), f'Expected FrameInput, got {type(data)}'
                 ts = time.time()
                 if self._stop_event.is_set() or not data:
                     break
-                if self.batched_data_reformatter:
-                    batched_data = self.batched_data_reformatter(data)
-                    assert len(batched_data) == 1, "batch_size > 1 is not supported"
-                    data = batched_data[0]
                 image_source = [data.img] if data.img else data.imgs
                 is_pair_validation = data.imgs is not None
 
                 inferences = 0
-                with utils.catchtime('The network', logger=LOG.trace) as t:
+                with utils.catchtime('The network', logger=LOG.trace):
                     meta = AxMeta(data.img_id, ground_truth=data.ground_truth)
                     for image in image_source:
                         for model_pipe in self.nn.tasks:
@@ -74,20 +73,18 @@ class TorchPipe(base.Pipe):
                     fr = frame_data.FrameResult(
                         image, tensor, meta, data.stream_id, ts, now, inferences
                     )
-                    self._result_ready(fr)
-        except Exception as e:
-            import traceback
+                    event = frame_data.FrameEvent.from_result(fr)
+                    if self._on_event(event) is False:
+                        LOG.debug("_on_event requested to stop the pipeline")
+                        break
 
-            error_type = type(e).__name__
-            error_message = str(e)
-            tb = traceback.extract_tb(e.__traceback__)
-            filename, line_number, _, _ = tb[-1]
-            LOG.error(
-                f'TorchPipe terminated due to {error_type} at {filename}:{line_number}: {error_message}'
-            )
-            LOG.error(f'Full traceback:\n{"".join(traceback.format_tb(e.__traceback__))}')
-        finally:
-            self._result_ready(None)
+        except Exception as e:
+            LOG.error(f"Pipeline error occurred: {str(e)}\n{traceback.format_exc()}")
+            self._on_event(frame_data.FrameEvent.from_end_of_pipeline(0, str(e)))
+            self.nn.cleanup()
+            raise
+        else:
+            self._on_event(frame_data.FrameEvent.from_end_of_pipeline(0, 'Normal termination'))
             self.nn.cleanup()
 
 

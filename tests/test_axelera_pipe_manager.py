@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 
 import os
 import unittest.mock as mock
@@ -20,68 +20,59 @@ def test_create_manager_from_model_name():
 
 def test_task_render_proxy():
     """Test the TaskProxy class which allows task-specific render settings."""
-    # Create a mock task
     mock_task = mock.MagicMock()
     mock_task.name = 'detections'
 
-    # Create a mock pipeline with the task
     mock_pipeline = mock.MagicMock()
     mock_pipeline.nn.tasks = [mock_task]
 
-    # Create a mock PipeManager with a real RenderConfig
+    # PipeOutput owns the render config and exposes delegation methods
+    render_config = config.RenderConfig(detections=config.TaskRenderConfig())
+    mock_pipeout = mock.MagicMock()
+    mock_pipeout.get_render_config.return_value = render_config
+    mock_pipeout.set_task_render.side_effect = (
+        lambda task_name, show_annotations, show_labels: render_config.set_task(
+            task_name, show_annotations, show_labels
+        )
+    )
+
     pipe_manager = mock.MagicMock()
     pipe_manager._pipeline = mock_pipeline
-    pipe_manager.pipeout = mock.MagicMock()
-    # Pre-register the 'detections' task in RenderConfig
-    pipe_manager.pipeout.render_config = config.RenderConfig(detections=config.TaskRenderConfig())
+    pipe_manager.pipeout = mock_pipeout
 
-    # Create a TaskProxy for a specific task
     proxy = manager.TaskProxy(pipe_manager, 'detections')
-
-    # Test that the set_render method works correctly and returns self
     result = proxy.set_render(show_annotations=False, show_labels=False)
 
-    # Verify the task settings were updated in the RenderConfig
-    task_settings = pipe_manager.pipeout.render_config.get('detections')
+    mock_pipeout.set_task_render.assert_called_once_with('detections', False, False)
+
+    task_settings = render_config.get('detections')
     assert task_settings is not None
     assert task_settings.show_annotations is False
     assert task_settings.show_labels is False
-
-    # Verify that set_render returns self for method chaining
     assert result is proxy
 
 
 def test_pipe_manager_get_attribute_for_task():
     """Test that PipeManager's __getattr__ returns a TaskProxy for tasks."""
-    # Create a mock for the pipeline with tasks
     mock_pipeline = mock.MagicMock()
     mock_task = mock.MagicMock()
     mock_task.name = 'detections'
     mock_pipeline.nn.tasks = [mock_task]
 
-    # Create a simplified PipeManager for testing
     class TestPipeManager(manager.PipeManager):
         def __init__(self):
-            # Skip the actual initialization
             self._pipeline = mock_pipeline
-            self.pipeout = mock.MagicMock()
-            # Use a real RenderConfig
-            self.pipeout.render_config = config.RenderConfig()
+            self._pipeout = mock.MagicMock()
 
-    # Create our test manager
     pipe_mgr = TestPipeManager()
-
-    # Test getting a task by name
     task_proxy = pipe_mgr.detections
 
-    # Verify it's a TaskProxy
     assert isinstance(task_proxy, manager.TaskProxy)
     assert task_proxy.task_name == 'detections'
 
 
 def test_pipe_manager_set_render():
     """Test PipeManager's set_render method affects all tasks."""
-    # Create a mock for the pipeline with tasks
     mock_pipeline = mock.MagicMock()
     mock_task1 = mock.MagicMock()
     mock_task1.name = 'task1'
@@ -89,30 +80,32 @@ def test_pipe_manager_set_render():
     mock_task2.name = 'task2'
     mock_pipeline.nn.tasks = [mock_task1, mock_task2]
 
-    # Create a simplified PipeManager for testing
+    # PipeOutput owns the render config and exposes delegation methods
+    render_config = config.RenderConfig(
+        task1=config.TaskRenderConfig(),
+        task2=config.TaskRenderConfig(),
+    )
+    mock_pipeout = mock.MagicMock()
+    mock_pipeout.get_render_config.return_value = render_config
+    mock_pipeout.set_task_render.side_effect = (
+        lambda task_name, show_annotations, show_labels: render_config.set_task(
+            task_name, show_annotations, show_labels
+        )
+    )
+
     class TestPipeManager(manager.PipeManager):
         def __init__(self):
-            # Skip the actual initialization
             self._pipeline = mock_pipeline
-            self.pipeout = mock.MagicMock()
-            # Use a real RenderConfig and pre-register tasks
-            self.pipeout.render_config = config.RenderConfig(
-                task1=config.TaskRenderConfig(),
-                task2=config.TaskRenderConfig(),
-            )
+            self._pipeout = mock_pipeout
 
-    # Create our test manager
     pipe_mgr = TestPipeManager()
-
-    # Call set_render to update all tasks (use only keyword arguments)
     pipe_mgr.set_render(show_annotations=False, show_labels=False)
 
-    # Test that the render_config was updated for all tasks
-    render_config = pipe_mgr.pipeout.render_config
+    assert mock_pipeout.set_task_render.call_count == 2
 
-    # Check settings for both tasks
+    result_render_config = pipe_mgr.pipeout.get_render_config()
     for task_name in ['task1', 'task2']:
-        task_settings = render_config.get(task_name)
+        task_settings = result_render_config.get(task_name)
         assert task_settings is not None
         assert task_settings.show_annotations is False
         assert task_settings.show_labels is False

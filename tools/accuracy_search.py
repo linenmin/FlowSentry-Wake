@@ -351,9 +351,9 @@ def generate_summary(log_file, models=None, single_model_target_accuracy=None):
         model_summary = {
             "best_accuracy": float(best_row['accuracy']),
             "worst_accuracy": float(worst_accuracy),
-            "best_accuracy_drop": float(best_accuracy_drop)
-            if best_accuracy_drop is not None
-            else "N/A",
+            "best_accuracy_drop": (
+                float(best_accuracy_drop) if best_accuracy_drop is not None else "N/A"
+            ),
             "best_rel_drop": float(best_rel_drop) if best_rel_drop is not None else "N/A",
             "target_accuracy": float(target_accuracy) if target_accuracy is not None else "N/A",
             "num_cal_images": int(best_row['num_cal_images']),

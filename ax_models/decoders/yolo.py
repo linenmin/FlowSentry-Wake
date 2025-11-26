@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Operators that convert YOLO-specific tensor output to
 # generalized metadata representation
 
@@ -11,7 +11,8 @@ import numpy as np
 
 from axelera import types
 from axelera.app import compile, gst_builder, logging_utils
-from axelera.app.meta import BBoxState, ObjectDetectionMeta
+from axelera.app.meta import BBoxState, ObjectDetectionMeta, ObjectDetectionMetaOBB
+from axelera.app.model_utils.box import batch_probiou
 from axelera.app.operators import AxOperator, PipelineContext, utils
 from axelera.app.torch_utils import torch
 
@@ -22,6 +23,7 @@ class YoloFamily(enum.Enum):
     YOLOv5 = enum.auto()  # all anchor-based using yolov5 like head
     YOLOv8 = enum.auto()  # all anchor-free using yolov8 like head
     YOLOX = enum.auto()  # anchor-free using yolox like head
+    YOLO_OBB = enum.auto()  # oriented bounding box
     # we don't know which family the model belongs to according to the output shape
     Unknown = enum.auto()
 
@@ -44,6 +46,63 @@ def _filter_samples(scores, class_confidences, box_coordinates, threshold):
         class_confidences[valid_indices],
         box_coordinates[valid_indices],
     )
+
+
+def _decode_yolo_grid_boxes(boxes, model_width, model_height, strides=[8, 16, 32]):
+    """
+    Decode YOLO-family boxes from grid-space to pixel-space coordinates.
+
+    Some YOLO ONNX exports output raw grid predictions that need decoding:
+    - boxes[:, :2] = (offset + grid_xy) * stride  # center coordinates
+    - boxes[:, 2:4] = exp(log_wh) * stride        # width, height
+
+    This is the standard YOLO grid decoding used by YOLOX, YOLOv5, YOLOv8, etc.
+    when exported with decode_in_inference=False or similar settings.
+
+    Args:
+        boxes (np.ndarray): Box coordinates in grid-space format (N, 4) as [cx_offset, cy_offset, w_log, h_log]
+        model_width (int): Model input width
+        model_height (int): Model input height
+        strides (list): Stride values for each feature pyramid level (default: [8, 16, 32])
+
+    Returns:
+        np.ndarray: Decoded boxes in pixel-space as [cx, cy, w, h]
+    """
+    # Calculate grid dimensions for each stride level
+    grid_dims = []
+    for stride in strides:
+        h = model_height // stride
+        w = model_width // stride
+        grid_dims.append((h, w))
+
+    # Generate grid coordinates and stride arrays
+    all_grids = []
+    all_strides = []
+
+    for stride, (h, w) in zip(strides, grid_dims):
+        # Create grid for this level
+        grid_y, grid_x = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+        grid = np.stack([grid_x, grid_y], axis=-1).reshape(-1, 2)  # (h*w, 2)
+        all_grids.append(grid)
+
+        # Create stride array for this level
+        stride_array = np.full((h * w, 1), stride, dtype=np.float32)
+        all_strides.append(stride_array)
+
+    # Concatenate all grids and strides
+    all_grids = np.concatenate(all_grids, axis=0)  # (total_anchors, 2)
+    all_strides = np.concatenate(all_strides, axis=0)  # (total_anchors, 1)
+
+    # Decode boxes using standard YOLO grid decoding logic
+    boxes_decoded = boxes.copy()
+
+    # Decode center coordinates: (offset + grid_xy) * stride
+    boxes_decoded[:, 0:2] = (boxes[:, 0:2] + all_grids[: len(boxes)]) * all_strides[: len(boxes)]
+
+    # Decode width/height: exp(log_wh) * stride
+    boxes_decoded[:, 2:4] = np.exp(boxes[:, 2:4]) * all_strides[: len(boxes)]
+
+    return boxes_decoded
 
 
 class DecodeYolo(AxOperator):
@@ -69,25 +128,27 @@ class DecodeYolo(AxOperator):
     nms_top_k: int = 300
     generic_gst_decoder: bool = False
 
-    @classmethod
-    def handles_dequantization_and_depadding(cls):
-        return True
-
-    @classmethod
-    def handles_transpose(cls):
-        return True
-
-    @classmethod
-    def handles_postamble(cls):
-        return True
-
     def _post_init(self):
         self.label_filter = utils.parse_labels_filter(self.label_filter)
         self.label_exclude = utils.parse_labels_filter(self.label_exclude)
 
         self._tmp_labels: Optional[Path] = None
-        if self.box_format not in ["xyxy", "xywh", "ltwh"]:
+        if self.box_format not in ["xyxy", "xywh", "ltwh", "xywhr", "xyxyxyxy"]:
             raise ValueError(f"Unknown box format {self.box_format}")
+
+        self.model_type = YoloFamily.Unknown
+        if self.box_format == "xyxyxyxy":
+            self.x_indexes = [0, 2, 4, 6]
+            self.y_indexes = [1, 3, 5, 7]
+            self.model_type = YoloFamily.YOLO_OBB
+        elif self.box_format == "xywhr":
+            self.x_indexes = [0]
+            self.y_indexes = [1]
+            self.model_type = YoloFamily.YOLO_OBB
+        else:
+            self.x_indexes = [0, 2]  # x1, x2
+            self.y_indexes = [1, 3]  # y1, y2
+
         # TODO: check config to determine the value of sigmoid_in_postprocess
         self.sigmoid_in_postprocess = False
         super()._post_init()
@@ -102,7 +163,7 @@ class DecodeYolo(AxOperator):
         context: PipelineContext,
         task_name: str,
         taskn: int,
-        compiled_model_dir: Path,
+        compiled_model_dir: Path | None,
         task_graph,
     ):
         super().configure_model_and_context_info(
@@ -116,6 +177,7 @@ class DecodeYolo(AxOperator):
             self.label_filter = utils.label_exclude_to_label_filter(
                 model_info.labels, self.label_exclude
             )
+
         if model_info.manifest and model_info.manifest.is_compiled():
             self._deq_scales, self._deq_zeropoints = zip(*model_info.manifest.dequantize_params)
             self._postprocess_graph = compiled_model_dir / model_info.manifest.postprocess_graph
@@ -127,9 +189,13 @@ class DecodeYolo(AxOperator):
                 'NHWC',
                 'NHWC',
             )
-            self.model_type, model_type_explanation = _guess_yolo_model(
-                output_shapes, model_info.num_classes
-            )
+
+            model_type_explanation = "Determined from box format"
+            if self.model_type == YoloFamily.Unknown:
+                self.model_type, model_type_explanation = _guess_yolo_model(
+                    output_shapes, model_info.num_classes
+                )
+
             if self.model_type == YoloFamily.Unknown:
                 LOG.warning(f"Unknown model type for {model_info.name}, using generic GST decoder")
                 self.generic_gst_decoder = True
@@ -247,6 +313,28 @@ class DecodeYolo(AxOperator):
                 f'letterbox:{int(self.scaled in [types.ResizeMode.LETTERBOX_FIT, types.ResizeMode.LETTERBOX_CONTAIN])}'
                 + (f';label_filter:{",".join(sieve)}' if sieve else ''),
             )
+        elif self.model_type == YoloFamily.YOLO_OBB:
+            gst.decode_muxer(
+                name=f'decoder_task{self._taskn}{stream_idx}',
+                lib='libdecode_yolov_obb.so',
+                mode='read',
+                options=f'meta_key:{str(self.task_name)};'
+                f'{master_key}'
+                f'{association_key}'
+                f'classes:{self.num_classes};'
+                f'confidence_threshold:{self.conf_threshold};'
+                f'scales:{scales};'
+                f'padding:{paddings};'
+                f'zero_points:{zeros};'
+                f'topk:{self.max_nms_boxes};'
+                f'multiclass:{int(self.use_multi_label)};'
+                f'classlabels_file:{self._tmp_labels};'
+                f'model_width:{self.model_width};'
+                f'model_height:{self.model_height};'
+                f'scale_up:{int(self.scaled==types.ResizeMode.LETTERBOX_FIT)};'
+                f'letterbox:{int(self.scaled in [types.ResizeMode.LETTERBOX_FIT, types.ResizeMode.LETTERBOX_CONTAIN])}'
+                + (f';label_filter:{",".join(sieve)}' if sieve else ''),
+            )
         elif self.generic_gst_decoder:  # YoloFamily.Unknown or YAML config
             gst.decode_muxer(
                 name=f'decoder_task{self._taskn}{stream_idx}',
@@ -296,85 +384,132 @@ class DecodeYolo(AxOperator):
         if type(predict) == torch.Tensor:
             predict = predict.cpu().detach().numpy()
 
-        if len(predict) == 1 and predict.shape[0] > 1:
-            raise ValueError(
-                f"Batch size >1 not supported for torch and torch-aipu pipelines, output tensor={predict[0].shape}"
+        # Handle OBB (Oriented Bounding Box) models
+        if self.model_type == YoloFamily.YOLO_OBB:
+            boxes, scores, classes = decode_raw_obb(
+                predict,
+                self.conf_threshold,
+                self.nms_iou_threshold,
+                self.nms_top_k,
+                self.max_nms_boxes,
+                self.nms_class_agnostic,
+                self.use_multi_label,
             )
-        elif len(predict) > 1:  # Handling multiple predictions, possibly yolo-nas
-            # Determine the dimension with consistent size across predictions
-            info_at_dim = 1 if predict[0].shape[1] < predict[0].shape[2] else 2
-            # Validate if the dimension sizes match to ensure compatibility
-            if len(predict) > 2:
-                raise ValueError(f"Unexpected number of predictions ({len(predict)}) encountered.")
-            elif (
-                predict[0].shape[info_at_dim] == 4
-                and predict[1].shape[info_at_dim] == self.num_classes
-            ):
-                # Merge predictions if exactly two are present
-                predict = np.concatenate(predict, axis=2)
+        else:
+            # Standard YOLO detection path
+            predict_info = (
+                [p.shape for p in predict] if isinstance(predict, (list, tuple)) else predict.shape
+            )
+            LOG.debug(f"Prediction tensor info: len={len(predict)}, shapes={predict_info}")
+
+            if len(predict) == 1 and predict.shape[0] > 1:
+                raise ValueError(
+                    f"Batch size >1 not supported for torch and torch-aipu pipelines, output tensor={predict[0].shape}"
+                )
+            elif len(predict) > 1:  # Handling multiple predictions, possibly yolo-nas
+                # Determine the dimension with consistent size across predictions
+                info_at_dim = 1 if predict[0].shape[1] < predict[0].shape[2] else 2
+                # Validate if the dimension sizes match to ensure compatibility
+                if len(predict) > 2:
+                    raise ValueError(
+                        f"Unexpected number of predictions ({len(predict)}) encountered."
+                    )
+                elif (
+                    predict[0].shape[info_at_dim] == 4
+                    and predict[1].shape[info_at_dim] == self.num_classes
+                ):
+                    # Merge predictions if exactly two are present
+                    predict = np.concatenate(predict, axis=2)
+                else:
+                    raise ValueError(
+                        f"Unexpected output shapes, {predict[0].shape} and {predict[1].shape}"
+                    )
+
+            bboxes = predict[0]
+            # Ensure bboxes are transposed to format (number of samples, info per sample) if needed
+            if bboxes.shape[0] < bboxes.shape[1]:
+                bboxes = bboxes.transpose()
+            # Calculate the number of output channels excluding class predictions
+            # YOLOX format: [box(4), obj(1), cls(num_classes)]
+            total_channels = bboxes.shape[1]
+            expected_yolox_channels = 4 + 1 + self.num_classes  # box + obj + class
+
+            if total_channels == expected_yolox_channels:
+                # YOLOX anchor-free: [box(4), obj(1), cls(N)]
+                box_coordinates = bboxes[:, :4]
+                object_confidence = bboxes[:, 4]
+                class_confidences = bboxes[:, 5:]
+                has_object_confidence = True  # YOLOX has objectness
+            elif total_channels == 4 + self.num_classes:
+                # YOLOv8-style anchor-free without objectness: [box(4), cls(N)]
+                box_coordinates = bboxes[:, :4]
+                class_confidences = bboxes[:, 4:]
+                object_confidence = class_confidences.max(axis=1)
+                has_object_confidence = False
             else:
                 raise ValueError(
-                    f"Unexpected output shapes, {predict[0].shape} and {predict[1].shape}"
+                    f"Unknown number of output channels: {bboxes.shape}, expected {expected_yolox_channels} for YOLOX or {4+self.num_classes} for YOLOv8"
                 )
 
-        bboxes = predict[0]
-        # Ensure bboxes are transposed to format (number of samples, info per sample) if needed
-        if bboxes.shape[0] < bboxes.shape[1]:
-            bboxes = bboxes.transpose()
-        # Calculate the number of output channels excluding class predictions
-        output_channels_excluding_classes = bboxes.shape[1] - self.num_classes
-        if output_channels_excluding_classes == 5:
-            # Anchor-based result
-            class_confidences = bboxes[:, 5:]
-            object_confidence = bboxes[:, 4]
-            box_coordinates = bboxes[:, :4]
-            has_object_confidence = True
-        elif output_channels_excluding_classes == 4:
-            # Anchor-free result which has no object confidences
-            # Use the max class confidence for the initial candidate filtering
-            class_confidences = bboxes[:, 4:]
-            object_confidence = class_confidences.max(axis=1)
-            box_coordinates = bboxes[:, :4]
-            has_object_confidence = False
-        else:
-            raise ValueError(f"Unknown number of output channels {bboxes.shape}")
+            # Check if boxes need YOLO grid decoding
+            # Some YOLO ONNX exports output raw grid predictions that need decoding:
+            #   centers = (offset + grid_xy) * stride, sizes = exp(log_wh) * stride
+            # This applies to YOLOX, YOLOv5, YOLOv8, etc. when exported with decode_in_inference=False
+            # Auto-detect by checking if box values are in grid-space range vs pixel-space
+            needs_grid_decode = False
+            if len(box_coordinates) > 0 and not self.normalized_coord:
+                sample_boxes = box_coordinates[: min(100, len(box_coordinates))]
+                max_center = np.max(np.abs(sample_boxes[:, :2]))
+                max_size = np.max(sample_boxes[:, 2:4])
+                # Grid offsets are typically in [-10, 10], log(wh) in [0, 5]
+                # If boxes are already in pixel space, centers would be 100s-1000s
+                if max_center < 50 and max_size < 10:
+                    needs_grid_decode = True
+                    LOG.debug(f"Detected grid-space boxes, applying YOLO grid decoding")
 
-        # Filter samples by object confidence threshold
-        object_confidence, class_confidences, box_coordinates = _filter_samples(
-            object_confidence, class_confidences, box_coordinates, self.conf_threshold
-        )
+            if needs_grid_decode:
+                box_coordinates = _decode_yolo_grid_boxes(
+                    box_coordinates, self.model_width, self.model_height
+                )
 
-        if not self.use_multi_label:
-            best_class = class_confidences.argmax(axis=1)
-            meshgrid = np.ogrid[: class_confidences.shape[0]]
-            best_class_conf = class_confidences[meshgrid, best_class]
-            if has_object_confidence:
-                scores = object_confidence * best_class_conf
-            else:
-                scores = best_class_conf
-            # filter samples by "score", and get boxes, scores, and classes
-            scores, classes, boxes = _filter_samples(
-                scores, best_class, box_coordinates, self.conf_threshold
+            # Filter samples by object confidence threshold
+            object_confidence, class_confidences, box_coordinates = _filter_samples(
+                object_confidence, class_confidences, box_coordinates, self.conf_threshold
             )
-        else:  # typically for evaluation
-            # Compute initial scores based on object confidence and class confidences
-            if has_object_confidence:
-                scores = object_confidence[:, None] * class_confidences
-            else:
-                # When there's no object confidence, use class confidences as scores
-                scores = class_confidences
 
-            # Find all scores above the confidence threshold
-            valid_scores_indices = np.argwhere(scores > self.conf_threshold)
+            if not self.use_multi_label:
+                best_class = class_confidences.argmax(axis=1)
+                meshgrid = np.ogrid[: class_confidences.shape[0]]
+                best_class_conf = class_confidences[meshgrid, best_class]
+                if has_object_confidence:
+                    scores = object_confidence * best_class_conf
+                else:
+                    scores = best_class_conf
+                # filter samples by "score", and get boxes, scores, and classes
+                scores, classes, boxes = _filter_samples(
+                    scores, best_class, box_coordinates, self.conf_threshold
+                )
+            else:  # typically for evaluation
+                # Compute initial scores based on object confidence and class confidences
+                if has_object_confidence:
+                    scores = object_confidence[:, None] * class_confidences
+                else:
+                    # When there's no object confidence, use class confidences as scores
+                    scores = class_confidences
 
-            if valid_scores_indices.size > 0:  # Check if there are any scores above the threshold
-                scores = scores[valid_scores_indices[:, 0], valid_scores_indices[:, 1]]
-                classes = valid_scores_indices[:, 1]
-                boxes = box_coordinates[valid_scores_indices[:, 0]]
-            else:  # No scores above the threshold, initialize empty arrays
-                scores = np.array([])
-                classes = np.array([])
-                boxes = np.array([]).reshape(0, box_coordinates.shape[1])
+                # Find all scores above the confidence threshold
+                valid_scores_indices = np.argwhere(scores > self.conf_threshold)
+
+                if (
+                    valid_scores_indices.size > 0
+                ):  # Check if there are any scores above the threshold
+                    scores = scores[valid_scores_indices[:, 0], valid_scores_indices[:, 1]]
+                    classes = valid_scores_indices[:, 1]
+                    boxes = box_coordinates[valid_scores_indices[:, 0]]
+                else:  # No scores above the threshold, initialize empty arrays
+                    scores = np.array([])
+                    classes = np.array([])
+                    boxes = np.array([]).reshape(0, box_coordinates.shape[1])
 
         if self._where:
             master_meta = meta[self._where]
@@ -407,9 +542,15 @@ class DecodeYolo(AxOperator):
         boxes, scores, classes = state.organize_bboxes(boxes, scores, classes)
 
         if self._where:
-            boxes[:, [0, 2]] += base_box[0]
-            boxes[:, [1, 3]] += base_box[1]
-        model_meta = ObjectDetectionMeta.create_immutable_meta(
+            boxes[:, self.x_indexes] += base_box[0]
+            boxes[:, self.y_indexes] += base_box[1]
+
+        MetaCls = (
+            ObjectDetectionMetaOBB
+            if self.model_type == YoloFamily.YOLO_OBB
+            else ObjectDetectionMeta
+        )
+        model_meta = MetaCls.create_immutable_meta(
             boxes=boxes,
             scores=scores,
             class_ids=classes,
@@ -518,3 +659,158 @@ def _guess_yolo_model(depadded_shapes, num_classes):
             f"- Shapes: {[list(shape) for shape in depadded_shapes]}"
         )
         return YoloFamily.Unknown, explanation
+
+
+def nms_obb(boxes_xywhr, scores, classes=None, iou_thr=0.5, max_det=300, agnostic=False):
+    """
+    NumPy fast-NMS using probabilistic IoU.
+
+    Args:
+        boxes_xywhr: (N, 5) array of [x, y, w, h, r] boxes.
+        scores:      (N,) scores.
+        classes:     (N,) class ids (ints or floats). If provided and agnostic=False,
+                     only boxes of the same class can suppress each other.
+        iou_thr:     IoU threshold for suppression.
+        max_det:     Max number of detections to keep.
+        agnostic:    If True, ignore classes (all can suppress each other).
+
+    Returns:
+        keep: (M,) int64 indices of kept boxes (original indexing).
+    """
+    if boxes_xywhr.size == 0:
+        return np.zeros((0,), dtype=np.int64)
+
+    order = np.argsort(-scores.astype(np.float64))
+    b = boxes_xywhr[order].astype(np.float64)
+
+    # Pairwise probabilistic IoU
+    ious = batch_probiou(b, b).astype(np.float64)
+
+    # Class-aware masking (only same-class overlaps can suppress)
+    if classes is not None and not agnostic:
+        cls = classes[order].reshape(-1, 1)
+        same_class = cls == cls.T
+        # Zero out IoUs between different classes so they never suppress
+        ious = ious * same_class.astype(np.float64)
+
+    # Only consider higher-scored boxes suppressing lower-scored ones
+    ious = np.triu(ious, k=1)
+
+    # Keep boxes that are not overlapped >= thr by any higher-scored box
+    keep_mask = (ious >= float(iou_thr)).sum(axis=0) == 0
+    pick = np.nonzero(keep_mask)[0]
+
+    if pick.size > max_det:
+        pick = pick[:max_det]
+
+    keep = order[pick]
+    return keep.astype(np.int64)
+
+
+def decode_raw_obb(
+    raw_tensor,
+    conf_thres=0.25,
+    iou_thres=0.50,
+    max_det=300,
+    max_nms=30000,
+    agnostic=False,
+    multi_label=True,
+):
+    """
+    Pure NumPy decode for YOLO OBB raw outputs.
+    """
+    # Unwrap single output
+    if isinstance(raw_tensor, (tuple, list)):
+        raw_tensor = raw_tensor[0]
+
+    # Convert to numpy and ensure 3D [B, N, C]
+    if isinstance(raw_tensor, torch.Tensor):
+        arr = raw_tensor.detach().cpu().numpy()
+    elif isinstance(raw_tensor, np.ndarray):
+        arr = raw_tensor
+    else:
+        raise RuntimeError(f"Unsupported raw type: {type(raw_tensor)}")
+
+    if arr.ndim == 2:  # [N, C]
+        arr = arr[None, ...]
+    if arr.ndim != 3:
+        raise RuntimeError(f"Unexpected RAW ndim: {arr.ndim}, shape={arr.shape}")
+
+    pred = np.transpose(arr, (0, 2, 1)).copy()
+
+    # Split fields according to Ultralytics rotated layout: [xywh | nc class probs | angle]
+    C = pred.shape[2]
+    nc = C - 5
+    boxes_xywh = pred[..., :4]  # normalized xywh
+    cls_probs = pred[..., 4 : 4 + nc]  # class probabilities (already sigmoid-ed by head)
+    theta = pred[..., 4 + nc : 4 + nc + 1]  # angle radians (shape [B,N,1])
+
+    # Use only first image in batch for this helper
+    boxes0_xywh_all = boxes_xywh[0]
+    theta0_all = theta[0]
+    cls_probs0_all = cls_probs[0]
+
+    # Anchor-level keep: any class score above threshold
+    keep_anchor = (cls_probs0_all > float(conf_thres)).any(axis=1)
+    if not np.any(keep_anchor):
+        return (
+            np.empty((0, 5), dtype=np.float32),
+            np.empty((0,), dtype=np.float32),
+            np.empty((0,), dtype=np.int64),
+        )
+
+    boxes0_xywh = boxes0_xywh_all[keep_anchor]
+    theta0 = theta0_all[keep_anchor]
+    cls_probs0 = cls_probs0_all[keep_anchor]
+
+    if multi_label:
+        ai, aj = np.nonzero(cls_probs0 > float(conf_thres))
+        if ai.size == 0:
+            return (
+                np.empty((0, 5), dtype=np.float32),
+                np.empty((0,), dtype=np.float32),
+                np.empty((0,), dtype=np.int64),
+            )
+        conf0 = cls_probs0[ai, aj]
+        cls0 = aj.astype(np.int64)
+        boxes0_xywh = boxes0_xywh[ai]
+        theta0 = theta0[ai]
+        if max_nms is not None and conf0.shape[0] > int(max_nms):
+            idx = np.argpartition(-conf0, int(max_nms) - 1)[: int(max_nms)]
+            boxes0_xywh = boxes0_xywh[idx]
+            theta0 = theta0[idx]
+            conf0 = conf0[idx]
+            cls0 = cls0[idx]
+    else:
+        conf0 = cls_probs0.max(axis=1)
+        cls0 = cls_probs0.argmax(axis=1).astype(np.int64)
+        if max_nms is not None and boxes0_xywh.shape[0] > int(max_nms):
+            idx = np.argpartition(-conf0, int(max_nms) - 1)[: int(max_nms)]
+            boxes0_xywh = boxes0_xywh[idx]
+            theta0 = theta0[idx]
+            conf0 = conf0[idx]
+            cls0 = cls0[idx]
+
+    # Boxes are already in canvas pixels (head multiplies by stride); keep radians angle
+    boxes_xywhr = np.concatenate([boxes0_xywh, theta0], axis=1).astype(np.float64)
+
+    # Rotated NMS per class (unless agnostic=True)
+    keep_idx = nms_obb(
+        boxes_xywhr,
+        conf0.astype(np.float64),
+        classes=None if agnostic else cls0,
+        iou_thr=float(iou_thres),
+        max_det=int(max_det),
+        agnostic=bool(agnostic),
+    )
+    if keep_idx.size == 0:
+        return (
+            np.empty((0, 5), dtype=np.float32),
+            np.empty((0,), dtype=np.float32),
+            np.empty((0,), dtype=np.int64),
+        )
+
+    boxes_out = boxes_xywhr[keep_idx].astype(np.float32)
+    conf_out = conf0[keep_idx].astype(np.float32)
+    cls_out = cls0[keep_idx].astype(np.int64)
+    return boxes_out, conf_out, cls_out

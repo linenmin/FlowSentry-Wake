@@ -8,7 +8,9 @@
     - [Pixel Value Transformations](#pixel-value-transformations)
     - [Color Space Transformations](#color-space-transformations)
     - [Tensor Conversion](#tensor-conversion)
-    - [Mapping Your Existing Preprocess Code](#mapping-your-existing-preprocess-code)
+  - [Mapping Your Existing Preprocess Code](#mapping-your-existing-preprocess-code)
+    - [Common Code Patterns and Their Equivalents](#common-code-patterns-and-their-equivalents)
+    - [Important Considerations About Normalization](#important-considerations-about-normalization)
   - [Postprocess](#postprocess)
 
 This is a list of non-neural pre- & post-processing operators that may be referred to in the

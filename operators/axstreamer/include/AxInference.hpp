@@ -26,8 +26,7 @@ inline int
 pipeline_pre_fill(const InferenceProperties &props)
 {
   const auto ndevices = num_devices(props);
-  const auto num_children = std::max(1, props.num_children) * ndevices;
-  return (1 + props.dmabuf_outputs) * num_children;
+  return std::max(1, props.num_children) * ndevices;
 }
 
 inline int
@@ -44,9 +43,9 @@ struct InferenceParams {
   InferenceParams(const std::vector<std::shared_ptr<void>> &input_ptrs,
       const std::vector<Ax::SharedFD> &input_fds,
       const std::vector<std::shared_ptr<void>> &output_ptrs,
-      const std::vector<Ax::SharedFD> &output_fds)
+      const std::vector<Ax::SharedFD> &output_fds, uint64_t frame_id)
       : input_ptrs(input_ptrs), input_fds(input_fds), output_ptrs(output_ptrs),
-        output_fds(output_fds)
+        output_fds(output_fds), frame_id(frame_id)
   {
   }
   InferenceParams(InferenceParams &&) = default;
@@ -66,30 +65,34 @@ struct InferenceParams {
   std::vector<Ax::SharedFD> input_fds;
   std::vector<std::shared_ptr<void>> output_ptrs;
   std::vector<Ax::SharedFD> output_fds;
+  uint64_t frame_id; // Used for order reconstruction in low-latency inference
 };
 
+
+class BasicInference
+{
+  public:
+  virtual ~BasicInference() = default;
+  virtual InferenceParams execute(InferenceParams params) = 0;
+};
 
 class Inference
 {
   public:
   virtual ~Inference() = default;
+  virtual bool is_low_latency() const = 0;
   virtual int batch_size() const = 0;
   virtual const AxTensorsInterface &input_shapes() const = 0;
   virtual const AxTensorsInterface &output_shapes() const = 0;
-  virtual void dispatch(const std::vector<std::shared_ptr<void>> &input_ptrs,
-      const std::vector<SharedFD> &input_fds,
-      const std::vector<std::shared_ptr<void>> &output_ptrs,
-      const std::vector<SharedFD> &output_fds)
-      = 0;
-
-  virtual void collect(const std::vector<std::shared_ptr<void>> &output_ptrs) = 0;
+  virtual void dispatch(InferenceParams params) = 0;
+  virtual void collect() = 0;
 };
 
-InferenceParams zero_params(const Inference &tvm, bool input_dmabuf, bool output_dmabuf);
+using InferenceReadyCallback = std::function<void(uint64_t frame_id)>;
+std::unique_ptr<Inference> create_inference(Logger &logger,
+    const InferenceProperties &props, InferenceReadyCallback callback);
 
-std::unique_ptr<Inference> create_inference(Logger &logger, const InferenceProperties &props);
-
-std::unique_ptr<Inference> create_axruntime_inference(Logger &logger,
+std::unique_ptr<BasicInference> create_axruntime_inference(Logger &logger,
     axrContext *ctx, axrModel *model, const InferenceProperties &props);
 
 } // namespace Ax

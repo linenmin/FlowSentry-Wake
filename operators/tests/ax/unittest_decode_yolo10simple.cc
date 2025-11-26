@@ -2,7 +2,7 @@
 #include "gtest/gtest.h"
 #include <gmodule.h>
 #include "gmock/gmock.h"
-#include "unittest_decode_common.h"
+#include "unittest_ax_common.h"
 
 #include <memory>
 #include <stdexcept>
@@ -67,7 +67,7 @@ tensors_from_vector(std::vector<T> &tensors, std::vector<int> sizes)
 TEST(yolo10_simple_errors, no_meta_key_throws)
 {
   std::unordered_map<std::string, std::string> properties = {};
-  EXPECT_THROW(Decoder("libdecode_yolov10_simple.so", properties), std::runtime_error);
+  EXPECT_THROW(Ax::LoadDecode("yolov10_simple", properties), std::runtime_error);
 }
 
 TEST(yolo10_simple_basic, no_detections_with_high_confidence)
@@ -90,13 +90,13 @@ TEST(yolo10_simple_basic, no_detections_with_high_confidence)
     { "scale_up", "1" },
     { "letterbox", "1" },
   };
-  Decoder decoder("libdecode_yolov10_simple.so", properties);
+  auto decoder = Ax::LoadDecode("yolov10_simple", properties);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
 
   auto tensors = tensors_from_vector(output_tensor, { 1, 1, 1, 6 });
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   EXPECT_EQ(actual_classes, std::vector<int32_t>{});
@@ -123,13 +123,13 @@ TEST(yolo10_simple_basic, single_detection_with_low_confidence)
     { "scale_up", "1" },
     { "letterbox", "1" },
   };
-  Decoder decoder("libdecode_yolov10_simple.so", properties);
+  auto decoder = Ax::LoadDecode("yolov10_simple", properties);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
 
   auto tensors = tensors_from_vector(output_tensor, { 1, 1, 1, 6 });
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
 
@@ -173,13 +173,13 @@ TEST(yolo10_simple_basic, multiple_detections)
     { "scale_up", "1" },
     { "letterbox", "1" },
   };
-  Decoder decoder("libdecode_yolov10_simple.so", properties);
+  auto decoder = Ax::LoadDecode("yolov10_simple", properties);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
 
   auto tensors = tensors_from_vector(output_tensor, { 1, 1, 3, 6 });
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
 
@@ -222,13 +222,13 @@ TEST(yolo10_simple_basic, class_filtering)
     { "scale_up", "1" },
     { "letterbox", "1" },
   };
-  Decoder decoder("libdecode_yolov10_simple.so", properties);
+  auto decoder = Ax::LoadDecode("yolov10_simple", properties);
 
   AxVideoInterface video_info{ { 640, 480, 640, 0, AxVideoFormat::RGB }, nullptr };
   std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
 
   auto tensors = tensors_from_vector(output_tensor, { 1, 1, 3, 6 });
-  decoder.decode_to_meta(tensors, 0, 1, map, video_info);
+  decoder->decode_to_meta(tensors, 0, 1, map, video_info);
 
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
 

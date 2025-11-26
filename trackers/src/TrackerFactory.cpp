@@ -1,3 +1,4 @@
+// Copyright Axelera AI, 2025
 #include <stdexcept>
 
 #include "MultiObjTracker.hpp"
@@ -25,17 +26,6 @@ to_string(TrackState &state)
 }
 } // namespace ax
 
-// Helper function to get a parameter value or a default value if not found
-template <typename T>
-T
-GetParamOrDefault(const TrackerParams &params, const std::string &key, T defaultValue)
-{
-  auto it = params.find(key);
-  if (it != params.end() && std::holds_alternative<T>(it->second)) {
-    return std::get<T>(it->second);
-  }
-  return defaultValue;
-}
 
 std::unique_ptr<ax::MultiObjTracker>
 CreateMultiObjTracker(const std::string &tracker_type_str, const TrackerParams &params)
@@ -233,14 +223,12 @@ VectorOfVectors2Matrix(const std::vector<std::vector<float>> &data)
   return matrix;
 }
 
-
 OCSortWrapper::OCSortWrapper(const TrackerParams &params)
     : tracker_(GetParamOrDefault<float>(params, "det_thresh", 0),
         GetParamOrDefault<int>(params, "max_age", 30),
         GetParamOrDefault<int>(params, "min_hits", 3),
         GetParamOrDefault<float>(params, "iou_threshold", 0.3),
         GetParamOrDefault<int>(params, "delta", 3),
-        GetParamOrDefault<std::string>(params, "asso_func", "iou"),
         GetParamOrDefault<float>(params, "inertia", 0.2),
         GetParamOrDefault<float>(params, "w_assoc_emb", 0.75),
         GetParamOrDefault<float>(params, "alpha_fixed_emb", 0.95),
@@ -249,7 +237,17 @@ OCSortWrapper::OCSortWrapper(const TrackerParams &params)
         // Deep-OC-SORT parameters
         !GetParamOrDefault<bool>(params, "aw_enabled", false),
         GetParamOrDefault<float>(params, "aw_param", 0.5),
-        !GetParamOrDefault<bool>(params, "cmc_enabled", false))
+        !GetParamOrDefault<bool>(params, "cmc_enabled", false),
+        GetParamOrDefault<bool>(params, "enable_id_recovery", false),
+        GetParamOrDefault<int>(params, "img_width", 0),
+        GetParamOrDefault<int>(params, "img_height", 0),
+        GetParamOrDefault<int>(params, "rec_image_rect_margin", 20),
+        GetParamOrDefault<int>(params, "rec_track_min_time_since_update_at_boundary", 6),
+        GetParamOrDefault<int>(params, "rec_track_min_time_since_update_inside", 300),
+        GetParamOrDefault<int>(params, "rec_track_min_age", 30),
+        GetParamOrDefault<float>(params, "rec_track_merge_lap_thresh", 0.09f),
+        GetParamOrDefault<int>(params, "rec_track_memory_capacity", 1000),
+        GetParamOrDefault<int>(params, "rec_track_memory_max_age", 54000)) // 30min at 30fps
 {
 }
 

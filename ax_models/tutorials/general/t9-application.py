@@ -129,7 +129,7 @@ def main(window, stream):
                 print(f"Detection {idx} has no classifier results")
 
 
-with display.App(visible=True, opengl=stream.hardware_caps.opengl) as app:
+with display.App(renderer=True, opengl=stream.hardware_caps.opengl) as app:
     wnd = app.create_window("Cascade Pipeline Demo", (900, 600))
     app.start_thread(main, (wnd, stream), name='InferenceThread')
     app.run(interval=1 / 10)

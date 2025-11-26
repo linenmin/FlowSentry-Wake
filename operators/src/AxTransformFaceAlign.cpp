@@ -227,7 +227,8 @@ perform_fallback_alignment(const AxDataInterface &input,
       Ax::opencv_type_u8(input_video.info.format), input_video.data,
       input_video.info.stride);
   cv::Mat output_mat(cv::Size(output_video.info.width, output_video.info.height),
-      CV_8UC3, output_video.data, output_video.info.stride);
+      Ax::opencv_type_u8(output_video.info.format), output_video.data,
+      output_video.info.stride);
   cv::resize(input_mat, output_mat, output_mat.size());
 }
 
@@ -296,12 +297,10 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     perform_fallback_alignment(input, output, logger);
     return;
   }
-
   AxMetaKpts *kpts_meta_base = nullptr;
   int kpts_start = 0;
   int kpts_per_box = 0;
 
-  // Extract keypoints
   auto *tracker_meta = dynamic_cast<AxMetaTracker *>(master_meta_base);
   if (prop->keypoints_submeta_key.empty()) {
     if (tracker_meta) {
@@ -318,13 +317,36 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     auto *orig_meta = map.at(prop->master_meta).get();
     if (auto *tracker_direct = dynamic_cast<AxMetaTracker *>(orig_meta)) {
       kpts_meta_base = extract_keypoints_from_tracker(tracker_direct, kpts_per_box, logger);
-      kpts_start = 0;
+      // Map subframe index if association_meta is used
+      if (!prop->association_meta.empty()) {
+        int master_subframe_index = master_meta->get_id(subframe_index);
+        if (master_subframe_index < 0
+            || master_subframe_index >= tracker_direct->get_number_of_subframes()) {
+          throw std::runtime_error("facealign: subframe index error (tracker mapping)");
+        }
+        kpts_start = master_subframe_index;
+      } else {
+        kpts_start = 0;
+      }
     } else {
       kpts_meta_base = extract_keypoints_from_meta(orig_meta, kpts_per_box);
       if (!kpts_meta_base) {
         throw std::runtime_error("facealign: master meta doesn't implement keypoint interface");
       }
-      kpts_start = subframe_index;
+      if (!prop->association_meta.empty()) {
+        int master_subframe_index = master_meta->get_id(subframe_index);
+        auto *container_meta = dynamic_cast<AxMetaBbox *>(orig_meta);
+        if (!container_meta) {
+          throw std::runtime_error("facealign: invalid container meta for keypoints");
+        }
+        if (master_subframe_index < 0
+            || master_subframe_index >= container_meta->get_number_of_subframes()) {
+          throw std::runtime_error("facealign: subframe index error (bbox mapping)");
+        }
+        kpts_start = master_subframe_index;
+      } else {
+        kpts_start = subframe_index;
+      }
     }
   } else {
     auto *container_meta
@@ -394,7 +416,6 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     Y.push_back(rel_y);
   }
 
-  // Setup matrices
   auto &input_video = std::get<AxVideoInterface>(input);
   auto &output_video = std::get<AxVideoInterface>(output);
   cv::Mat input_mat(cv::Size(input_video.info.width, input_video.info.height),
@@ -429,7 +450,9 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
       rotation_matrix.at<double>(0, 2) += desired_eye_center_x - eye_center.x;
       rotation_matrix.at<double>(1, 2) += desired_eye_y - eye_center.y;
 
-      cv::warpAffine(input_mat, output_mat, rotation_matrix, output_mat.size());
+      // Use (0,0,0,255) for border pixels
+      cv::warpAffine(input_mat, output_mat, rotation_matrix, output_mat.size(),
+          cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0, 255));
     } else {
       perform_fallback_alignment(input, output, logger);
     }
@@ -551,11 +574,9 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
       return;
     }
 
-    cv::warpAffine(input_mat, output_mat, M, output_mat.size());
-  }
-
-  if (cv::ocl::haveOpenCL() && cv::ocl::useOpenCL()) {
-    cv::ocl::finish();
+    // Use (0,0,0,255) for border pixels
+    cv::warpAffine(input_mat, output_mat, M, output_mat.size(),
+        cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0, 255));
   }
 
   if (prop->save_aligned_images) {

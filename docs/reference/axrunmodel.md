@@ -1,8 +1,8 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-
 # AxRunModel
+
 - [AxRunModel](#axrunmodel)
-  - [Configuration & Advanced Usage](#configuration--advanced-usage)
+  - [Configuration \& Advanced Usage](#configuration--advanced-usage)
     - [-d `<devices>`, --devices `<devices>`](#-d-devices---devices-devices)
     - [--seconds `<seconds>`](#--seconds-seconds)
     - [--aipu-cores `<aipu_cores>`](#--aipu-cores-aipu_cores)
@@ -33,7 +33,7 @@ of the model to use all requested cores.
 After the run has completed, `axrunmodel` will output information about the model run, such as device
 FPS, host FPS, system FPS and whether the model run was successful or not.
 
-Device FPS and system FPS are not a measurement of throughput. They could more accurately be described
+Device FPS and host FPS are not a measurement of throughput. They could more accurately be described
 as 1/execution_duration at the device level, including data transfers at the host level. It is more
 convenient to refer to it as FPS.
 

@@ -1,7 +1,9 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Utility functions used by the Voyager SDK
 from __future__ import annotations
 
+import array
+import collections
 from contextlib import contextmanager
 from enum import EnumMeta, IntEnum
 import functools
@@ -12,14 +14,13 @@ import os
 from pathlib import Path
 import platform
 import re
-import resource
 import shutil
 import subprocess
 import sys
 import tarfile
 import threading
 import time
-from typing import Callable, Optional, Type, Union
+from typing import Callable, Optional, Union
 import zipfile
 
 import psutil
@@ -367,6 +368,7 @@ def download(url: str, path: Path, checksum=""):
 
 def download_from_internal_s3(s3_bucket_name: str, s3_filepath: str, cache_path: Path) -> str:
     import boto3
+    from botocore.exceptions import ClientError
 
     cache_path.mkdir(parents=True, exist_ok=True)
     local_filepath = cache_path.joinpath(Path(s3_filepath).name)
@@ -375,9 +377,21 @@ def download_from_internal_s3(s3_bucket_name: str, s3_filepath: str, cache_path:
         LOG.info(f"Downloading {s3_filepath} from s3 bucket {s3_bucket_name}")
         s3_resource = boto3.resource("s3")
         s3_object = s3_resource.Object(s3_bucket_name, s3_filepath)
-        with spinner() as progress:
-            progress.title(f"Downloading {local_filepath.name}")
-            s3_object.download_file(str(local_filepath))
+        try:
+            with spinner() as progress:
+                progress.title(f"Downloading {local_filepath.name}")
+                s3_object.download_file(str(local_filepath))
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            if error_code == '404':
+                raise FileNotFoundError(
+                    f"File not found in S3: s3://{s3_bucket_name}/{s3_filepath}\n"
+                    f"  This file needs to be uploaded to S3 before it can be used."
+                ) from e
+            else:
+                raise RuntimeError(
+                    f"Failed to download s3://{s3_bucket_name}/{s3_filepath}: {e}"
+                ) from e
 
     return local_filepath
 
@@ -766,7 +780,7 @@ def _exec_grep(cmd, detect, matchers, no_match, log_level=logging.DEBUG):
         lines = p.stdout.splitlines()
         matching, values = [], []
         for match, value in matchers:
-            if matched := [l for l in lines if re.search(match, l)]:
+            if matched := [line for line in lines if re.search(match, line)]:
                 matching.extend(matched)
                 values.append(value)
 
@@ -868,20 +882,6 @@ def is_opengl_available(backend):
         LOG.warning(f"pyglet could not access the display, OpenGL is not available: {e}")
         return False
     return True
-
-
-def is_compiler_available():
-    with open(os.devnull, 'w') as devnull:
-        try:
-            _saved_out, _saved_err = sys.stdout, sys.stderr
-            sys.stdout, sys.stderr = devnull, devnull
-            from axelera import compiler
-
-            return True
-        except ImportError:
-            return False
-        finally:
-            sys.stdout, sys.stderr = _saved_out, _saved_err
 
 
 def run_command_with_progress(cmd: list):
@@ -1029,7 +1029,7 @@ def create_enumerators(labels):
     bases = {}
     aliases = {}
     for i in range(len(labels)):
-        base, *other = [ident(l).lower() for l in labels[i].split(", ")]
+        base, *other = [ident(label).lower() for label in labels[i].split(", ")]
 
         if (existing := bases.get(base, None)) is not None:
             if sub := [s for s in other if s not in bases]:
@@ -1090,3 +1090,26 @@ def suppress_stdout_stderr():
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
+
+
+TerminalSize = collections.namedtuple('TerminalSize', 'columns,lines,width,height')
+
+
+def get_terminal_size_ex():
+    '''Get the terminal size, including pixel dimensions if available.'''
+    try:
+        from fcntl import ioctl
+        from termios import TIOCGWINSZ
+
+        buf = array.array('h', [0] * 4)
+        ioctl(sys.stdin.fileno(), TIOCGWINSZ, buf)
+        lines, columns, width, height = buf
+        if width == 0 or height == 0:
+            raise ValueError(f"Invalid terminal {width=}, {height=} returned by ioctl")
+        return TerminalSize(columns, lines, width, height)
+    except Exception as e:
+        # If ioctl fails or returns invalid size, fallback to os.get_terminal_size
+        LOG.debug(f"Failed to get terminal size using ioctl: {e}")
+        c = os.get_terminal_size()
+        # assume 8x16 cell size
+        return TerminalSize(c.columns, c.lines, c.columns * 8, c.lines * 16)

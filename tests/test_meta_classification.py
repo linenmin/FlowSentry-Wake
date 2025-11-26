@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from unittest.mock import ANY, Mock, call, patch
 
 from PIL import ImageDraw, ImageFont
@@ -74,7 +74,10 @@ def test_colors_text(class_ids, labels, map_color, texts, monkeypatch):
     )
 
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
-        display_draw = display_cv.CVDraw(image, [])
+        composite = types.Image.fromarray(
+            np.zeros((output_height, output_width, 3), dtype=np.uint8)
+        )
+        display_draw = display_cv.CVDraw(0, 1, composite, image, [])
         meta.draw(display_draw)
         display_draw.draw()
 
@@ -117,7 +120,10 @@ def test_label_softmax(class_ids, labels, texts, monkeypatch):
     )
 
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
-        display_draw = display_cv.CVDraw(image, [])
+        composite = types.Image.fromarray(
+            np.zeros((output_height, output_width, 3), dtype=np.uint8)
+        )
+        display_draw = display_cv.CVDraw(0, 1, composite, image, [])
         meta.draw(display_draw)
         display_draw.draw()
 
@@ -141,7 +147,7 @@ def test_label_softmax(class_ids, labels, texts, monkeypatch):
             [np.array([3])],
             [
                 call(((10, 10), (20, 20)), None, CLS0_COLOR, 2),
-                call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
+                call(((10, 18), (50, 26)), LABEL_BACK_COLOR, None, 1),
             ],
             [call((10, 11), "cls:0 3", LABEL_FORE_COLOR, ANY)],
             "test box - not outside - class string",
@@ -153,7 +159,7 @@ def test_label_softmax(class_ids, labels, texts, monkeypatch):
             [np.array([3])],
             [
                 call(((10, 10), (20, 20)), None, CLS0_COLOR, 2),
-                call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
+                call(((10, 18), (50, 26)), LABEL_BACK_COLOR, None, 1),
             ],
             [call((10, 11), "car 3", LABEL_FORE_COLOR, ANY)],
             "test box - not outside - label string",
@@ -165,7 +171,7 @@ def test_label_softmax(class_ids, labels, texts, monkeypatch):
             [np.array([3])],
             [
                 call(((10, 20), (20, 20)), None, CLS0_COLOR, 2),
-                call(((10, 10), (50, 18)), LABEL_BACK_COLOR, None, 1),
+                call(((10, 17), (50, 25)), LABEL_BACK_COLOR, None, 1),
             ],
             [call((10, 10), "cls:0 3", LABEL_FORE_COLOR, ANY)],
             "test box - outside - class string",
@@ -177,7 +183,7 @@ def test_label_softmax(class_ids, labels, texts, monkeypatch):
             [np.array([3])],
             [
                 call(((10, 20), (20, 20)), None, CLS0_COLOR, 2),
-                call(((10, 10), (50, 18)), LABEL_BACK_COLOR, None, 1),
+                call(((10, 17), (50, 25)), LABEL_BACK_COLOR, None, 1),
             ],
             [call((10, 10), "car 3", LABEL_FORE_COLOR, ANY)],
             "test box - outside - label string",
@@ -189,9 +195,9 @@ def test_label_softmax(class_ids, labels, texts, monkeypatch):
             [np.array([3]), np.array([4])],
             [
                 call(((10, 10), (20, 20)), None, CLS0_COLOR, 2),
-                call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
+                call(((10, 18), (50, 26)), LABEL_BACK_COLOR, None, 1),
                 call(((10, 20), (20, 20)), None, ANY, 2),
-                call(((10, 10), (50, 18)), LABEL_BACK_COLOR, None, 1),
+                call(((10, 17), (50, 25)), LABEL_BACK_COLOR, None, 1),
             ],
             [
                 call((10, 11), "cls:0 3", LABEL_FORE_COLOR, ANY),
@@ -206,9 +212,9 @@ def test_label_softmax(class_ids, labels, texts, monkeypatch):
             [np.array([3]), np.array([4])],
             [
                 call(((10, 10), (20, 20)), None, CLS0_COLOR, 2),
-                call(((10, 11), (50, 19)), LABEL_BACK_COLOR, None, 1),
+                call(((10, 18), (50, 26)), LABEL_BACK_COLOR, None, 1),
                 call(((10, 20), (20, 20)), None, ANY, 2),
-                call(((10, 10), (50, 18)), LABEL_BACK_COLOR, None, 1),
+                call(((10, 17), (50, 25)), LABEL_BACK_COLOR, None, 1),
             ],
             [
                 call((10, 11), "car 3", LABEL_FORE_COLOR, ANY),
@@ -241,7 +247,10 @@ def test_classification_box_cls_known(
     )
 
     with patch("PIL.ImageDraw.Draw", mock_image_draw(draw)):
-        display_draw = display_cv.CVDraw(image, [])
+        composite = types.Image.fromarray(
+            np.zeros((output_height, output_width, 3), dtype=np.uint8)
+        )
+        display_draw = display_cv.CVDraw(0, 1, composite, image, [])
         meta.draw(display_draw)
         display_draw.draw()
 

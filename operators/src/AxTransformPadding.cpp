@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <unordered_map>
 #include <unordered_set>
 #include "AxDataInterface.h"
@@ -7,6 +7,8 @@
 #include "AxOpUtils.hpp"
 
 #include <optional>
+
+#include <opencv2/core/ocl.hpp>
 
 namespace
 {
@@ -126,6 +128,8 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     const padding_properties *prop, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)
 {
+  cv::ocl::setUseOpenCL(false);
+
   auto input_tensors = std::get<AxTensorsInterface>(input);
   auto output_tensors = std::get<AxTensorsInterface>(output);
 

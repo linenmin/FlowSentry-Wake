@@ -1,4 +1,5 @@
-#include "unittest_transform_common.h"
+// Copyright Axelera AI, 2025
+#include "unittest_ax_common.h"
 
 #define CL_TARGET_OPENCL_VERSION 210
 #define CL_USE_DEPRECATED_OPENCL_1_2_APIS
@@ -43,10 +44,10 @@ TEST_P(BCColorFormatFixture, happy_path)
   std::unordered_map<std::string, std::string> input = {
     { "camera_props", "1180.74606734,1179.14890352,938.45253964,527.68112542" },
     { "distort_coefs", "-0.37793616,0.11966818,-0.00115868,-0.00067655,0" },
-    { "out_format", std::to_string(format.out_format) },
+    { "format", std::to_string(format.out_format) },
   };
 
-  Transformer barrelcorrect("libtransform_barrelcorrect_cl.so", input);
+  auto xform = Ax::LoadTransform("barrelcorrect_cl", input);
 
   // Choose buffer size and stride based on format
   int pixel_size
@@ -99,8 +100,8 @@ TEST_P(BCColorFormatFixture, happy_path)
 
   auto out = AxVideoInterface{ { 1920, 1080, 1920 * out_pixel_size, 0, out_format },
     out_buf.data(), { static_cast<size_t>(1920 * out_pixel_size) }, { 0 }, -1 };
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  EXPECT_NO_THROW({ barrelcorrect.transform(in, out, metadata, 0, 1); });
+  Ax::MetaMap metadata;
+  EXPECT_NO_THROW({ xform->transform(in, out, 0, 1, metadata); });
 }
 
 TEST(barrel_correction, invalid_camera_prams)
@@ -113,8 +114,7 @@ TEST(barrel_correction, invalid_camera_prams)
     { "distort_coefs", "-0.37793616,0.11966818,-0.00115868,-0.00067655,0" },
   };
 
-  EXPECT_THROW(Transformer perspective("libtransform_barrelcorrect_cl.so", input),
-      std::runtime_error);
+  EXPECT_THROW(Ax::LoadTransform("barrelcorrect_cl", input), std::runtime_error);
 }
 
 TEST(barrel_correction, invalid_camera_coefs)
@@ -127,8 +127,7 @@ TEST(barrel_correction, invalid_camera_coefs)
     { "distort_coefs", "-0.37793616,0.11966818,-0.00115868,-0.00067655,0,7.6" },
   };
 
-  EXPECT_THROW(Transformer perspective("libtransform_barrelcorrect_cl.so", input),
-      std::runtime_error);
+  EXPECT_THROW(Ax::LoadTransform("barrelcorrect_cl", input), std::runtime_error);
 }
 
 // Test RGB to GRAY8 output format conversion
@@ -140,11 +139,10 @@ TEST(barrel_correction, rgb_to_gray8_conversion)
   std::unordered_map<std::string, std::string> input = {
     { "camera_props", "1180.74606734,1179.14890352,938.45253964,527.68112542" },
     { "distort_coefs", "-0.37793616,0.11966818,-0.00067655,0.0,-0.00115868" },
-    { "normalized_properties", "0" }, { "out_format", "5" }, // GRAY output
+    { "normalized_properties", "0" }, { "format", "5" }, // GRAY output
   };
 
-  Transformer barrelcorrect("libtransform_barrelcorrect_cl.so", input);
-
+  auto xform = Ax::LoadTransform("barrelcorrect_cl", input);
 
   auto in_buf = std::vector<uint8_t>(1920 * 1080 * 3); // RGB input with all pixels set to white
   std::iota(in_buf.begin(), in_buf.end(), 0); // Fill with increasing values for testing
@@ -158,8 +156,8 @@ TEST(barrel_correction, rgb_to_gray8_conversion)
   auto out = AxVideoInterface{ { 1920, 1080, 1920, 0, AxVideoFormat::GRAY8 },
     out_buf.data(), { 1920 }, { 0 }, -1 };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  ASSERT_NO_THROW(barrelcorrect.transform(in, out, metadata, 0, 1));
+  Ax::MetaMap metadata;
+  ASSERT_NO_THROW(xform->transform(in, out, 0, 1, metadata));
 
   EXPECT_FALSE(std::all_of(
       out_buf.begin(), out_buf.end(), [](uint8_t value) { return value == 0; }));
@@ -173,10 +171,10 @@ TEST(barrel_correction, gray8_to_gray8_conversion)
   std::unordered_map<std::string, std::string> input = {
     { "camera_props", "1180.74606734,1179.14890352,938.45253964,527.68112542" },
     { "distort_coefs", "-0.37793616,0.11966818,-0.00067655,0.0,-0.00115868" },
-    { "normalized_properties", "0" }, { "out_format", "5" }, // GRAY output
+    { "normalized_properties", "0" }, { "format", "5" }, // GRAY output
   };
 
-  Transformer barrelcorrect("libtransform_barrelcorrect_cl.so", input);
+  auto xform = Ax::LoadTransform("barrelcorrect_cl", input);
 
   // Simple grayscale input with recognizable values
   auto in_buf = std::vector<uint8_t>(1920 * 1080); // All pixels set to 100
@@ -191,8 +189,8 @@ TEST(barrel_correction, gray8_to_gray8_conversion)
   auto out = AxVideoInterface{ { 1920, 1080, 1920, 0, AxVideoFormat::GRAY8 },
     out_buf.data(), { 1920 }, { 0 }, -1 };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  barrelcorrect.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_FALSE(std::all_of(
       out_buf.begin(), out_buf.end(), [](uint8_t value) { return value == 0; }));
@@ -207,10 +205,10 @@ TEST(barrel_correction, nv12_to_gray8_conversion)
   std::unordered_map<std::string, std::string> input = {
     { "camera_props", "1180.74606734,1179.14890352,938.45253964,527.68112542" },
     { "distort_coefs", "-0.37793616,0.11966818,-0.00067655,0.0,-0.00115868" },
-    { "normalized_properties", "0" }, { "out_format", "5" }, // GRAY output
+    { "normalized_properties", "0" }, { "format", "5" }, // GRAY output
   };
 
-  Transformer barrelcorrect("libtransform_barrelcorrect_cl.so", input);
+  auto xform = Ax::LoadTransform("barrelcorrect_cl", input);
 
   auto in_buf = std::vector<uint8_t>(1920 * 1080 * 3 / 2); // All pixels set to 100
   std::iota(in_buf.begin(), in_buf.end(), 0); // Fill with increasing values for testing
@@ -224,8 +222,8 @@ TEST(barrel_correction, nv12_to_gray8_conversion)
   auto out = AxVideoInterface{ { 1920, 1080, 1920, 0, AxVideoFormat::GRAY8 },
     out_buf.data(), { 1920 }, { 0 }, -1 };
 
-  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> metadata;
-  barrelcorrect.transform(in, out, metadata, 0, 1);
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
 
   EXPECT_FALSE(std::all_of(
       out_buf.begin(), out_buf.end(), [](uint8_t value) { return value == 0; }));

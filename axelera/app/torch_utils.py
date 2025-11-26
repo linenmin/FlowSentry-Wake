@@ -1,11 +1,10 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Utilities to avoid importing torch unless necessary.
 
 from __future__ import annotations
 
 import importlib
 from os import PathLike
-import sys
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -16,8 +15,6 @@ from typing import (
     Optional,
     Protocol,
     Sequence,
-    Tuple,
-    TypeVar,
     Union,
 )
 
@@ -44,21 +41,16 @@ try:
 except ImportError:
 
     class DataLoader(Protocol):
-        def __len__(self) -> int:
-            ...
+        def __len__(self) -> int: ...
 
-        def __iter__(self) -> Iterable[Any]:
-            ...
+        def __iter__(self) -> Iterable[Any]: ...
 
     class Dataset(Protocol):
-        def __init__(self, data: Sequence[Any]):
-            ...
+        def __init__(self, data: Sequence[Any]): ...
 
-        def __len__(self):
-            ...
+        def __len__(self): ...
 
-        def __getitem__(self, idx):
-            ...
+        def __getitem__(self, idx): ...
 
     class data:
         DataLoader = DataLoader

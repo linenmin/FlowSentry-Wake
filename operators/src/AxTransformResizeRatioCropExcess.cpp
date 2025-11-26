@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <unordered_map>
 #include <unordered_set>
 #include "AxDataInterface.h"
@@ -7,6 +7,8 @@
 #include "AxUtils.hpp"
 
 #include <PillowResize/PillowResize.hpp>
+
+#include <opencv2/core/ocl.hpp>
 
 struct resizercrope_properties {
   int resize_size = 0;
@@ -71,6 +73,8 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
     const resizercrope_properties *prop, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)
 {
+  cv::ocl::setUseOpenCL(false);
+
   if (!std::holds_alternative<AxVideoInterface>(input)
       || !std::holds_alternative<AxVideoInterface>(output)) {
     throw std::runtime_error("resizeratiocropexcess works on video only");

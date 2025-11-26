@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -219,10 +219,13 @@ def test_exec_torch_yolonas_merge_input(mock_organize_bboxes):
 @pytest.mark.parametrize(
     "input_tensor_shape, expected_error",
     [
-        ((1, 30, 16), r"Unknown number of output channels \(30, 16\)"),
+        (
+            (1, 30, 16),
+            r"Unknown number of output channels: \(30, 16\), expected \d+ for YOLOX or \d+ for YOLOv8",
+        ),
         (
             (1, 30, 5, 10),
-            r"Unknown number of output channels \(30, 5, 10\)",
+            r"Unknown number of output channels: \(30, 5, 10\), expected \d+ for YOLOX or \d+ for YOLOv8",
         ),
     ],
 )

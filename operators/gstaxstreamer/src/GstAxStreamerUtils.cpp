@@ -113,6 +113,10 @@ Ax::set_inference_property(InferenceProperties &props, int prop_id, const GValue
       props.devices = get_string(value, "devices");
       break;
 
+    case AXINFERENCE_PROP_WHICH_CL:
+      props.which_cl = get_string(value, "which_cl");
+      break;
+
     default:
       return false;
   }
@@ -163,6 +167,10 @@ Ax::get_inference_property(const InferenceProperties &props, int prop_id, GValue
       g_value_set_string(value, props.devices.c_str());
       break;
 
+    case AXINFERENCE_PROP_WHICH_CL:
+      g_value_set_string(value, props.which_cl.c_str());
+      break;
+
     default:
       return false;
   }
@@ -178,6 +186,23 @@ Ax::add_string_property(GObjectClass *object_klass, int id,
           blurb.c_str(), "", G_PARAM_READWRITE));
 }
 
+void
+Ax::add_uint_property(GObjectClass *object_klass, int id, const std::string &name,
+    const std::string &blurb, uint32_t min, uint32_t max, uint32_t def)
+{
+  g_object_class_install_property(object_klass, id,
+      g_param_spec_uint(name.c_str(), (name + " uint").c_str(), blurb.c_str(),
+          min, max, def, G_PARAM_READWRITE));
+}
+
+void
+Ax::add_boolean_property(GObjectClass *object_klass, int id,
+    const std::string &name, const std::string &blurb)
+{
+  g_object_class_install_property(object_klass, id,
+      g_param_spec_boolean(name.c_str(), (name + " boolean").c_str(),
+          blurb.c_str(), FALSE, G_PARAM_READWRITE));
+}
 
 void
 Ax::add_inference_properties(GObjectClass *object_klass,

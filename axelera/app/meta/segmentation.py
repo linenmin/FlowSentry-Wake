@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Metadata for semantic segmentation task and instance segmentation task
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import numpy as np
 from .. import logging_utils
 from ..eval_interfaces import InstSegEvalSample, InstSegGroundTruthSample
 from ..model_utils import box as box_utils
-from ..plot_utils import colormap, coolwarm, get_rgba_cmap
+from ..plot_utils import colormap, get_rgba_cmap
 from ..torch_utils import torch
 from .base import AxTaskMeta, class_as_color, draw_bounding_boxes
 from .gst_decode_utils import decode_bbox
@@ -96,7 +96,7 @@ class SemanticSegmentationMeta(AxTaskMeta):
             except ValueError as e:
                 raise ValueError(f"Failed to parse segment_probabilities: {e}")
         else:
-            raise ValueError(f"Missing segment data")
+            raise ValueError("Missing segment data")
 
 
 Wh = tuple[int, int]

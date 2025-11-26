@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import abc
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 import enum
 import logging
+import math
 import os
 import queue
 import random
@@ -15,7 +16,7 @@ import time
 import traceback
 from types import UnionType
 import typing
-from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Tuple
 import uuid
 
 import numpy as np
@@ -314,6 +315,16 @@ class _StreamMessage(_Message):
 
 
 @dataclass
+class _CloseSource(_StreamMessage):
+    reopen: bool
+
+
+@dataclass
+class _OpenSource(_StreamMessage):
+    pass
+
+
+@dataclass
 class _SetOptions(_StreamMessage):
     options: dict[str, Any]
 
@@ -322,6 +333,18 @@ class _SetOptions(_StreamMessage):
 class _Frame(_StreamMessage):
     image: types.Image
     meta: AxMeta | None
+
+
+@dataclass
+class _BlockingFrame(_Frame):
+    '''
+    For use when rendering to a Surface, with blocking_render.
+
+    Instructs the rendering thread to always render this frame (don't drop
+    it), and add it to the blocking queue in the _FrameSink.
+    '''
+
+    pass
 
 
 @dataclass
@@ -504,7 +527,7 @@ class LayerHandle:
 
     def _set_from_msg(self, message: _Layer) -> None:
         _Message = getattr(self, '_Message')
-        if _Message and _Message != type(message):
+        if _Message and _Message is not type(message):
             raise TypeError(
                 f"Cannot set LayerHandle from message with different type. "
                 f"LayerHandle type: {_Message.__name__}, message type: {type(message).__name__}"
@@ -664,6 +687,23 @@ class Options:
     title: str = ''
     '''The title of the stream window, set to '' to hide the title bar.'''
 
+    title_size: int = 20
+    '''Size of the title text in points'''
+
+    title_position: str | tuple[str, str] = '0%, 0%'
+    '''Position of title. '0%, 0%' top left. '100%, 100%' bottom right.'''
+
+    title_color: tuple[int, int, int, int] = (244, 190, 24, 255)
+    '''Text color of title, RGBA (0-255)'''
+
+    title_bgcolor: tuple[int, int, int, int] = (0, 0, 0, 192)
+    '''Background color of title, RGBA (0-255)'''
+
+    title_anchor_x: str = 'left'
+    '''Anchor pos, one of left/center/right'''
+    title_anchor_y: str = 'top'
+    '''Anchor pos, one of top/center/bottom'''
+
     grayscale: float | int | bool = 0.0
     '''Render the inferenced image in grayscale. This can be effective when viewing segmentation.
     The value is a float between 0.0 and 1.0 where 0.0 is the original image and 1.0 is completely
@@ -764,13 +804,13 @@ class Options:
 
 
 def _get_visible_and_expired_layers(
-    layers_by_id: dict[uuid.UUID, _StreamMessage], stream_ids: tuple[int]
+    layers_by_id: dict[uuid.UUID, _StreamMessage], source_ids: tuple[int]
 ) -> tuple[list[_Message], list[uuid.UUID]]:
     now = time.time()
     layers = []
     expired = []
     for k, v in layers_by_id.items():
-        if v.stream_id in stream_ids:
+        if v.stream_id in source_ids:
             if v.fadeout_from:
                 expiry_time = v.fadeout_from + (v.fadeout_for or 0)
                 if expiry_time <= now:  # Finished fading out
@@ -795,15 +835,137 @@ default_fadein_by = None
 default_fadein_for = None
 
 
-class Window:
-    '''Created by `App.create_window` to display inference results.'''
+class _FrameSink:
+    '''
+    Object for handling rendering output when application access to the image is
+    required, instead of using a builtin Window.
 
-    def __init__(self, q: Optional[queue.Queue], is_closed: threading.Event):
+    Supports three methods of accessing the rendered image:
+
+    1. _FrameSink.latest - simple variable always containing the last rendered image, or None
+    2. _FrameSink.pop_latest() - non-blocking method to return the last rendered image once. Afterwards
+                             returns None until a new image is rendered. Returns None if no images have
+                             been rendered yet.
+    3. _FrameSink.pop_latest_blocking() - blocking method to return the output of the last `_BlockingFrame` to
+                                      be sent to the renderer. Blocks until the rendering is complete.
+    '''
+
+    def __init__(self):
+        self._latest = None
+        self._one_shot_q = queue.Queue(maxsize=1)
+        self._blocking_one_shot_q = queue.Queue(maxsize=1)
+
+    def push(self, frame, block=False) -> None:
+        '''
+        Add a rendered image to the frame sink.
+
+        _FrameSink.latest will be updated to this image.
+
+        Remove any previous image if not consumed by _FrameSink.pop_latest(),
+        and return this image on the next call instead.
+
+        If block=True, also add this image to the blocking queue. The last blocking
+        image, if any, must have been consumed via _FrameSink.pop_latest_blocking() or
+        a RuntimeError will be raised.
+
+        Args:
+            frame: The image to add to the frame sink.
+            block: Whether to also add this image to the blocking queue.
+
+        Raises:
+            RuntimeError: If block=True and the previous blocking image has not been consumed.
+
+        '''
+        self._latest = frame
+        try:
+            self._one_shot_q.put_nowait(frame)
+        except queue.Full:
+            try:
+                self._one_shot_q.get_nowait()  # remove the previous frame if not consumed
+            except queue.Empty:
+                pass
+            self._one_shot_q.put_nowait(frame)
+        if block:
+            try:
+                self._blocking_one_shot_q.put_nowait(frame)
+            except queue.Full:
+                raise RuntimeError(
+                    "Improper use of blocking frame sink, previous frame not consumed"
+                )
+
+    def pop_latest(self) -> types.Image | None:
+        try:
+            return self._one_shot_q.get_nowait()
+
+        except queue.Empty:
+            return None
+
+    def pop_latest_blocking(self) -> types.Image:
+        return self._blocking_one_shot_q.get()
+
+    @property
+    def latest(self) -> types.Image | None:
+        return self._latest
+
+
+def _validate_image(should_be_image: Any) -> None:
+    if not isinstance(should_be_image, types.Image):
+        raise TypeError(f"Expected axelera.types.Image, got {should_be_image}")
+
+
+def _requires_frame_sink(func):
+    def wrapper(self, *args, **kwargs):
+        if self._frame_sink is None:
+            raise RuntimeError(
+                f"`{func.__name__}` requires `Surface` to be exposed at initialization"
+            )
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
+
+def get_primary_screen_resolution():
+    try:
+        import subprocess
+
+        output = subprocess.check_output(
+            r'xrandr | grep "\*" | cut -d" " -f4', shell=True
+        ).decode()
+        split = output.split()[0].split('x')
+        resolution = (int(split[0]), int(split[1]))
+        LOG.debug(f"Determined fullscreen primary display resolution as {resolution} via xrandr")
+        return resolution
+    except Exception:
+        LOG.warning(
+            f"Could not determine screen resolution with xrandr, using {config.DEFAULT_WINDOW_SIZE}"
+        )
+        return config.DEFAULT_WINDOW_SIZE
+
+
+class Surface:
+    '''Created by `App.create_surface` to display inference results.'''
+
+    def __init__(
+        self,
+        q: Optional[queue.Queue],
+        size: tuple[int, int],
+        frame_sink: Optional[_FrameSink] = None,
+        check_running: Optional[callable] = None,
+    ):
         self._queue = q
-        self._is_closed = is_closed
+        self._frame_sink = frame_sink
         self._warned_full = False
         self._self_proc = psutil.Process(os.getpid())
         self._last_print = time.time() - 2
+        if size == FULL_SCREEN:
+            size = get_primary_screen_resolution()
+        self.width = size[0]
+        self.height = size[1]
+
+        self.__check_running = check_running
+        self._checked_running = not self.__check_running
+
+        self.__dummy = None
 
     def options(self, stream_id: int, **options: dict[str, Any]) -> None:
         '''Set options for the given stream.
@@ -837,7 +999,7 @@ class Window:
         stream_id: int = -1,
     ) -> LayerHandle:
         '''
-        A Layer is a visual element in the window, created and controlled in the application
+        A Layer is a visual element in the surface, created and controlled in the application
         code instead of within the inference stream.
 
         It is not recommended to use this method directly, instead use the specific methods
@@ -849,13 +1011,13 @@ class Window:
 
         Args:
             Layer:        The type of layer to create. This must be supported by the renderer being used
-                          by the window. All builtin layers are supported by the CV and GL renderers.
+                          by the surface. All builtin layers are supported by the CV and GL renderers.
 
-            position:     The position of the layer in the window. This can either be a `Coords` object,
+            position:     The position of the layer in the surface. This can either be a `Coords` object,
                           or a string/tuple in a format parseable by the `Coords` constructor. See
                           `Coords` for more details. If the layer belongs to a stream, the position
-                          is relative to the stream image size. If the layer belongs to the window,
-                          the position is relative to the window size.
+                          is relative to the stream image size. If the layer belongs to the surface,
+                          the position is relative to the surface size.
 
             anchor_x:     The anchor point of the layer in the x direction. This can be one of
                           'left', 'center', 'right'. The the x coordinate of the position will be
@@ -904,8 +1066,8 @@ class Window:
                           new LayerHandle will not be created. Default is `None`.
 
             stream_id:    The id of the stream the layer belongs to. This is used to determine if
-                          the layer belongs to given stream, or to the window.
-                          If this is -1, the layer belongs to the window. Default is -1.
+                          the layer belongs to given stream, or to the surface.
+                          If this is -1, the layer belongs to the surface. Default is -1.
 
         Returns:
             LayerHandle: A handle to the layer. This can be used to update the layer later.
@@ -1033,17 +1195,96 @@ class Window:
             stream_id=stream_id,
         )
 
-    def show(self, image: types.Image, meta: AxMeta | None = None, stream_id: int = 0) -> None:
-        '''Display an image in the window.'''
-        if not isinstance(image, types.Image):
-            raise TypeError(f"Expected axelera.types.Image, got {image}")
+    def close_source(self, source_id: int, reopen: bool = False):
+        '''
+        Close (stop rendering) the given source, without closing the surface.
+
+        Args:
+            source_id:  The id of the source to close.
+            reopen: If True, the source will be automatically reopened when a new frame
+                    belonging to the source is received. If False, the source will remain
+                    closed, ignoring any new frames unless explictly reopened via `open_source`.
+                    Default False.
+
+        '''
         if self._queue is not None:
-            try:
-                self._queue.put_nowait(_Frame(stream_id, image, meta))
-            except queue.Full:
-                level = LOG.warning if not self._warned_full else LOG.debug
-                level("Display queue is full, dropping frame")
-                self._warned_full = True
+            self._queue.put(_CloseSource(source_id, reopen))
+        else:
+            LOG.warning(f"Cannot close source {source_id}, surface message queue not set.")
+
+    def open_source(self, source_id: int):
+        '''
+        Reopen a source which was closed via `close_source`.
+
+        After calling this method, the source may not reappear as soon as this method is
+        called. It will only reappear when the next frame belonging to the source is
+        received.
+
+        Args:
+            source_id:  The id of the source to reopen.
+        '''
+        if self._queue is not None:
+            self._queue.put(_OpenSource(source_id))
+        else:
+            LOG.warning(f"Cannot open source {source_id}, surface message queue not set.")
+
+    def _check_running(self):
+        if self.__check_running is not None and not self._checked_running:
+            self.__check_running()
+            self._checked_running = True
+
+    def resize(self, width: int, height: int) -> None:
+        del width, height
+        raise NotImplementedError("`resize` will be available in the future.")
+
+    @property
+    @_requires_frame_sink
+    def latest(self) -> types.Image:
+        '''
+        View the latest rendered frame, even if already popped.
+
+        Returns:
+            1. The last rendered frame
+            2. A black frame of surface size, if no frames have been pushed yet
+        Raises:
+            RuntimeError: If access to the contents of the surface was not exposed at initialization.
+        '''
+        self._check_running()
+        if self._frame_sink.latest is None:
+            # Return a black frame if no frames have been rendered yet
+            if self.__dummy is None:
+                self.__dummy = types.Image.fromarray(
+                    np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                )
+            return self.__dummy
+        return self._frame_sink.latest
+
+    @_requires_frame_sink
+    def pop(self, timeout=None) -> types.Image:
+        del timeout
+        raise NotImplementedError(
+            "`pop` will be available in the future. Use"
+            " `pop_latest` to retrieve the latest rendered frame."
+        )
+
+    @_requires_frame_sink
+    def pop_latest(self) -> types.Image | None:
+        '''
+        Returns the latest frame rendered.
+
+        Note any intermediary frames are discarded. To access all frames
+        without discarding any use pop() instead. (which may NotImplementedError)
+
+        Returns:
+            1. The latest rendered frame
+            2. None, if no frames have been pushed since the last call
+        Raises:
+            RuntimeError: If access to the contents of the surface was not exposed at initialization.
+        '''
+        self._check_running()
+        return self._frame_sink.pop_latest()
+
+    def _print_mem_usage(self):
         if LOG.isEnabledFor(logging.DEBUG) and time.time() - self._last_print > 2:
             minfo = self._self_proc.memory_info()
             system = psutil.virtual_memory().used
@@ -1054,6 +1295,82 @@ class Window:
                 f"display queue size: {qsize}"
             )
             self._last_print = time.time()
+
+    def push(self, image: types.Image, meta: AxMeta | None = None, source_id: int = 0) -> None:
+        '''
+        Send the given image and corresponding metadata and source id to the rendering queue.
+
+        The image may not be dropped and not rendered if the rendering thread cannot keep up.
+
+        Args:
+            image:     The image to render onto
+            meta:      The AxMeta metadata corresponding to the image, or None if there is no metadata.
+                       the draw methods of the metadata entries will be called by the rendering thread.
+            source_id: The id of the source the image and metadata belong to. This is used to
+                       determine which panel the image should be rendered in, and which layers
+                       belong to the source. Default is 0.
+        '''
+        self._check_running()
+        _validate_image(image)
+        if self._queue is not None:
+            try:
+                self._queue.put_nowait(_Frame(source_id, image, meta))
+                if self._warned_full:
+                    LOG.trace("Display queue is no longer full")
+                self._warned_full = False
+            except queue.Full:
+                level = LOG.warning if not self._warned_full else LOG.trace
+                level("Display queue is full, dropping frame(s)")
+                self._warned_full = True
+                return
+        self._print_mem_usage()
+
+    @_requires_frame_sink
+    def render(
+        self, image: types.Image, meta: AxMeta | None = None, source_id: int = 0
+    ) -> types.Image:
+        '''
+        Render the given frame result and return the rendered image.
+
+        Args:
+            image:     The image to render onto
+            meta:      The AxMeta metadata corresponding to the image, or None if there is no metadata.
+                       the draw methods of the metadata entries will be called by the rendering thread.
+            source_id: The id of the source the image and metadata belong to. This is used to
+                       determine which panel the image should be rendered in, and which layers
+                       belong to the source. Default is 0.
+
+        Returns:
+            The image provided, with rendering added
+
+        Raises:
+            RuntimeError: If access to the contents of the surface was not exposed at initialization.
+        '''
+        self._check_running()
+        _validate_image(image)
+        LOG.trace("Adding blocking frame to display queue")
+        self._queue.put(_BlockingFrame(source_id, image, meta))
+        self._print_mem_usage()
+        LOG.trace("Retrieving rendered frame from the _FrameSink")
+        return self._frame_sink.pop_latest_blocking()
+
+
+class Window(Surface):
+    '''Created by `App.create_window` to display inference results.'''
+
+    def __init__(
+        self,
+        q: Optional[queue.Queue],
+        size: tuple[int, int],
+        is_closed: threading.Event,
+        frame_sink: Optional[_FrameSink] = None,
+    ):
+        super().__init__(q, size, frame_sink)
+        self._is_closed = is_closed
+
+    def show(self, image: types.Image, meta: AxMeta | None = None, stream_id: int = 0) -> None:
+        '''Send a frame result to rendering queue for display in the window.'''
+        self.push(image, meta, stream_id)
 
     @property
     def is_closed(self) -> bool:
@@ -1105,14 +1422,19 @@ def _find_display_class(display: str | bool, opengl: config.HardwareEnable):
                     # if user explicilty requested opengl, we should not fallback to anything
                     raise RuntimeError(msg)
                 LOG.warning(msg)
-
-        return display_cv.CVApp if display_env else display_console.ConsoleApp
+        if display_env:
+            return display_cv.CVApp
+        if os.environ.get('LC_TERMINAL') == 'iTerm2':  # prefer iTerm2 if available
+            return display_console.iTerm2App
+        return display_console.ConsoleApp
     elif display == 'opencv':
         return display_cv.CVApp
     elif display == 'console':
         return display_console.ConsoleApp
+    elif display == 'iterm2':
+        return display_console.iTerm2App
     elif display != 'none':
-        expect = "'auto', 'opengl', 'opencv', 'console', 'none' or False"
+        expect = "'auto', 'opengl', 'opencv', 'console', 'iterm2', 'none' or False"
         raise ValueError(f"Invalid display option: {display}, expect one of {expect}")
     return NullApp
 
@@ -1126,11 +1448,12 @@ class App:
 
     For example:
 
-        with display.App(visible=args.display) as app:
+        with display.App(renderer=args.display) as app:
             app.start_thread(main, (args, stream, app), name='InferenceThread')
             app.run(interval=1 / 10)
     '''
 
+    Surface = Surface
     Window = Window
     SupportedOptions = Options
 
@@ -1140,36 +1463,83 @@ class App:
         self._create_queue = queue.Queue()
         self._is_closed = threading.Event()
         self._thr = None
+        self._run_thr = None
+        self._running_in_main = False
+        self._native_windows = False
 
     def __new__(
         cls,
-        visible: str | bool = False,
+        renderer: str | bool = False,
         opengl: config.HardwareEnable = config.HardwareEnable.detect,
         buffering=True,
+        **kwargs,
     ):
+        if visible := kwargs.pop('visible', None):
+            txt = f'"{visible}"' if isinstance(visible, str) else str(visible)
+            LOG.warning(
+                f"display.App(visible={txt}) is deprecated, " f"please use renderer={txt} instead."
+            )
+            renderer = visible
         if cls is App:
-            cls = _find_display_class(visible, opengl)
+            cls = _find_display_class(renderer, opengl)
 
         x = object.__new__(cls)
         x.__init__(buffering=buffering)
         return x
 
-    def create_window(self, title: str, size: tuple[int, int]) -> Window:
+    def create_surface(self, size) -> Surface:
+        '''Create a new Surface, with given size.
+
+        A surface is used for rendering frames without a window. Frames can be
+        retrieved from the surface instead of being displayed in a window.
+
+        See display.Surface for documentation on rendering to the surface and
+        accessing the rendered frame.
+
+        This method can be called from any thread.
+
+        Args:
+            size: The size of the surface, as a tuple of (width, height) in pixels.
+                   Use FULL_SCREEN for full screen.
+
+        Returns:
+            The created surface.
+        '''
+        # note that surfaces must be created in UI thread, so push to create Q
+        self._queues.append(q := queue.Queue(maxsize=100))
+        frame_sink = _FrameSink()
+        self._create_queue.put_nowait((q, frame_sink, '', size))
+        cls = type(self)
+        return cls.Surface(q, size, frame_sink, self._run_background)
+
+    def create_window(self, title: str, size: tuple[int, int], expose_surface=False) -> Window:
         '''Create a new Window, with given title and size.
 
         This method can be called from any thread.  The returned window may not
         be visible immediately.
 
-        size is a tuple of (width, height) in pixels.  Use FULL_SCREEN for full
-        screen.
+        Args:
+            title: The title of the window. (Not the title of the stream(s))
+            size: The size of the window, as a tuple of (width, height) in pixels.
+                   Use FULL_SCREEN for full screen.
+            expose_surface: If True, the rendered frames will be retrievable in the
+                            same way as using `create_surface`, in addition to being
+                            displayed in the window.
 
-        Note the title given is the title of the window, not the title of the stream(s).
+        Returns:
+            The created window.
         '''
         # note that windows must be created in UI thread, so push to create Q
+        if self._run_thr is not None:
+            raise RuntimeError(
+                "Cannot create native Voyager windows when display is running in background."
+            )
+        self._native_windows = True
         self._queues.append(q := queue.Queue(maxsize=100))
-        self._create_queue.put_nowait((q, title, size))
+        frame_sink = _FrameSink() if expose_surface else None
+        self._create_queue.put_nowait((q, frame_sink, title, size))
         cls = type(self)
-        return cls.Window(q, self._is_closed)
+        return cls.Window(q, size, self._is_closed, frame_sink)
 
     def start_thread(self, target, args=(), kwargs={}, name=None):
         '''Start a worker thread.
@@ -1212,16 +1582,38 @@ class App:
 
         This function will not return until the thread has completed.
         '''
+        if self._run_thr is not None:
+            raise RuntimeError("Display already running in background")
         try:
+            self._running_in_main = True
             self._run(interval)
         finally:
             self._is_closed.set()
+
+    def _run_background(self, interval=1 / 30):
+        '''Start handling UI events in a background thread.
+
+        This function will return immediately. The UI thread will stop when
+        the main thread exits, or when the thread started by `start_thread`
+        completes.
+        '''
+        if self._running_in_main or self._run_thr is not None:
+            return
+        if self._native_windows:
+            raise RuntimeError(
+                "Cannot run display in background when using native Voyager windows, use app.run() instead."
+            )
+        self._run_thr = threading.Thread(target=self._run, args=(interval,))
+        self._run_thr.start()
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
-        pass
+        if self._thr is not None:
+            self._thr.join()
+        if self._run_thr is not None:
+            self._run_thr.join()
 
     def _create_new_windows(self):
         while True:
@@ -1270,6 +1662,11 @@ class Draw(abc.ABC):
     @abc.abstractmethod
     def canvas_size(self) -> Point:
         '''Return the (width, height) of the canvas in pixels.'''
+
+    @property
+    @abc.abstractmethod
+    def image_size(self) -> Point:
+        '''Return the unscaled (width, height) of the input image in pixels.'''
 
     @abc.abstractmethod
     def polylines(
@@ -1391,6 +1788,34 @@ class Draw(abc.ABC):
             top = p1[1] - text_box_height if label_outside else p1[1]
             self.text((p1[0], top + 1), label, txt_color, label_back_color, font)
 
+    def labelled_polygon(
+        self, points: Sequence[Point], label: str, color: OptionalColor = None
+    ) -> None:
+        """Draw a labelled polygon in the best way for the renderer.
+        The default implementation is to show an unfilled polygon with the label on
+        top of the polygon if it fits, or else inside the polygon.  But the
+        implementation may choose to render it completely differently or even
+        make it an interactive UI element.
+        """
+
+        txt_color = 244, 190, 24, 255  # axelera orange
+        label_back_color = 0, 0, 0, 255
+        line_width = max(1, self.canvas_size[1] // 240)
+        font = Font(size=max(self.canvas_size[1] // 50, 12))
+        if color is not None:
+            self.polylines([points], closed=True, color=color, width=line_width)
+        if label:
+            _, text_height = self.textsize('Iy', font)
+            text_box_height = text_height + line_width + 1
+            xs, ys = zip(*points)
+            min_x, max_x = min(xs), max(xs)
+            min_y = min(ys)
+            centroid_x = int(sum(xs) / len(xs))
+            label_outside = min_y - text_box_height >= 0
+            top = min_y - text_box_height if label_outside else min_y
+            left = min(max(min_x, centroid_x - len(label) * font.size // 4), max_x)
+            self.text((left, top + 1), label, txt_color, label_back_color, font)
+
     def trajectory(self, bboxes, color):
         """Draw the trajectory of an object based on its bounding boxes.
 
@@ -1420,7 +1845,7 @@ class NullApp(App):
     def create_window(self, title, size) -> Window:
         del title  # unused
         del size  # unused
-        return Window(None, self._is_closed)
+        return Window(None, (None, None), self._is_closed)
 
     def start_thread(self, target, args=(), kwargs={}, name=None):
         del name  # unused
@@ -1631,6 +2056,28 @@ class SpeedometerMetrics:
         return (self.bottom_left[0], self.bottom_left[1] - self.diameter)
 
 
+def gen_title_message(stream_id, options):
+    if isinstance(options.title_position, str):
+        position = Coords(options.title_position)
+    else:
+        position = Coords(*options.title_position)
+    return _Text(
+        stream_id,
+        uuid.uuid4(),
+        position,
+        options.title_anchor_x,
+        options.title_anchor_y,
+        None,
+        None,
+        None,
+        None,
+        options.title,
+        options.title_color,
+        options.title_bgcolor,
+        options.title_size,
+    )
+
+
 class MetaCache:
     '''When inference skip frames is enabled, meta will be None on those frames
     that are skipped.
@@ -1668,3 +2115,129 @@ class MetaCache:
             meta_map = self._last.get(stream_id, {})
             cached = True
         return cached, meta_map
+
+
+@dataclass
+class Canvas:
+    '''A logical canvas defines the relationship between image coordinates and the window
+    coordinates. Information provided is used to scale and position the image from the
+    application as it is compressed to fit the window.
+
+    For example, the incoming frame may be 1024x768(1.33AR) pixels, but the display window may be
+    600x500.  The image is scaled to fit the window whilst maintaining aspect ratio, and so the
+    image is squashed to (600, 600/1.33=450) pixels. (With 25 pixels top and bottom). In this case
+    Canvas will be Canvas(0, 25, 600, 450, 600/1024=0.5859, ).
+    '''
+
+    left: int
+    '''Left of the canvas in the coordinate system.'''
+    bottom: int
+    '''Bottom of the canvas in the coordinate system.'''
+    width: int
+    '''Width of the canvas in coordinate pixels.'''
+    height: int
+    '''Height of the canvas in coordinate pixels.'''
+    scale: float
+    '''Conversion factor from logical (image) coordinates to window coordinate space.'''
+
+    window_width: int
+    '''Width of the window in coordinate pixels.'''
+    window_height: int
+    '''Height of the window in coordinate pixels.'''
+
+    @property
+    def size(self) -> Tuple[int, int]:
+        '''Size of the canvas in coordinate pixels.'''
+        return self.width, self.height
+
+    @property
+    def window_size(self) -> Tuple[int, int]:
+        '''Size of the owning window in coordinate pixels'''
+        return self.window_width, self.window_height
+
+
+def _get_layout(
+    stream_id: int, num_sources: int, aspect: float
+) -> tuple[float, float, float, float]:
+    layouts = {
+        3: (0.5, 0.5, [(0.0, 0.0), (0.5, 0.25), (0.0, 0.5)]),
+        5: (0.4, 0.4, [(0.0, 0.0), (0.6, 0.0), (0.3, 0.3), (0.0, 0.6), (0.6, 0.6)]),
+    }
+    try:
+        w, h, positions = layouts[num_sources]
+        return positions[stream_id] + (w, h)
+    except KeyError:
+        cols = math.ceil(math.sqrt(num_sources))
+        rows = math.ceil(num_sources / cols)
+        if aspect < 1.0:
+            cols, rows = rows, cols
+        x, y = (stream_id % cols) / cols, (stream_id // cols) / rows
+        return x, y, 1 / cols, 1 / rows
+
+
+def _fit_within_rect(image: tuple[int, int], bounding: tuple[int, int]):
+    imgr = image[0] / image[1]
+    wndr = bounding[0] / bounding[1]
+    if imgr > wndr:
+        new_width = bounding[0]
+        new_height = int(new_width / imgr)
+    else:
+        new_height = bounding[1]
+        new_width = int(new_height * imgr)
+    return new_width, new_height
+
+
+def pane_position(
+    stream_id: int, num_streams: int, image: tuple[int, int], window: tuple[int, int]
+) -> tuple[float, float, float, float]:
+    x, y, w, h = _get_layout(stream_id, num_streams, window[0] / window[1])
+    x *= window[0]
+    y *= window[1]
+    bounding_box = w * window[0], h * window[1]
+    w, h = _fit_within_rect(image, bounding_box)
+    x += (bounding_box[0] - w) / 2
+    y += (bounding_box[1] - h) / 2
+    return x, y, w, h
+
+
+def get_layers(all_layers, stream_id):
+    '''
+    Delete any layers if necessary, and return the layers to be rendered by the
+    requested window.
+
+    Layers with a stream_id of -1 will be rendered relative to the window.
+    Other layers will be rendered relative to the image in the window corresponding to
+    that stream ID.
+
+    Stream 0 will render window layers, as well as stream 0 layers.
+    '''
+    _stream_ids = (stream_id, -1) if stream_id == 0 else (stream_id,)
+    layers, expired = _get_visible_and_expired_layers(all_layers, _stream_ids)
+    for k in expired:
+        all_layers.pop(k)
+    return layers
+
+
+def canvas_scale_to_img_scale(scale, image_size, canvas_size):
+    '''
+    Get the factor by which you need to scale an image to to be the same
+    size as the (scale * canvas size)
+
+    For example, a scale of 0.1 for a (2000x1000) image on a (800x400) canvas
+    would return 0.04, resulting in a (80x40) image. Thus, the width is 0.1 of
+    the canvas width.
+
+    The scaling factor is obtained from the largest dimension of the image to
+    maintain aspect ratio.
+    '''
+    if scale is not None:
+        img_x, img_y = image_size
+        canvas_x, canvas_y = canvas_size
+        if img_x >= img_y:
+            max_img_dim = img_x
+            max_target_dim = canvas_x
+        else:
+            max_img_dim = img_y
+            max_target_dim = canvas_y
+        return scale * max_target_dim / max_img_dim
+    return 1.0

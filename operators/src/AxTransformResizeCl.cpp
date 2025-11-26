@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
@@ -7,6 +7,8 @@
 #include "AxMeta.hpp"
 #include "AxOpUtils.hpp"
 #include "AxOpenCl.hpp"
+#include "AxPlugin.hpp"
+#include "AxStreamerUtils.hpp"
 #include "AxUtils.hpp"
 
 class CLResize;
@@ -17,6 +19,8 @@ struct resize_properties {
   bool letterbox{};
   bool scale_up{ true };
   int fill{ 114 };
+  bool downstream_supports_opencl{};
+
   AxVideoFormat format{ AxVideoFormat::UNDEFINED };
 
   bool to_tensor{};
@@ -45,7 +49,7 @@ __kernel void rgba_resize_bl(__global const uchar4 *in, __global uchar4 *out, in
       if (row < out_height && col < out_width) {
         uchar4 pixel = (uchar4)(fill, fill, fill, 255);
         if (mul.x != 0.0F) {
-          char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+          char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
           pixel = convert_uchar4(pix);
         }
         out[row * strideO + col] = pixel;
@@ -58,7 +62,7 @@ __kernel void rgba_resize_bl(__global const uchar4 *in, __global uchar4 *out, in
     uchar4 pixel = rgba_sampler_bl(in, (0.5F + col - xoffset) * xscale, (0.5F + row - yoffset) * yscale, &img);
     pixel = is_bgr ? pixel.zyxw : pixel;
     if (mul.x != 0.0F) {
-      char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+      char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
       pixel = convert_uchar4(pix);
     }
     out[row * strideO + col] = pixel;
@@ -80,7 +84,7 @@ __kernel void rgb_resize_bl(__global const uchar *in, __global uchar4 *out, int 
       if (row < out_height && col < out_width) {
         uchar4 pixel = (uchar4)(fill, fill, fill, 255);
         if (mul.x != 0.0F) {
-          char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+          char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
           pixel = convert_uchar4(pix);
         }
         out[row * strideO + col] = pixel;
@@ -92,7 +96,7 @@ __kernel void rgb_resize_bl(__global const uchar *in, __global uchar4 *out, int 
     uchar4 pixel = rgb_sampler_bl(in, (0.5F + col - xoffset) * xscale, (0.5F + row - yoffset) * yscale, &img);
     pixel = is_bgr ? pixel.zyxw : pixel;
     if (mul.x != 0.0F) {
-      char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+      char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
       pixel = convert_uchar4(pix);
     }
     out[row * strideO + col] = pixel;
@@ -114,7 +118,7 @@ __kernel void nv12_resize_bl(__global const uchar *in_y, __global uchar4 *out, i
       if (row < out_height && col < out_width) {
         uchar4 pixel = (uchar4)(fill, fill, fill, 255);
         if (mul.x != 0.0F) {
-          char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+          char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
           pixel = convert_uchar4(pix);
         }
         out[row * strideO + col] = pixel;
@@ -128,7 +132,7 @@ __kernel void nv12_resize_bl(__global const uchar *in_y, __global uchar4 *out, i
     uchar4 pixel = nv12_sampler(in_y, in_uv, (0.5F + col - xoffset) * xscale, (0.5F + row - yoffset) * yscale, &img);
     pixel = is_bgr ? pixel.zyxw : pixel;
     if (mul.x != 0.0F) {
-      char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+      char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
       pixel = convert_uchar4(pix);
     }
     out[row * strideO + col] = pixel;
@@ -149,7 +153,7 @@ __kernel void i420_resize_bl(__global const uchar *in_y, __global uchar4 *out, i
       if (row < out_height && col < out_width) {
         uchar4 pixel = (uchar4)(fill, fill, fill, 255);
         if (mul.x != 0.0F) {
-          char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+          char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
           pixel = convert_uchar4(pix);
         }
         out[row * strideO + col] = pixel;
@@ -164,7 +168,7 @@ __kernel void i420_resize_bl(__global const uchar *in_y, __global uchar4 *out, i
     uchar4 pixel = i420_sampler(in_y, in_u, in_v, (0.5F + col - xoffset) * xscale, (0.5F + row - yoffset) * yscale, &img);
     pixel = is_bgr ? pixel.zyxw : pixel;
     if (mul.x != 0.0F) {
-      char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+      char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
       pixel = convert_uchar4(pix);
     }
     out[row * strideO + col] = pixel;
@@ -186,7 +190,7 @@ __kernel void yuyv_resize_bl(__global const uchar4 *in_y, __global uchar4 *out, 
       if (row < out_height && col < out_width) {
         uchar4 pixel = (uchar4)(fill, fill, fill, 255);
         if (mul.x != 0.0F) {
-          char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+          char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
           pixel = convert_uchar4(pix);
         }
         out[row * strideO + col] = pixel;
@@ -198,7 +202,7 @@ __kernel void yuyv_resize_bl(__global const uchar4 *in_y, __global uchar4 *out, 
     uchar4 pixel = yuyv_sampler(in_y, (0.5F + col - xoffset) * xscale, (0.5F + row - yoffset) * yscale, &img);
     pixel = is_bgr ? pixel.zyxw : pixel;
     if (mul.x != 0.0F) {
-      char4 pix = convert_char4_sat_rte(mad(convert_float4(pixel), mul, add));
+      char4 pix = convert_char4_sat(mad(convert_float4(pixel), mul, add));
       pixel = convert_uchar4(pix);
     }
     out[row * strideO + col] = pixel;
@@ -219,7 +223,7 @@ __kernel void gray8_resize_bl(__global const uchar *in, __global uchar *out, int
       if (row < out_height && col < out_width) {
         uchar pixel = fill;
         if (mul != 0.0F) {
-          char pix = convert_char_sat_rte(mad(convert_float(pixel), mul, add));
+          char pix = convert_char_sat(mad(convert_float(pixel), mul, add));
           pixel = convert_uchar(pix);
         }
         out[row * strideO + col] = pixel;
@@ -232,7 +236,7 @@ __kernel void gray8_resize_bl(__global const uchar *in, __global uchar *out, int
     float src_y = ((row - yoffset) + 0.5F) * yscale;
     uchar pixel = gray8_sampler_bl(in, src_x, src_y, &img);
     if (mul != 0.0F) {
-      char pix = convert_char_sat_rte(mad(convert_float(pixel), mul, add));
+      char pix = convert_char_sat(mad(convert_float(pixel), mul, add));
       pixel = convert_uchar(pix);
     }
     out[row * strideO + col] = pixel;
@@ -242,6 +246,7 @@ __kernel void gray8_resize_bl(__global const uchar *in, __global uchar *out, int
 
 using ax_utils::buffer_details;
 using ax_utils::CLProgram;
+using ax_utils::opencl_details;
 
 AxVideoFormat
 add_alpha(AxVideoFormat format)
@@ -260,8 +265,8 @@ class CLResize
   using kernel = CLProgram::ax_kernel;
 
   public:
-  CLResize(std::string source, Ax::Logger &logger)
-      : program(ax_utils::get_kernel_utils() + source, logger),
+  CLResize(std::string source, opencl_details *display, Ax::Logger &logger)
+      : program(ax_utils::get_kernel_utils() + source, display, logger),
         rgba_resize{ program.get_kernel("rgba_resize_bl") }, //
         rgb_resize{ program.get_kernel("rgb_resize_bl") }, //
         nv12_resize{ program.get_kernel("nv12_resize_bl") },
@@ -272,31 +277,43 @@ class CLResize
   {
   }
 
-  CLProgram::flush_details run_kernel(
-      const kernel &kernel, const buffer_details &out, const buffer &outbuf)
+  ax_utils::CLProgram::flush_details run_kernel(const kernel &kernel,
+      const buffer_details &out, const buffer &outbuf, bool start_flush)
   {
     size_t global_work_size[3] = { 1, 1, 1 };
     global_work_size[0] = out.width;
     global_work_size[1] = out.height;
     error = program.execute_kernel(kernel, 2, global_work_size);
     if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Unable to execute kernel. Error code: " + std::to_string(error));
+      throw std::runtime_error("Unable to execute kernel. Error code: "
+                               + ax_utils::cl_error_to_string(error));
     }
-    return program.flush_output_buffer_async(outbuf, ax_utils::determine_buffer_size(out));
+    if (start_flush) {
+      //  Here the downstream does not support OpenCL buffers, so start the
+      //  mapping now.
+      return program.start_flush_output_buffer(outbuf, out.stride * out.height);
+    }
+    return {};
   }
 
-  std::function<void()> run_kernel(
-      kernel &k, const buffer_details &out, buffer &inbuf, buffer &outbuf)
+  int run_kernel(kernel &k, const buffer_details &out, buffer &inbuf,
+      buffer &outbuf, bool start_flush)
   {
-    auto [error, event, mapped] = run_kernel(k, out, outbuf);
-    if (error != CL_SUCCESS) {
-      throw std::runtime_error(
-          "Unable to map output buffer, error = " + std::to_string(error));
+    auto details = run_kernel(k, out, outbuf, start_flush);
+    if (details.event) {
+      // The downstream does not support OpenCL buffers so the buffer has begun
+      //  mapping to system memory. The event will be signalled when complete.
+      //  Store this away so that when the buffer is mapped we just wait on the
+      //  event.
+      if (auto *p = std::get_if<opencl_buffer *>(&out.data)) {
+        (*p)->event = details.event;
+        (*p)->mapped = details.mapped;
+      } else {
+        clWaitForEvents(1, &details.event);
+        clReleaseEvent(details.event);
+      }
     }
-    return [this, event, mapped, inbuf, outbuf]() {
-      program.unmap_buffer(event, outbuf, mapped);
-    };
+    return 0;
   }
 
   ax_utils::CLProgram::ax_buffer create_buffer(const buffer_details &info, cl_mem_flags flags)
@@ -314,9 +331,9 @@ class CLResize
     return mem;
   }
 
-  std::function<void()> run(const buffer_details &in, const buffer_details &out,
-      const resize_properties &prop)
+  int run(const buffer_details &in, const buffer_details &out, const resize_properties &prop)
   {
+    bool start_flush = prop.downstream_supports_opencl == 0;
     cl_float xscale = (float) in.width / out.width;
     cl_float yscale = (float) in.height / out.height;
     cl_int scaled_width = out.width;
@@ -358,7 +375,7 @@ class CLResize
       program.set_kernel_args(kernel, 0, *inbuf, *outbuf, in.width, in.height,
           in.crop_x, in.crop_y, out.width, out.height, in.stride, out.stride, xscale,
           yscale, scaled_width, scaled_height, fill, is_bgr, prop.mul, prop.add);
-      return run_kernel(kernel, out, inbuf, outbuf);
+      return run_kernel(kernel, out, inbuf, outbuf, start_flush);
 
     } else if (in.format == AxVideoFormat::NV12) {
       auto inbuf_y = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
@@ -370,7 +387,7 @@ class CLResize
           in.width, in.height, in.crop_x, in.crop_y, out.width, out.height,
           in.stride, uv_stride, out.stride, xscale, yscale, scaled_width,
           scaled_height, fill, is_bgr, prop.mul, prop.add);
-      return run_kernel(nv12_resize, out, inbuf_y, outbuf);
+      return run_kernel(nv12_resize, out, inbuf_y, outbuf, start_flush);
 
     } else if (in.format == AxVideoFormat::I420) {
       auto inbuf_y = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
@@ -385,7 +402,7 @@ class CLResize
           out.height, in.stride, u_stride, v_stride, out.stride, xscale, yscale,
           scaled_width, scaled_height, fill, is_bgr, prop.mul, prop.add);
 
-      return run_kernel(i420_resize, out, inbuf_y, outbuf);
+      return run_kernel(i420_resize, out, inbuf_y, outbuf, start_flush);
 
     } else if (in.format == AxVideoFormat::YUY2) {
       auto inbuf_y = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
@@ -395,14 +412,14 @@ class CLResize
           in.crop_x, in.crop_y, out.width, out.height, in.stride, out.stride, xscale,
           yscale, scaled_width, scaled_height, fill, is_bgr, prop.mul, prop.add);
 
-      return run_kernel(yuyv_resize, out, inbuf_y, outbuf);
+      return run_kernel(yuyv_resize, out, inbuf_y, outbuf, start_flush);
 
     } else if (in.format == AxVideoFormat::GRAY8) {
       auto inbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
       program.set_kernel_args(gray8_resize, 0, *inbuf, *outbuf, in.width, in.height,
           in.crop_x, in.crop_y, out.width, out.height, in.stride, out.stride, xscale,
           yscale, scaled_width, scaled_height, fill, prop.mul[0], prop.add[0]);
-      return run_kernel(gray8_resize, out, inbuf, outbuf);
+      return run_kernel(gray8_resize, out, inbuf, outbuf, start_flush);
     } else {
       throw std::runtime_error("Unsupported input format in resize_cl2: "
                                + AxVideoFormatToString(in.format));
@@ -449,11 +466,13 @@ allowed_properties()
 }
 
 extern "C" std::shared_ptr<void>
-init_and_set_static_properties(
-    const std::unordered_map<std::string, std::string> &input, Ax::Logger &logger)
+init_and_set_static_properties_with_context(
+    const std::unordered_map<std::string, std::string> &input,
+    AxAllocationContext *context, Ax::Logger &logger)
 {
   auto prop = std::make_shared<resize_properties>();
-  prop->resize = std::make_unique<CLResize>(kernel_cl, logger);
+  prop->resize = std::make_unique<CLResize>(
+      kernel_cl, static_cast<ax_utils::opencl_details *>(context), logger);
   prop->size = Ax::get_property(input, "size", "resize_cl_static_properties", prop->size);
   prop->width = Ax::get_property(input, "width", "resize_cl_static_properties", prop->width);
   prop->height
@@ -515,9 +534,11 @@ init_and_set_static_properties(
     prop->add = { 0.0F, 0.0F, 0.0F, 0.0F };
   } else {
     const auto max_size = 4;
-    auto size = std::max(max_size, static_cast<int>(mean.size()));
-    prop->add.resize(size, 0.0F);
-    prop->mul.resize(size, 1.0F);
+    const auto resize_size = std::min(max_size, static_cast<int>(mean.size()));
+    mean.resize(resize_size, 0.0F);
+    std.resize(resize_size, 1.0F);
+    prop->add.resize(max_size, 0.0F);
+    prop->mul.resize(max_size, 1.0F);
     for (int i = 0; i < mean.size(); ++i) {
       prop->mul[i] = 1.0 / (255.0 * prop->quant_scale * std[i]);
       prop->add[i] = 255 * prop->quant_zeropoint * std[i] * prop->quant_scale
@@ -529,9 +550,11 @@ init_and_set_static_properties(
 }
 
 extern "C" void
-set_dynamic_properties(const std::unordered_map<std::string, std::string> & /*input*/,
-    resize_properties * /*prop*/, Ax::Logger & /*logger*/)
+set_dynamic_properties(const std::unordered_map<std::string, std::string> &input,
+    resize_properties *prop, Ax::Logger & /*logger*/)
 {
+  prop->downstream_supports_opencl = Ax::get_property(input, "downstream_supports_opencl",
+      "resize_cl_static_properties", prop->downstream_supports_opencl);
 }
 
 std::pair<int, int>
@@ -562,8 +585,6 @@ set_output_interface(const AxDataInterface &interface,
     out_info.info.format = prop->format == AxVideoFormat::UNDEFINED ?
                                add_alpha(in_info.info.format) :
                                prop->format;
-    out_info.info.stride
-        = out_info.info.width * ax_utils::get_bytes_per_pixel(out_info.info.format);
     output = out_info;
   }
   if (prop->to_tensor) {
@@ -600,8 +621,8 @@ can_passthrough(const AxDataInterface &input, const AxDataInterface &output,
           && prop->mul[0] == 0.0F);
 }
 
-extern "C" std::function<void()>
-transform_async(const AxDataInterface &input, const AxDataInterface &output,
+extern "C" void
+transform(const AxDataInterface &input, const AxDataInterface &output,
     const resize_properties *prop, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)
 {
@@ -642,21 +663,18 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
     throw std::runtime_error("Resize does not work with the output format: "
                              + AxVideoFormatToString(output_details[0].format));
   }
-  return prop->resize->run(input_details[0], output_details[0], *prop);
+  prop->resize->run(input_details[0], output_details[0], *prop);
+  return;
 }
 
-extern "C" void
-transform(const AxDataInterface &input, const AxDataInterface &output,
-    const resize_properties *prop, unsigned int, unsigned int,
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta, Ax::Logger &logger)
+extern "C" bool
+query_supports(Ax::PluginFeature feature, const void *resize_properties, Ax::Logger &logger)
 {
-  logger(AX_WARN) << "Running in synchronous mode, possible performance degradation"
-                  << std::endl;
-  auto completer = transform_async(input, output, prop, 0, 0, meta, logger);
-  completer();
-}
-extern "C" int
-handles_crop_meta()
-{
-  return 1;
+  if (feature == Ax::PluginFeature::opencl_buffers) {
+    return true;
+  }
+  if (feature == Ax::PluginFeature::crop_meta) {
+    return true;
+  }
+  return Ax::PluginFeatureDefaults(feature);
 }

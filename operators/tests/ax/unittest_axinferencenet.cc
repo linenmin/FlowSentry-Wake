@@ -297,8 +297,6 @@ TEST(axinferencenet, batched_buffer_pool)
   auto batched = pool.new_batched_buffer();
   const auto &managed = batched->get_batched();
   EXPECT_EQ("tensors/5,400,300,3[1 byte]", Ax::to_string(managed.data()));
-  check_dmabuf_mapped_consistency(managed);
-  batched->get_batched(true);
   check_dmabuf_unmapped_consistency(managed);
   batched->map();
   check_dmabuf_mapped_consistency(managed);

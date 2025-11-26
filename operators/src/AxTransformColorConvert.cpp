@@ -8,70 +8,7 @@
 #include "AxStreamerUtils.hpp"
 #include "AxUtils.hpp"
 
-struct ColorConversionCodesTableEntry {
-  AxVideoFormat in_fmt;
-  AxVideoFormat out_fmt;
-  cv::ColorConversionCodes code;
-};
-
-static cv::ColorConversionCodes
-format2format(AxVideoFormat in_format, AxVideoFormat out_format)
-{
-  static constexpr std::array<ColorConversionCodesTableEntry, 36> lut = { {
-      { AxVideoFormat::RGB, AxVideoFormat::RGBA, cv::COLOR_RGB2RGBA },
-      { AxVideoFormat::RGB, AxVideoFormat::BGRA, cv::COLOR_RGB2BGRA },
-      { AxVideoFormat::RGB, AxVideoFormat::BGR, cv::COLOR_RGB2BGR },
-      { AxVideoFormat::RGB, AxVideoFormat::GRAY8, cv::COLOR_RGB2GRAY },
-
-      { AxVideoFormat::BGR, AxVideoFormat::RGBA, cv::COLOR_BGR2RGBA },
-      { AxVideoFormat::BGR, AxVideoFormat::BGRA, cv::COLOR_BGR2BGRA },
-      { AxVideoFormat::BGR, AxVideoFormat::RGB, cv::COLOR_BGR2RGB },
-      { AxVideoFormat::BGR, AxVideoFormat::GRAY8, cv::COLOR_BGR2GRAY },
-
-      { AxVideoFormat::RGBA, AxVideoFormat::RGB, cv::COLOR_RGBA2RGB },
-      { AxVideoFormat::RGBA, AxVideoFormat::BGR, cv::COLOR_RGBA2BGR },
-      { AxVideoFormat::RGBA, AxVideoFormat::BGRA, cv::COLOR_RGBA2BGRA },
-      { AxVideoFormat::RGBA, AxVideoFormat::GRAY8, cv::COLOR_RGBA2GRAY },
-
-      { AxVideoFormat::BGRA, AxVideoFormat::RGB, cv::COLOR_BGRA2RGB },
-      { AxVideoFormat::BGRA, AxVideoFormat::BGR, cv::COLOR_BGRA2BGR },
-      { AxVideoFormat::BGRA, AxVideoFormat::RGBA, cv::COLOR_BGRA2RGBA },
-      { AxVideoFormat::BGRA, AxVideoFormat::GRAY8, cv::COLOR_BGRA2GRAY },
-
-      { AxVideoFormat::GRAY8, AxVideoFormat::RGB, cv::COLOR_GRAY2RGB },
-      { AxVideoFormat::GRAY8, AxVideoFormat::BGR, cv::COLOR_GRAY2BGR },
-      { AxVideoFormat::GRAY8, AxVideoFormat::RGBA, cv::COLOR_GRAY2RGBA },
-      { AxVideoFormat::GRAY8, AxVideoFormat::BGRA, cv::COLOR_GRAY2BGRA },
-
-      { AxVideoFormat::YUY2, AxVideoFormat::RGB, cv::COLOR_YUV2RGB_YUY2 },
-      { AxVideoFormat::YUY2, AxVideoFormat::BGR, cv::COLOR_YUV2BGR_YUY2 },
-      { AxVideoFormat::YUY2, AxVideoFormat::RGBA, cv::COLOR_YUV2RGBA_YUY2 },
-      { AxVideoFormat::YUY2, AxVideoFormat::BGRA, cv::COLOR_YUV2BGRA_YUY2 },
-      { AxVideoFormat::YUY2, AxVideoFormat::GRAY8, cv::COLOR_YUV2GRAY_YUY2 },
-
-      { AxVideoFormat::NV12, AxVideoFormat::RGB, cv::COLOR_YUV2RGB_NV12 },
-      { AxVideoFormat::NV12, AxVideoFormat::BGR, cv::COLOR_YUV2BGR_NV12 },
-      { AxVideoFormat::NV12, AxVideoFormat::RGBA, cv::COLOR_YUV2RGBA_NV12 },
-      { AxVideoFormat::NV12, AxVideoFormat::BGRA, cv::COLOR_YUV2BGRA_NV12 },
-      { AxVideoFormat::NV12, AxVideoFormat::GRAY8, cv::COLOR_YUV2GRAY_NV12 },
-
-      { AxVideoFormat::I420, AxVideoFormat::RGB, cv::COLOR_YUV2RGB_I420 },
-      { AxVideoFormat::I420, AxVideoFormat::BGR, cv::COLOR_YUV2BGR_I420 },
-      { AxVideoFormat::I420, AxVideoFormat::RGBA, cv::COLOR_YUV2RGBA_I420 },
-      { AxVideoFormat::I420, AxVideoFormat::BGRA, cv::COLOR_YUV2BGRA_I420 },
-      { AxVideoFormat::I420, AxVideoFormat::GRAY8, cv::COLOR_YUV2GRAY_I420 },
-  } };
-  auto it = std::find_if(
-      lut.begin(), lut.end(), [&](const ColorConversionCodesTableEntry &e) {
-        return e.in_fmt == in_format && e.out_fmt == out_format;
-      });
-  if (it != lut.end()) {
-    return it->code;
-  }
-  throw std::runtime_error("OpenCV color conversion not supported for "
-                           + AxVideoFormatToString(in_format) + " to "
-                           + AxVideoFormatToString(out_format));
-}
+#include <opencv2/core/ocl.hpp>
 
 struct cc_ocv_properties {
   AxVideoFormat format{ AxVideoFormat::UNDEFINED };
@@ -157,6 +94,74 @@ can_passthrough(const AxDataInterface &input, const AxDataInterface &output,
   return (input_details[0].format == output_details[0].format);
 }
 
+cv::Mat
+make_contiguous_if_needed(const AxVideoInterface &in_video, Ax::Logger &logger)
+{
+  if (in_video.info.format == AxVideoFormat::NV12) {
+    if (in_video.offsets.size() != 2 || in_video.strides.size() != 2) {
+      throw std::runtime_error("NV12 input has unrecognised number of offsets or strides (not 2)");
+    }
+    if (in_video.offsets[1] != in_video.strides[0] * in_video.info.height) {
+      //  Here we need to make the image contiguous
+      std::vector<cv::Mat> planes{
+        { cv::Size(in_video.info.width, in_video.info.height), CV_8UC1,
+            (uint8_t *) in_video.data + in_video.offsets[0], in_video.strides[0] },
+        { cv::Size(in_video.info.width, in_video.info.height / 2), CV_8UC1,
+            (uint8_t *) in_video.data + in_video.offsets[1], in_video.strides[1] },
+      };
+      cv::Mat contiguous;
+      logger(AX_WARN) << "Performance issue: Concatenating non contiguous NV12 planes"
+                      << std::endl;
+      cv::vconcat(planes, contiguous);
+      return contiguous;
+    } else {
+      return cv::Mat(cv::Size(in_video.info.width, in_video.info.height * 3 / 2),
+          CV_8UC1, in_video.data, in_video.strides[0]);
+    }
+  } else if (in_video.info.format == AxVideoFormat::I420) {
+    if (in_video.offsets.size() != 3 || in_video.strides.size() != 3) {
+      throw std::runtime_error("I420 input has unrecognised number of offsets or strides (not 3)");
+    }
+    if (in_video.strides[0] != in_video.info.stride
+        || in_video.strides[1] != in_video.strides[0] / 2
+        || in_video.strides[2] != in_video.strides[0] / 2) {
+      throw std::runtime_error(
+          "OpenCV color conversion does not support non-standard I420 strides");
+    }
+    if (in_video.offsets[1] != in_video.strides[0] * in_video.info.height
+        || in_video.offsets[2] != in_video.strides[0] * in_video.info.height * 5 / 4) {
+      //  Here we need to make the image contiguous
+      std::vector<cv::Mat> planes{
+        { cv::Size(in_video.info.width, in_video.info.height), CV_8UC1,
+            (uint8_t *) in_video.data + in_video.offsets[0], in_video.strides[0] },
+        { cv::Size(in_video.info.width / 2, in_video.info.height / 2), CV_8UC1,
+            (uint8_t *) in_video.data + in_video.offsets[1], in_video.strides[1] },
+        { cv::Size(in_video.info.width / 2, in_video.info.height / 2), CV_8UC1,
+            (uint8_t *) in_video.data + in_video.offsets[2], in_video.strides[2] },
+      };
+      cv::Mat contiguous;
+      logger(AX_WARN) << "Performance issue: Concatenating non contiguous I420 planes"
+                      << std::endl;
+      cv::vconcat(planes, contiguous);
+      return contiguous;
+    } else {
+      return cv::Mat(cv::Size(in_video.info.width, in_video.info.height * 3 / 2),
+          CV_8UC1, in_video.data, in_video.strides[0]);
+    }
+  } else {
+    if (in_video.strides.size() != 1) {
+      throw std::runtime_error("OpenCV color conversion does not support multiple strides");
+    }
+    if (in_video.strides[0] != in_video.info.stride) {
+      throw std::runtime_error(
+          "OpenCV color conversion does not support inconsistent input stride");
+    }
+  }
+  int input_opencv_type = CV_MAKETYPE(CV_8U, 1);
+  return cv::Mat(cv::Size(in_video.info.width, in_video.info.height),
+      input_opencv_type, in_video.data, in_video.strides[0]);
+}
+
 extern "C" void
 transform(const AxDataInterface &input, const AxDataInterface &output,
     const cc_ocv_properties *prop, unsigned int, unsigned int,
@@ -168,8 +173,16 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
   if (in_video.info.cropped) {
     throw std::runtime_error("OpenCV color conversion does not support cropped input");
   }
-  if (in_video.info.format != AxVideoFormat::I420
-      && in_video.info.format != AxVideoFormat::NV12) {
+  if (in_video.info.format == AxVideoFormat::NV12) {
+    if (in_video.offsets.size() != 2 || in_video.strides.size() != 2) {
+      throw std::runtime_error("NV12 input has unrecognised number of offsets or strides (not 2)");
+    }
+
+  } else if (in_video.info.format == AxVideoFormat::I420) {
+    if (in_video.offsets.size() != 3 || in_video.strides.size() != 3) {
+      throw std::runtime_error("I420 input has unrecognised number of offsets or strides (not 3)");
+    }
+  } else {
     if (in_video.strides.size() != 1) {
       throw std::runtime_error("OpenCV color conversion does not support multiple strides");
     }
@@ -185,26 +198,37 @@ transform(const AxDataInterface &input, const AxDataInterface &output,
       }
     }
   }
-
+  cv::ocl::setUseOpenCL(false);
   AxVideoFormat in_format = in_video.info.format;
   int input_opencv_type = Ax::opencv_type_u8(in_video.info.format);
   int height = in_video.info.height;
   int stride = in_video.info.stride;
+  cv::Mat input_mat;
   if (in_video.info.format == AxVideoFormat::YUY2) {
     input_opencv_type = CV_MAKETYPE(CV_8U, 2);
-    stride = 0;
+    input_mat = cv::Mat(cv::Size(in_video.info.width, height),
+        input_opencv_type, in_video.data, stride);
   } else if (in_video.info.format == AxVideoFormat::NV12
              || in_video.info.format == AxVideoFormat::I420) {
-    input_opencv_type = CV_MAKETYPE(CV_8U, 1);
-    height = height * 3 / 2;
-    stride = 0;
+
+    input_mat = make_contiguous_if_needed(in_video, logger);
+  } else {
+    input_mat = cv::Mat(cv::Size(in_video.info.width, height),
+        input_opencv_type, in_video.data, stride);
   }
-  cv::Mat input_mat(cv::Size(in_video.info.width, height), input_opencv_type,
-      in_video.data, stride);
 
   AxVideoFormat out_format = out_video.info.format;
   cv::Mat output_mat(cv::Size(out_video.info.width, out_video.info.height),
       Ax::opencv_type_u8(out_format), out_video.data, out_video.info.stride);
 
-  cv::cvtColor(input_mat, output_mat, format2format(in_format, out_format));
+  cv::cvtColor(input_mat, output_mat, Ax::Internal::format2format(in_format, out_format));
+}
+
+extern "C" bool
+query_supports(Ax::PluginFeature feature, const void *resize_properties, Ax::Logger &logger)
+{
+  if (feature == Ax::PluginFeature::video_meta) {
+    return false;
+  }
+  return Ax::PluginFeatureDefaults(feature);
 }

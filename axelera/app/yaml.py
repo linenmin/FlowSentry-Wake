@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2023
+# Copyright Axelera AI, 2025
 # Define types for use in dictionaires of YAML which contain line numbers
 
 import yaml
@@ -47,7 +47,7 @@ class MapYAMLtoFunction:
         if not isinstance(args, list):
             args = [args]
         for arg in args:
-            if not arg in self.yaml_named_args:
+            if arg not in self.yaml_named_args:
                 raise RuntimeError(f"Attribute '{arg}' is not a named argument")
             arg_list.append(self.get_arg(arg))
         return arg_list
@@ -65,10 +65,10 @@ class MapYAMLtoFunction:
         # Return a dictionary of initialized kwargs
         args = {}
         for k, v in self.yaml_attribs.items():
-            if k in self.param_supported and not k in self.yaml_named_args:
+            if k in self.param_supported and k not in self.yaml_named_args:
                 args[k] = v
         for item in self.param_required:
-            if not item in self.yaml_named_args and not item in self.yaml_attribs:
+            if item not in self.yaml_named_args and item not in self.yaml_attribs:
                 raise AxYAMLError(f"Missing attribute '{item}'", self.yaml_attribs)
         return args
 
@@ -231,7 +231,7 @@ def require_attribute(d, options, allow_none=False):
         raise AxYAMLError(f"Missing attribute '{name}'", d)
     value = d[name]
     if value is None and not allow_none:
-        raise AxYAMLError(f"Attribute is unexpectedly None", key(d, name))
+        raise AxYAMLError("Attribute is unexpectedly None", key(d, name))
     return value
 
 

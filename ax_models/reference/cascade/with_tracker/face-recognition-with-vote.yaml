@@ -67,11 +67,11 @@ pipeline:
           where: tracking
           which: AREA # AREA, SCORE, CENTER
           top_k: 3
-          # image_processing_on_roi:
-          # - facealign:
-          #     keypoints_submeta_key: tracking
-          #     width: 192
-          #     height: 192
+          image_processing_on_roi:
+          - facealign:
+              keypoints_submeta_key: tracking
+              width: 192
+              height: 192
       preprocess:
         - resize:
             width: 192

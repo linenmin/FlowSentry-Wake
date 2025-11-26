@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 import re
 from unittest.mock import Mock, patch
 
@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import pytest
 
+from axelera import types
 from axelera.app import display_cv, plot_utils
 from axelera.app.meta import ClassificationMeta, InstanceSegmentationMeta
 from axelera.app.meta.segmentation import _translate_image_space_rect
@@ -41,7 +42,8 @@ def test_draw_no_masks():
 
     with patch("axelera.app.meta.segmentation.LOG.warning") as mock_warning:
         with patch("axelera.app.display_cv.CVDraw", return_value=draw):
-            display_draw = display_cv.CVDraw(image, [])
+            composite = types.Image.fromarray(np.zeros((1080, 1920, 3), dtype=np.uint8))
+            display_draw = display_cv.CVDraw(0, 1, composite, image, [])
             meta.draw(display_draw)
             display_draw.draw()
 

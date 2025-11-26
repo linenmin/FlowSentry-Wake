@@ -1,11 +1,11 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 
 import contextlib
 import itertools
 import logging
 import os
 from pathlib import Path
-from unittest.mock import ANY, Mock, call, patch
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -28,18 +28,20 @@ low_res = [(640, 480), (1280, 720)]
 
 
 def _gen_input_gst(pipein):
-    gst = gst_builder.Builder(None, None, 4)
+    gst = gst_builder.Builder(None, None, 4, 'auto')
     pipein.build_input_gst(gst, '0')
     return list(gst)
 
 
-def _streamid(idx: int = 0):
+def _streamid(idx: int = 0, fps_limit='', decodebin_required: bool = False):
+    fps = f';fps_limit:{fps_limit}' if fps_limit else ''
+    name = {'name': f'decodebin-link{idx}'} if decodebin_required else {}
     return {
-        'name': f'decodebin-link{idx}',
+        **name,
         'instance': 'axinplace',
         'lib': 'libinplace_addstreamid.so',
         'mode': 'meta',
-        'options': f'stream_id:{idx}',
+        'options': f'stream_id:{idx}{fps}',
     }
 
 
@@ -260,6 +262,14 @@ def test_input_video_fail_to_get_caps():
                 io.SinglePipeInput('torch', config.Source('/file/video.mp4'))
 
 
+def test_input_video_fail_to_get_caps_gst():
+    with mock_pathlib(is_file=True, resolve='/file'):
+        with patch.object(os, 'access', return_value=True):
+            with patch.object(cv2, 'VideoCapture', new=MockCapture(fail_caps=True)):
+                with pytest.raises(RuntimeError, match='Failed to get video capabilities'):
+                    io.SinglePipeInput('gst', config.Source('/file/video.mp4'))
+
+
 @pytest.mark.parametrize(
     'allow_hardware_codec, expected',
     [
@@ -268,7 +278,7 @@ def test_input_video_fail_to_get_caps():
     ],
 )
 def test_gen_decodebin(allow_hardware_codec, expected):
-    gst = gst_builder.Builder(None, None, 4)
+    gst = gst_builder.Builder(None, None, 4, 'auto')
     pipe.io.build_decodebin(gst, allow_hardware_codec, '')
     assert list(gst) == [
         {
@@ -279,7 +289,7 @@ def test_gen_decodebin(allow_hardware_codec, expected):
             'connections': {'src_%u': 'decodebin-link0.sink'},
         },
     ]
-    gst = gst_builder.Builder(None, None, 4)
+    gst = gst_builder.Builder(None, None, 4, 'auto')
     pipe.io.build_decodebin(gst, allow_hardware_codec, '0')
     assert list(gst) == [
         {
@@ -341,7 +351,7 @@ def test_input_gst_usb(source, device, expected_caps, hardware_caps):
                 },
             ]
         )
-    gst_repr.append(_streamid())
+    gst_repr.append(_streamid(decodebin_required='jpeg' in expected_caps))
     with patch.object(os, 'access', return_value=1):
         assert _gen_input_gst(pipein) == gst_repr
 
@@ -386,14 +396,21 @@ def test_input_gst_rtsp(source, location, username, password):
             'expose-all-streams': False,
             'connections': {'src_%u': 'decodebin-link0.sink'},
         },
-        _streamid(),
+        _streamid(decodebin_required=True),
     ]
 
 
-def test_input_gst_video():
+@pytest.mark.parametrize(
+    'source,fps_limit',
+    [('path/to/video.mp4', ''), ('path/to/video.mp4@15', '15'), ('path/to/video.mp4@auto', '30')],
+)
+def test_input_gst_video(source, fps_limit):
     with patch.object(os, 'access', return_value=True) as maccess:
         with mock_pathlib(is_dir=False, is_file=True):
-            pipein = io.SinglePipeInput('gst', config.Source('path/to/video.mp4'))
+            with patch.object(cv2, 'VideoCapture', new=MockCapture()):
+                pipein = io.SinglePipeInput('gst', config.Source(source))
+    assert 30 == pipein.sources[0].fps
+    assert 100 == pipein.number_of_frames
     maccess.assert_called_once_with('path/to/video.mp4', os.F_OK | os.R_OK | os.W_OK)
     assert _gen_input_gst(pipein) == [
         {'instance': 'filesrc', 'location': 'path/to/video.mp4'},
@@ -404,7 +421,7 @@ def test_input_gst_video():
             'expose-all-streams': False,
             'connections': {'src_%u': 'decodebin-link0.sink'},
         },
-        _streamid(),
+        _streamid(fps_limit=fps_limit, decodebin_required=True),
     ]
 
 
@@ -420,7 +437,6 @@ def test_input_gst_images():
                 expected_start = [
                     {
                         'instance': 'appsrc',
-                        'name': 'axelera_dataset_src',
                         'is-live': True,
                         'do-timestamp': True,
                         'format': 3,
@@ -429,7 +445,6 @@ def test_input_gst_images():
                 expected_end = [
                     {
                         'instance': 'axinplace',
-                        'name': 'decodebin-link0',
                         'lib': 'libinplace_addstreamid.so',
                         'mode': 'meta',
                         'options': 'stream_id:0',
@@ -523,7 +538,6 @@ def test_input_torch_data_source_np_generator():
     assert pipein.sources[0].type == config.SourceType.DATA_SOURCE
     assert pipein.sources[0].reader is gen
     assert pipein.number_of_frames == 0
-    assert pipein.batched_data_reformatter is not None
 
     frames = list(itertools.islice(pipein.frame_generator(), 3))
     assert len(frames) == 3
@@ -554,8 +568,7 @@ def test_input_gst_data_source():
     # Data source doesn't do anything special in GST, just checking it creates
     # successfully and the pipeline looks normal
     assert gst_elements[0]['instance'] == 'appsrc'
-    assert gst_elements[0]['name'] == 'axelera_dataset_src'
-    assert gst_elements[-1]['name'] == 'decodebin-link0'
+    assert 'name' not in gst_elements[-1]
     assert gst_elements[-1]['instance'] == 'axinplace'
 
 
@@ -630,26 +643,6 @@ def test_output_save_video_valid_input():
         mock_cvwriter.release.assert_called_once()
 
 
-def test_output_save_video_valid_input_multistream():
-    pipein = create_pipein(30)
-    pipein = Mock()
-    pipein.stream_count.return_value = 2
-    pipein.inputs = {0: create_pipein(25), 1: create_pipein(30)}
-
-    pipeout = pipe.PipeOutput('somefile_%d.mp4', pipein)
-    with patch.object(cv2, 'VideoWriter') as mock_writer:
-        mock_cvwriter = mock_writer.return_value
-        do_writes(pipeout, (bgr_img, 'unused'))
-        assert mock_writer.call_args_list[:2] == [
-            call('somefile_0.mp4', MP4V, 25, (6, 4)),
-            call('somefile_1.mp4', MP4V, 30, (6, 4)),
-        ]
-        np.testing.assert_array_equal(
-            mock_cvwriter.write.call_args_list[0][0][0], bgr_img.asarray('BGR')
-        )
-        mock_cvwriter.release.assert_has_calls([call() for _ in range(2)])
-
-
 @pytest.mark.parametrize(
     "speedometers_enabled,env_var_value,expected_registered_calls,expected_metric_calls,test_description",
     [
@@ -709,13 +702,6 @@ def test_output_save_video_speedometer_behavior(
         def __len__(self):
             return 0  # Return a valid length to avoid any iterations
 
-    class UnregisteredMockTaskMeta(meta.AxTaskMeta):
-        def draw(self, d):
-            unregistered_draw_called.append(d)
-
-        def __len__(self):
-            return 0  # Return a valid length to avoid any iterations
-
     pipein = create_pipein(30)
     render_config = config.RenderConfig()
     registered_task_name = 'registered_task'
@@ -740,7 +726,7 @@ def test_output_save_video_speedometer_behavior(
             with patch.object(cv2, 'VideoWriter'):
                 m = meta.AxMeta('test_meta')
 
-                registered_meta = m.get_instance(registered_task_name, MockTaskMeta)
+                m.get_instance(registered_task_name, MockTaskMeta)
 
                 # Create unregistered metric instance (this is what gets filtered out when speedometers are disabled)
                 metric_instance = MockTraceMetric(metric_key)

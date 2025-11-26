@@ -51,6 +51,7 @@ from axelera.app.torch_utils import torch
 
 LOG = logging_utils.getLogger(__name__)
 
+
 # Predictable calibration tracking file location
 def _get_calibration_temp_file():
     """Get the predictable temporary file for tracking calibration images."""
@@ -248,53 +249,6 @@ def coco91_to_coco80_table():
         coco91_to_coco80[cls - 1] = i
 
     return coco91_to_coco80
-
-
-def _filter_valid_image_paths(data_root, annotation_file, img_dir_name, task_enum):
-    """
-    Filter image paths based on the annotations in the JSON or XML file.
-
-    Args:
-        data_root (Path): The root directory of the dataset.
-        annotation_file (Path): The path to the annotation file (JSON or XML).
-        img_dir_name (str): The name of the directory containing the images.
-        task_enum (SupportedTaskCategory): The task category.
-
-    Returns:
-        List[Path]: A list of valid image paths.
-    """
-    valid_filenames = set()
-
-    if annotation_file.suffix == '.json':
-        with open(annotation_file, 'r') as f:
-            json_data = json.load(f)
-        if task_enum == SupportedTaskCategory.Kpts:
-            valid_filenames = {
-                img['file_name']
-                for img in json_data['images']
-                if any(
-                    ann['image_id'] == img['id'] and ann['num_keypoints'] > 0
-                    for ann in json_data['annotations']
-                )
-            }
-        else:
-            valid_filenames = {img['file_name'] for img in json_data['images']}
-    elif annotation_file.suffix == '.xml':
-        tree = ET.parse(annotation_file)
-        root = tree.getroot()
-        for image in root.findall('image'):
-            file_name = image.get('file_name')
-            valid_filenames.add(file_name)
-    else:
-        raise ValueError(f"Unsupported annotation file format: {annotation_file.suffix}")
-
-    img_paths = [
-        Path(data_root, img_dir_name, p)
-        for p in os.listdir(Path(data_root, img_dir_name))
-        if p in valid_filenames
-    ]
-
-    return img_paths
 
 
 def _segments2polygon(segments):
@@ -555,6 +509,9 @@ class UnifiedDataset(torch_data.Dataset):
             data_dir, reference_file, label_format, class_names, self.output_format, **kwargs
         )
 
+        # Store ground truth JSON path if available (for COCO evaluation)
+        self._groundtruth_json = gt_json
+
         if not len(self.labels) and self.split == 'val':
             raise DataLoadingError("Validation requested, but no labels available")
 
@@ -585,7 +542,6 @@ class UnifiedDataset(torch_data.Dataset):
 
         sample["image"] = img
         sample["image_id"] = img_id
-        # print(f"image_id: {img_id}")
 
         # Handle labels if in training or validation mode
         if self.split in ["train", "val"]:
@@ -773,6 +729,14 @@ class UnifiedDataset(torch_data.Dataset):
 
         # Convert to Path and ensure it exists
         reference_file = Path(data_root, reference_file)
+
+        # For COCO JSON format, check if the reference file is a JSON file
+        if self.label_type == SupportedLabelType.COCOJSON and reference_file.suffix == '.json':
+            if not reference_file.is_file():
+                raise DataLoadingError(f"COCO JSON file not found: {reference_file}")
+            return Path(data_root), reference_file, label_format
+
+        # For other formats, create image list file
         reference_file = _create_image_list_file(reference_file)
 
         if not reference_file.is_file():
@@ -786,10 +750,34 @@ class UnifiedDataset(torch_data.Dataset):
         """Get images, labels, and related information."""
         img_paths = []
 
+        # Handle COCO JSON format differently
+        if self.label_type == SupportedLabelType.COCOJSON and reference_file.suffix == '.json':
+            return self._load_from_coco_json(data_root, reference_file, output_format, **kwargs)
+
         # Get image paths from reference file
         if reference_file.suffix in (".txt", ".part"):
             with open(reference_file, "r", encoding="UTF-8") as reader:
                 lines = [line.rstrip() for line in reader.readlines() if line.strip()]
+
+            # Check if the reference file contains a path to an annotation file
+            if len(lines) == 1:
+                annotation_path = Path(lines[0])
+                if not annotation_path.is_absolute():
+                    annotation_path = reference_file.parent / annotation_path
+
+                # Handle COCO JSON annotation files
+                if (
+                    annotation_path.suffix.lower() == '.json'
+                    and self.label_type == SupportedLabelType.COCOJSON
+                ):
+                    return self._load_from_coco_json(
+                        data_root, annotation_path, output_format, **kwargs
+                    )
+
+                # Handle PascalVOC XML annotation files
+                # Note: PascalVOC XML format expects labels to be in separate XML files per image,
+                # not a single XML file for all images. So we only handle single XML if it's
+                # explicitly a dataset-level XML (which is rare for PascalVOC)
 
             for line in lines:
                 line_path = Path(line)
@@ -841,6 +829,376 @@ class UnifiedDataset(torch_data.Dataset):
 
         # No JSON ground truth file by default
         gt_json = None
+
+        return img_paths, labels, segments, image_ids, gt_json
+
+    def _convert_coco_category_id(self, category_id, **kwargs):
+        """Convert COCO category ID to internal format.
+
+        Args:
+            category_id: Category ID from COCO annotation
+            **kwargs: May contain 'coco_91_to_80' or 'keep_1_based_category_ids'
+
+        Returns:
+            Converted category ID (typically 0-based)
+        """
+        if kwargs.get('coco_91_to_80', False):
+            return coco91_to_coco80_table()[category_id - 1]
+        elif not kwargs.get('keep_1_based_category_ids', False):
+            return category_id - 1
+        return category_id
+
+    def _convert_coco_bbox_to_format(
+        self, bbox, category_id, img_width, img_height, output_format
+    ):
+        """Convert COCO bbox to specified output format with normalization.
+
+        Args:
+            bbox: COCO bbox [x, y, w, h] in absolute pixel coordinates
+            category_id: Category ID for the bbox
+            img_width: Image width for normalization
+            img_height: Image height for normalization
+            output_format: Target format ('xyxy', 'xywh', 'ltwh')
+
+        Returns:
+            List of [category_id, ...bbox_coords] in normalized coordinates or None if invalid
+
+        Note:
+            Following YOLO format convention, coordinates are normalized to [0, 1] range first,
+            then converted to the output format. The consumer (check_image_label) will scale
+            them back to absolute pixels as needed.
+
+            Bboxes are clipped to image boundaries to handle COCO datasets with occluded/cropped
+            objects that extend beyond the image edges.
+        """
+        if len(bbox) != 4:
+            return None
+
+        x, y, w, h = bbox
+
+        if w <= 0 or h <= 0:
+            return None
+
+        # Clip bbox to image boundaries (COCO allows bboxes to extend beyond image for occluded objects)
+        # Calculate x2, y2 before clipping x, y
+        x2 = x + w
+        y2 = y + h
+
+        # Clip all coordinates to [0, width/height]
+        x = max(0, min(x, img_width))
+        y = max(0, min(y, img_height))
+        x2 = max(0, min(x2, img_width))
+        y2 = max(0, min(y2, img_height))
+
+        # Recalculate width and height after clipping
+        w = x2 - x
+        h = y2 - y
+
+        # After clipping, bbox might become invalid
+        if w <= 0 or h <= 0:
+            return None
+
+        # Normalize coordinates to [0, 1] range (YOLO format convention)
+        x_norm = x / img_width
+        y_norm = y / img_height
+        w_norm = w / img_width
+        h_norm = h / img_height
+
+        # Convert to target format (still normalized)
+        if output_format == 'xyxy':
+            # Convert xywh to xyxy, keeping normalized
+            return [category_id, x_norm, y_norm, x_norm + w_norm, y_norm + h_norm]
+        elif output_format == 'ltwh':
+            # ltwh is same as COCO format but normalized
+            return [category_id, x_norm, y_norm, w_norm, h_norm]
+        elif output_format == 'xywh':
+            # Convert to center coordinates, keeping normalized
+            return [category_id, x_norm + w_norm / 2, y_norm + h_norm / 2, w_norm, h_norm]
+        else:
+            raise ValueError(f"Unsupported output format: {output_format}")
+
+    def _process_coco_annotation(self, ann, img_width, img_height, output_format, **kwargs):
+        """Process a single COCO annotation into internal format.
+
+        Args:
+            ann: COCO annotation dictionary
+            img_width: Image width for normalization
+            img_height: Image height for normalization
+            output_format: Target bbox format
+            **kwargs: Additional parameters
+
+        Returns:
+            Tuple of (bbox_with_label, segment) or (None, None) if invalid
+        """
+        # Convert category ID
+        category_id = self._convert_coco_category_id(ann['category_id'], **kwargs)
+
+        # Convert bbox with normalization
+        bbox_out = self._convert_coco_bbox_to_format(
+            ann['bbox'], category_id, img_width, img_height, output_format
+        )
+        if bbox_out is None:
+            ann_id = ann.get('id', 'unknown')
+            LOG.warning(f"Skipping invalid annotation {ann_id}: bbox={ann.get('bbox')}")
+            return None, None
+
+        # Handle keypoints if present
+        if self.task_enum == SupportedTaskCategory.Kpts and 'keypoints' in ann:
+            bbox_out.extend(ann['keypoints'])
+
+        # Handle segmentation if present
+        segment = None
+        if self.task_enum == SupportedTaskCategory.Seg and 'segmentation' in ann:
+            seg = ann['segmentation']
+            if isinstance(seg, list) and len(seg) > 0:
+                segment = np.array(seg[0]).reshape(-1, 2)
+
+        return bbox_out, segment
+
+    def _find_image_directory(self, data_root, json_file, **kwargs):
+        """Find the directory containing images for a COCO JSON file.
+
+        Args:
+            data_root: Root directory of the dataset
+            json_file: Path to the COCO JSON annotation file
+            **kwargs: Additional parameters (may contain 'img_dir')
+
+        Returns:
+            Path: Directory containing the images
+        """
+        # Strategy 1: Check if img_dir is explicitly provided
+        if 'img_dir' in kwargs and kwargs['img_dir']:
+            candidate = Path(data_root, kwargs['img_dir'])
+            if candidate.is_dir():
+                LOG.debug(f"Using explicitly provided img_dir: {candidate}")
+                return candidate
+            else:
+                LOG.warning(
+                    f"Specified img_dir '{kwargs['img_dir']}' not found at {candidate}. "
+                    f"Will search for images in other locations."
+                )
+
+        # Strategy 2: Look in the same directory as JSON file
+        candidate = json_file.parent
+        if any(candidate.glob('*.jpg')) or any(candidate.glob('*.png')):
+            LOG.info(f"Found images in JSON file directory: {candidate}")
+            return candidate
+
+        # Strategy 3: Try standard COCO directory structure (images/<split>)
+        split_name = json_file.stem
+        candidate = data_root / 'images' / split_name
+        if candidate.is_dir():
+            LOG.info(f"Found images in standard COCO directory: {candidate}")
+            return candidate
+
+        # Strategy 4: Try 'images' directory at data_root
+        candidate = data_root / 'images'
+        if candidate.is_dir():
+            LOG.info(f"Found images directory: {candidate}")
+            return candidate
+
+        # Strategy 5: Use data_root itself
+        LOG.warning(
+            f"Could not find images in expected locations. Using data_root as fallback: {data_root}\n"
+            f"Searched locations:\n"
+            f"  1. {json_file.parent} (JSON file directory)\n"
+            f"  2. {data_root / 'images' / split_name} (standard COCO structure)\n"
+            f"  3. {data_root / 'images'} (images directory)\n"
+            f"If images are not found, please specify 'img_dir' in your dataset configuration."
+        )
+        return data_root
+
+    def _load_and_validate_coco_json(self, json_file):
+        """Load and validate COCO JSON file.
+
+        Args:
+            json_file: Path to COCO JSON file
+
+        Returns:
+            Dictionary containing parsed COCO data
+
+        Raises:
+            DataLoadingError: If file cannot be read or parsed
+            DataFormatError: If required fields are missing
+        """
+        try:
+            with open(json_file, 'r') as f:
+                coco_data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise DataLoadingError(f"Failed to parse COCO JSON file {json_file}: {e}")
+        except Exception as e:
+            raise DataLoadingError(f"Failed to read COCO JSON file {json_file}: {e}")
+
+        # Validate required fields
+        if 'images' not in coco_data:
+            raise DataFormatError(
+                f"COCO JSON file {json_file} missing required 'images' field.\n"
+                f"A valid COCO JSON file must have 'images', 'annotations', and 'categories' fields.\n"
+                f"Current fields: {list(coco_data.keys())}"
+            )
+        if 'annotations' not in coco_data:
+            raise DataFormatError(
+                f"COCO JSON file {json_file} missing required 'annotations' field.\n"
+                f"A valid COCO JSON file must have 'images', 'annotations', and 'categories' fields.\n"
+                f"Current fields: {list(coco_data.keys())}"
+            )
+
+        return coco_data
+
+    def _build_coco_mappings(self, coco_data):
+        """Build lookup tables for COCO data.
+
+        Args:
+            coco_data: Parsed COCO JSON dictionary
+
+        Returns:
+            Tuple of (img_id_to_info, img_id_to_anns)
+        """
+        img_id_to_info = {img['id']: img for img in coco_data['images']}
+
+        img_id_to_anns = {}
+        for ann in coco_data['annotations']:
+            img_id = ann['image_id']
+            if img_id not in img_id_to_anns:
+                img_id_to_anns[img_id] = []
+            img_id_to_anns[img_id].append(ann)
+
+        return img_id_to_info, img_id_to_anns
+
+    def _load_from_coco_json(self, data_root, json_file, output_format, **kwargs):
+        """Load images and labels from COCO JSON format.
+
+        Args:
+            data_root: Root directory of the dataset
+            json_file: Path to the COCO JSON annotation file
+            output_format: Output bbox format ('xyxy', 'xywh', 'ltwh')
+            **kwargs: Additional parameters
+
+        Returns:
+            Tuple of (img_paths, labels, segments, image_ids, gt_json)
+        """
+        LOG.info(f"Loading COCO JSON annotations from {json_file}")
+
+        # Load and validate JSON
+        coco_data = self._load_and_validate_coco_json(json_file)
+
+        # Build lookup mappings
+        img_id_to_info, img_id_to_anns = self._build_coco_mappings(coco_data)
+
+        # Find image directory
+        img_dir = self._find_image_directory(data_root, json_file, **kwargs)
+
+        # Process images and annotations
+        img_paths = []
+        labels = []
+        segments = []
+        image_ids = []
+
+        missing_count = 0
+        for img_id, img_info in img_id_to_info.items():
+            # Get and validate image path
+            img_path = Path(img_dir, img_info['file_name'])
+            if not img_path.is_file():
+                if missing_count < 5:  # Only log first 5 missing images
+                    LOG.warning(f"Image not found: {img_path}")
+                missing_count += 1
+                continue
+
+            # Get image dimensions for normalization
+            img_width = img_info.get('width')
+            img_height = img_info.get('height')
+
+            if img_width is None or img_height is None or img_width <= 0 or img_height <= 0:
+                LOG.warning(
+                    f"Image {img_path} has invalid dimensions (w={img_width}, h={img_height}), skipping"
+                )
+                continue
+
+            # Process all annotations for this image
+            img_labels = []
+            img_segments = []
+
+            for ann in img_id_to_anns.get(img_id, []):
+                bbox_out, segment = self._process_coco_annotation(
+                    ann, img_width, img_height, output_format, **kwargs
+                )
+                if bbox_out is not None:
+                    # Scale normalized coordinates back to absolute pixels
+                    # This matches the behavior of check_image_label() for YOLO format
+                    # where coordinates are stored in absolute pixels, not normalized
+                    bbox_scaled = [bbox_out[0]]  # Keep class_id as is
+                    if output_format == 'xyxy':
+                        # Scale x1, y1, x2, y2
+                        bbox_scaled.extend(
+                            [
+                                bbox_out[1] * img_width,  # x1
+                                bbox_out[2] * img_height,  # y1
+                                bbox_out[3] * img_width,  # x2
+                                bbox_out[4] * img_height,  # y2
+                            ]
+                        )
+                    elif output_format == 'xywh':
+                        # Scale cx, cy, w, h
+                        bbox_scaled.extend(
+                            [
+                                bbox_out[1] * img_width,  # cx
+                                bbox_out[2] * img_height,  # cy
+                                bbox_out[3] * img_width,  # w
+                                bbox_out[4] * img_height,  # h
+                            ]
+                        )
+                    elif output_format == 'ltwh':
+                        # Scale x, y, w, h
+                        bbox_scaled.extend(
+                            [
+                                bbox_out[1] * img_width,  # x
+                                bbox_out[2] * img_height,  # y
+                                bbox_out[3] * img_width,  # w
+                                bbox_out[4] * img_height,  # h
+                            ]
+                        )
+
+                    # Add any additional data (e.g., keypoints for Kpts task)
+                    if len(bbox_out) > 5:
+                        bbox_scaled.extend(bbox_out[5:])
+
+                    img_labels.append(bbox_scaled)
+                    if segment is not None:
+                        img_segments.append(segment)
+
+            # Add to dataset
+            img_paths.append(img_path)
+            labels.append(img_labels)
+            segments.append(img_segments)
+            image_ids.append(img_id)
+
+        if missing_count > 0:
+            LOG.warning(
+                f"Skipped {missing_count} images that were not found. "
+                f"Successfully loaded {len(img_paths)}/{len(img_id_to_info)} images from COCO JSON.\n"
+                f"If this is unexpected, check that:\n"
+                f"  1. Image directory is correct: {img_dir}\n"
+                f"  2. Image file names in JSON match actual files\n"
+                f"  3. You may need to specify 'img_dir' parameter in dataset config"
+            )
+        else:
+            LOG.info(f"Successfully loaded {len(img_paths)} images from COCO JSON")
+
+        if len(img_paths) == 0:
+            raise DataLoadingError(
+                f"No images found from COCO JSON file {json_file}.\n"
+                f"Searched in: {img_dir}\n"
+                f"Total images in JSON: {len(img_id_to_info)}\n"
+                f"Please ensure images are in the correct location or specify 'img_dir' in your dataset configuration."
+            )
+
+        # Return ground truth JSON path ONLY for standard COCO datasets
+        # For custom datasets, returning None forces evaluation to use our converted labels
+        # This avoids category ID mismatch (custom dataset may have category_id=1 for "person"
+        # but we convert to 0-based, so predictions use class 0 while JSON still has class 1)
+        gt_json = None
+        if self.label_type in (SupportedLabelType.COCO2017, SupportedLabelType.COCO2014):
+            gt_json = str(json_file)
 
         return img_paths, labels, segments, image_ids, gt_json
 

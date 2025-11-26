@@ -1,6 +1,8 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 
 import itertools
+
+import numpy as np
 
 from axelera.app import utils
 from axelera.app.meta import TrackedObject, TrackerMeta
@@ -32,3 +34,23 @@ def test_tracker_meta_objects():
     assert not tracked_objects[1].is_car
     assert not tracked_objects[1].is_person
     assert tracked_objects[1].is_bus
+
+
+def test_tracker_meta_decode_simple():
+    track_id = 7
+    class_id = 2
+    boxes = np.array([[10, 20, 30, 40]], dtype=np.int32)
+
+    track_data = (
+        np.array([class_id], dtype=np.int32).tobytes()
+        + np.array([len(boxes)], dtype=np.int32).tobytes()
+        + boxes.astype(np.int32).tobytes()
+        + np.array([0], dtype=np.int32).tobytes()
+        + np.array([0], dtype=np.int32).tobytes()
+    )
+
+    meta = TrackerMeta.decode({f'track_{track_id}': track_data})
+
+    assert list(meta.tracking_history.keys()) == [track_id]
+    np.testing.assert_array_equal(meta.tracking_history[track_id], boxes)
+    assert meta.class_ids == [class_id]

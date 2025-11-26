@@ -14,7 +14,7 @@ from axelera.app import config, display, display_console, display_cv, inf_tracer
 
 
 def test_null_app_with_data():
-    with display.App(visible=False) as app:
+    with display.App(renderer=False) as app:
         wnd = app.create_window('test', (640, 480))
         i = types.Image.fromarray(np.zeros((480, 640, 3), np.uint8))
         meta = object()
@@ -29,7 +29,7 @@ def test_null_app_with_data():
 
 
 def test_wrong_type_image():
-    with display.App(visible=False) as app:
+    with display.App(renderer=False) as app:
         wnd = app.create_window('test', (640, 480))
         i = np.zeros((480, 640, 3), np.uint8)
         meta = object()
@@ -49,7 +49,7 @@ class MockApp(display.App):
         super().__init__(*args, **kwargs)
         self.received = []
 
-    def _create_new_window(self, q, title, size):
+    def _create_new_window(self, q, title, size, frame_sink):
         return title
 
     def _destroy_all_windows(self):
@@ -58,7 +58,7 @@ class MockApp(display.App):
     def _run(self, interval=1 / 30):
         while 1:
             self._create_new_windows()
-            new = display_cv._read_new_data(self._wnds, self._queues)
+            new = display_console._read_new_data(self._queues)
             if new is display.SHUTDOWN:
                 return
             self.received.extend(new)
@@ -87,7 +87,7 @@ def test_mock_window_creation_with_data():
         app.start_thread(t)
         app.run()
         assert wnd.is_closed == True
-    assert app.received == [('test', display._Frame(0, i, meta))]
+    assert app.received == [(0, display._Frame(0, i, meta))]
 
 
 def test_speedometer_metrics():
@@ -220,12 +220,16 @@ def test_find_display_class_bad_option():
 
 def test_find_display_class_auto_opengl_disabled():
     with patch.object(utils, 'is_opengl_available', return_value=False) as is_opengl_available:
-        with patch.dict(os.environ, {'DISPLAY': ''}):
+        with patch.dict(os.environ, {'DISPLAY': '', 'LC_TERMINAL': ''}):
             assert display._find_display_class('auto', disable) is display_console.ConsoleApp
-        with patch.dict(os.environ, {'DISPLAY': 'something'}):
+        with patch.dict(os.environ, {'DISPLAY': '', 'LC_TERMINAL': 'iTerm2'}):
+            assert display._find_display_class('auto', disable) is display_console.iTerm2App
+        with patch.dict(os.environ, {'DISPLAY': 'something', 'LC_TERMINAL': ''}):
             assert display._find_display_class('auto', disable) is display_cv.CVApp
-        with patch.dict(os.environ, {'DISPLAY': ''}):
+        with patch.dict(os.environ, {'DISPLAY': '', 'LC_TERMINAL': ''}):
             assert display._find_display_class(True, disable) is display_console.ConsoleApp
+        with patch.dict(os.environ, {'DISPLAY': '', 'LC_TERMINAL': 'iTerm2'}):
+            assert display._find_display_class(True, disable) is display_console.iTerm2App
     is_opengl_available.assert_not_called()
 
 
@@ -333,12 +337,12 @@ def test_display_text():
         app.start_thread(t)
         app.run()
         assert wnd.is_closed == True
-    assert app.received[0][0] == 'test'
+    assert app.received[0][0] == -1
     assert isinstance(app.received[0][1], display._Text)
     assert app.received[0][1].text == expected_text
     assert app.received[0][1].position == expected_position
     assert isinstance(app.received[0][1].position, display.Coords)
-    assert app.received[1] == ('test', display._Frame(0, i, meta))
+    assert app.received[1] == (0, display._Frame(0, i, meta))
 
 
 def test_display_image():
@@ -358,12 +362,12 @@ def test_display_image():
         app.start_thread(t)
         app.run()
         assert wnd.is_closed == True
-    assert app.received[0][0] == 'test'
+    assert app.received[0][0] == -1
     assert isinstance(app.received[0][1], display._Image)
     assert app.received[0][1].path == expected_path
     assert app.received[0][1].position == expected_position
     assert isinstance(app.received[0][1].position, display.Coords)
-    assert app.received[1] == ('test', display._Frame(0, i, meta))
+    assert app.received[1] == (0, display._Frame(0, i, meta))
 
 
 def test_layer_handle_init():
@@ -415,14 +419,14 @@ def test_layer_handle_set_fields():
         app.start_thread(t)
         app.run()
 
-    assert app.received[0][0] == 'test'
+    assert app.received[0][0] == -1
     assert isinstance(app.received[0][1], display._Text)
     assert app.received[0][1].id == '1234'
     assert app.received[0][1].text == txt0
     assert app.received[0][1].position == pos0
     assert isinstance(app.received[0][1].position, display.Coords)
 
-    assert app.received[1][0] == 'test'
+    assert app.received[1][0] == -1
     assert isinstance(app.received[1][1], display._Text)
     assert app.received[1][1].id == '1234'
     assert app.received[1][1].text == txt1
@@ -476,14 +480,14 @@ def test_layer_handle_set_fields_via_msg():
         app.start_thread(t)
         app.run()
 
-    assert app.received[0][0] == 'test'
+    assert app.received[0][0] == -1
     assert isinstance(app.received[0][1], display._Text)
     assert app.received[0][1].id == '1234'
     assert app.received[0][1].text == txt0
     assert app.received[0][1].position == pos0
     assert isinstance(app.received[0][1].position, display.Coords)
 
-    assert app.received[1][0] == 'test'
+    assert app.received[1][0] == -1
     assert isinstance(app.received[1][1], display._Text)
     assert app.received[1][1].id == '1234'
     assert app.received[1][1].text == txt1
@@ -522,21 +526,21 @@ def test_layer_handle_set_fields_dict_style():
         app.start_thread(t)
         app.run()
 
-    assert app.received[0][0] == 'test'
+    assert app.received[0][0] == -1
     assert isinstance(app.received[0][1], display._Text)
     assert app.received[0][1].id == '1234'
     assert app.received[0][1].text == txt0
     assert app.received[0][1].position == pos0
     assert isinstance(app.received[0][1].position, display.Coords)
 
-    assert app.received[1][0] == 'test'
+    assert app.received[1][0] == -1
     assert isinstance(app.received[1][1], display._Text)
     assert app.received[1][1].id == '1234'
     assert app.received[1][1].text == txt1
     assert app.received[1][1].position == pos0
     assert isinstance(app.received[1][1].position, display.Coords)
 
-    assert app.received[2][0] == 'test'
+    assert app.received[2][0] == -1
     assert isinstance(app.received[2][1], display._Text)
     assert app.received[2][1].id == '1234'
     assert app.received[2][1].text == txt1
@@ -710,7 +714,7 @@ def test_layer_handle_hide():
 
     assert handle.visible == False
 
-    assert app.received[0][0] == 'test'
+    assert app.received[0][0] == -1
     assert isinstance(app.received[1][1], display._Text)
     assert app.received[0][1].id == '1234'
     assert app.received[0][1].fadeout_from == None
@@ -718,7 +722,7 @@ def test_layer_handle_hide():
     assert app.received[0][1].fadein_by == 10.0
     assert app.received[0][1].fadein_for == 5.0
 
-    assert app.received[1][0] == 'test'
+    assert app.received[1][0] == -1
     assert isinstance(app.received[1][1], display._Text)
     assert app.received[1][1].id == '1234'
     assert app.received[1][1].fadeout_from == 100.0
@@ -787,7 +791,7 @@ def test_layer_handle_show():
 
     assert handle.visible == True
 
-    assert app.received[0][0] == 'test'
+    assert app.received[0][0] == -1
     assert isinstance(app.received[0][1], display._Text)
     assert app.received[0][1].id == '1234'
     assert app.received[0][1].fadeout_from == None
@@ -1167,3 +1171,49 @@ def test_speedometer_smoothing_update(last_value, last_speed, target, expected):
     smoothing._last["k-title"] = (last_value, 0, last_speed)
     smoothing.update(metric, 1.0)
     assert smoothing.value(metric) == expected
+
+
+@pytest.mark.parametrize(
+    "scale, image_size, canvas_size, expected",
+    [
+        (None, (200, 100), (400, 200), 1.0),
+        (1.0, (200, 100), (400, 200), 2.0),
+        (0.5, (200, 100), (400, 200), 1.0),
+        (2.0, (200, 100), (400, 200), 4.0),
+        (1.0, (200, 100), (400, 300), 2.0),
+        (0.5, (200, 100), (400, 300), 1.0),
+        (2.0, (200, 100), (400, 300), 4.0),
+        (1.0, (100, 200), (400, 300), 1.5),
+        (0.5, (100, 200), (400, 300), 0.75),
+        (2.0, (100, 200), (400, 300), 3.0),
+    ],
+)
+def test_canvas_scale_to_img_scale(scale, image_size, canvas_size, expected):
+    assert display.canvas_scale_to_img_scale(scale, image_size, canvas_size) == expected
+
+
+def test_display_open_close_source():
+    with MockApp('other') as app:
+        wnd = app.create_window('test', (640, 480))
+        i = types.Image.fromarray(np.zeros((480, 640, 3), np.uint8))
+        meta = object()
+
+        wnd.close_source(0)
+        wnd.text(('50%', '50%'), 'text', stream_id=0)
+        wnd.open_source(0)
+
+        def t():
+            wnd.show(i, meta)
+
+        app.start_thread(t)
+        app.run()
+        assert wnd.is_closed == True
+
+    assert app.received[0] == (0, display._CloseSource(0, False))
+    # Messages should still be sent despite _CloseSource - the window
+    # decides how to handle messages from a closed source.
+    assert app.received[1][0] == 0
+    assert isinstance(app.received[1][1], display._Text)
+    assert app.received[2] == (0, display._OpenSource(0))
+    assert app.received[3] == (0, display._Frame(0, i, meta))
+    assert len(app.received) == 4

@@ -90,9 +90,12 @@ def main(window, stream):
         # (d.class_id == 0) equivalent to (d.label == CLASS.person)
         print(f"Found {sum(d.label == CLASS.person for d in frame_result.detections)} person(s)")
 
+        if window.is_closed:
+            break
+
 
 with display.App(
-    visible=True,
+    renderer=True,
     opengl=stream.hardware_caps.opengl,
     buffering=not stream.is_single_image(),
 ) as app:

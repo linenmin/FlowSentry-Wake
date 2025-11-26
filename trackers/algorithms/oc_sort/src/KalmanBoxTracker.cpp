@@ -1,3 +1,4 @@
+// Copyright Axelera AI, 2025
 #include "../include/KalmanBoxTracker.hpp"
 
 #include <utility>
@@ -10,10 +11,10 @@ int KalmanBoxTracker::count = 0;
 
 KalmanBoxTracker::KalmanBoxTracker(Eigen::VectorXf bbox_,
     const Eigen::VectorXf &emb_, int cls_, int det_id, int delta_t_)
+    : kf(std::make_shared<KalmanFilterNew>(7, 4))
 {
   bbox = std::move(bbox_);
   delta_t = delta_t_;
-  kf = new KalmanFilterNew(7, 4);
   kf->F << 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
       1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1;
   kf->H << 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
@@ -25,6 +26,7 @@ KalmanBoxTracker::KalmanBoxTracker(Eigen::VectorXf bbox_,
   kf->Q.block(4, 4, 3, 3) *= 0.01;
   kf->x.head<4>() = convert_bbox_to_z(bbox);
   time_since_update = 0;
+  frame_of_last_update = 0;
   cls = cls_;
   id = next_id();
   history.clear();
@@ -42,12 +44,13 @@ KalmanBoxTracker::KalmanBoxTracker(Eigen::VectorXf bbox_,
 }
 
 void
-KalmanBoxTracker::update(Eigen::Matrix<float, 5, 1> *bbox_, int cls_, int det_id)
+KalmanBoxTracker::update(Eigen::Matrix<float, 5, 1> *bbox_, int cls_, int det_id, int frame_id)
 {
   if (bbox_ != nullptr) {
     conf = (*bbox_)[4];
     cls = cls_;
     latest_detection_id = det_id;
+    frame_of_last_update = frame_id;
     if (int(last_observation.sum()) >= 0) {
       Eigen::VectorXf previous_box_tmp;
       for (int dt = delta_t; dt > 0; --dt) {

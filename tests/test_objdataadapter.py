@@ -1199,7 +1199,7 @@ class TestUltralyticsIntegration:
 
         dataset_config = {
             'ultralytics_data_yaml': 'data.yaml',
-            'label_type': 'YOLOv8'
+            'label_type': 'YOLOv8',
             # No val_data - should be OK since ultralytics will provide it
         }
 
@@ -1224,7 +1224,7 @@ class TestUltralyticsIntegration:
 
         dataset_config = {
             'cal_data': 'train.txt',
-            'label_type': 'YOLOv8'
+            'label_type': 'YOLOv8',
             # Missing val_data for traditional format
         }
 
@@ -1240,3 +1240,471 @@ class TestUltralyticsIntegration:
             ValueError, match="Please specify 'val_data' or 'ultralytics_data_yaml'"
         ):
             ObjDataAdapter(dataset_config, model_info)
+
+
+class TestCocoJsonHelperFunctions:
+    """Test the new COCO JSON helper functions."""
+
+    def test_convert_coco_category_id_default(self):
+        """Test default category ID conversion (1-based to 0-based)."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        category_id = UnifiedDataset._convert_coco_category_id(dataset, 1)
+        assert category_id == 0
+
+        category_id = UnifiedDataset._convert_coco_category_id(dataset, 5)
+        assert category_id == 4
+
+    def test_convert_coco_category_id_keep_1_based(self):
+        """Test keeping 1-based category IDs."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        category_id = UnifiedDataset._convert_coco_category_id(
+            dataset, 1, keep_1_based_category_ids=True
+        )
+        assert category_id == 1
+
+    def test_convert_coco_category_id_coco91_to_80(self):
+        """Test COCO-91 to COCO-80 conversion."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        # Category 1 in COCO-91 is index 0 in COCO-80
+        category_id = UnifiedDataset._convert_coco_category_id(dataset, 1, coco_91_to_80=True)
+        assert category_id == 0
+
+    def test_convert_coco_bbox_to_format_xyxy(self):
+        """Test bbox conversion to xyxy format with normalization."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        bbox = [100, 150, 200, 300]  # [x, y, w, h] in absolute pixels
+        img_width, img_height = 800, 600
+        result = UnifiedDataset._convert_coco_bbox_to_format(
+            dataset, bbox, 0, img_width, img_height, 'xyxy'
+        )
+        # Expected: normalized coordinates [cls, x1/w, y1/h, x2/w, y2/h]
+        # [0, 100/800, 150/600, 300/800, 450/600] = [0, 0.125, 0.25, 0.375, 0.75]
+        assert result == [0, 0.125, 0.25, 0.375, 0.75]
+
+    def test_convert_coco_bbox_to_format_xywh(self):
+        """Test bbox conversion to xywh format with normalization."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        bbox = [100, 150, 200, 300]  # [x, y, w, h] in absolute pixels
+        img_width, img_height = 800, 600
+        result = UnifiedDataset._convert_coco_bbox_to_format(
+            dataset, bbox, 0, img_width, img_height, 'xywh'
+        )
+        # Expected: normalized [cls, cx/w, cy/h, w/w, h/h]
+        # cx = 100 + 200/2 = 200, cy = 150 + 300/2 = 300
+        # [0, 200/800, 300/600, 200/800, 300/600] = [0, 0.25, 0.5, 0.25, 0.5]
+        assert result == [0, 0.25, 0.5, 0.25, 0.5]
+
+    def test_convert_coco_bbox_to_format_ltwh(self):
+        """Test bbox conversion to ltwh format with normalization."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        bbox = [100, 150, 200, 300]  # [x, y, w, h] in absolute pixels
+        img_width, img_height = 800, 600
+        result = UnifiedDataset._convert_coco_bbox_to_format(
+            dataset, bbox, 0, img_width, img_height, 'ltwh'
+        )
+        # Expected: normalized [cls, x/w, y/h, w/w, h/h]
+        # [0, 100/800, 150/600, 200/800, 300/600] = [0, 0.125, 0.25, 0.25, 0.5]
+        assert result == [0, 0.125, 0.25, 0.25, 0.5]
+
+    def test_convert_coco_bbox_normalization_always_within_bounds(self):
+        """Test that normalization always produces values in [0, 1] range."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        # Test various bbox positions and sizes
+        test_cases = [
+            # (bbox, img_width, img_height)
+            ([0, 0, 800, 600], 800, 600),  # Full image
+            ([400, 300, 100, 50], 800, 600),  # Center region
+            ([0, 0, 1, 1], 1920, 1080),  # Tiny bbox on large image
+            ([1900, 1070, 10, 5], 1920, 1080),  # Near edge
+            # Out of bounds bboxes (should be clipped)
+            ([72, 202, 163, 503], 800, 600),  # CrowdHuman example: y2=705 > 600
+            ([199, 180, 144, 499], 800, 600),  # CrowdHuman example: y2=679 > 600
+            ([-10, -10, 50, 50], 800, 600),  # Negative coordinates
+            ([750, 550, 100, 100], 800, 600),  # Extends beyond both width and height
+        ]
+
+        for bbox, w, h in test_cases:
+            for output_format in ['xyxy', 'xywh', 'ltwh']:
+                result = UnifiedDataset._convert_coco_bbox_to_format(
+                    dataset, bbox, 0, w, h, output_format
+                )
+                # Check all coordinate values are in [0, 1] range
+                for val in result[1:]:  # Skip class_id at index 0
+                    assert 0 <= val <= 1, (
+                        f"Coordinate {val} out of [0,1] range for bbox={bbox}, "
+                        f"img_size=({w},{h}), format={output_format}"
+                    )
+
+    def test_convert_coco_bbox_clipping_behavior(self):
+        """Test that out-of-bounds bboxes are properly clipped."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        img_width, img_height = 800, 600
+
+        # Test bbox that extends beyond image height (CrowdHuman example)
+        bbox = [72, 202, 163, 503]  # y2 = 202 + 503 = 705 > 600
+        result = UnifiedDataset._convert_coco_bbox_to_format(
+            dataset, bbox, 0, img_width, img_height, 'xyxy'
+        )
+
+        # After clipping: x=[72, 235], y=[202, 600]
+        # Normalized: x1=72/800=0.09, y1=202/600≈0.3367, x2=235/800=0.29375, y2=600/600=1.0
+        assert result is not None
+        assert result[0] == 0  # class_id
+        assert abs(result[1] - 0.09) < 0.001  # x1
+        assert abs(result[2] - 0.3367) < 0.001  # y1
+        assert abs(result[3] - 0.29375) < 0.001  # x2
+        assert abs(result[4] - 1.0) < 0.001  # y2 clipped to 1.0
+
+        # Test bbox with negative coordinates
+        bbox = [-10, -10, 50, 50]  # Should be clipped to [0, 0, 40, 40]
+        result = UnifiedDataset._convert_coco_bbox_to_format(
+            dataset, bbox, 0, img_width, img_height, 'xyxy'
+        )
+        assert result is not None
+        assert result[1] == 0.0  # x1 clipped to 0
+        assert result[2] == 0.0  # y1 clipped to 0
+        assert result[3] == 40 / 800  # x2 = 40/800 = 0.05
+        assert result[4] == 40 / 600  # y2 = 40/600 ≈ 0.0667
+
+    def test_convert_coco_bbox_invalid_length(self):
+        """Test bbox conversion with invalid bbox length."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        bbox = [100, 150, 200]  # Invalid: only 3 values
+        result = UnifiedDataset._convert_coco_bbox_to_format(dataset, bbox, 0, 800, 600, 'xyxy')
+        assert result is None
+
+    def test_convert_coco_bbox_invalid_dimensions(self):
+        """Test bbox conversion with invalid dimensions (w or h <= 0)."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        # Test with w = 0
+        bbox = [100, 150, 0, 300]
+        result = UnifiedDataset._convert_coco_bbox_to_format(dataset, bbox, 0, 800, 600, 'xyxy')
+        assert result is None
+
+        # Test with h = 0
+        bbox = [100, 150, 200, 0]
+        result = UnifiedDataset._convert_coco_bbox_to_format(dataset, bbox, 0, 800, 600, 'xyxy')
+        assert result is None
+
+        # Test with negative w
+        bbox = [100, 150, -10, 300]
+        result = UnifiedDataset._convert_coco_bbox_to_format(dataset, bbox, 0, 800, 600, 'xyxy')
+        assert result is None
+
+    def test_convert_coco_bbox_unsupported_format(self):
+        """Test bbox conversion with unsupported format."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+        bbox = [100, 150, 200, 300]
+
+        with pytest.raises(ValueError, match="Unsupported output format"):
+            UnifiedDataset._convert_coco_bbox_to_format(
+                dataset, bbox, 0, 800, 600, 'invalid_format'
+            )
+
+    @patch('ax_datasets.objdataadapter.LOG')
+    def test_process_coco_annotation_valid(self, mock_log):
+        """Test processing a valid COCO annotation with normalization."""
+        # Create a real instance to test the actual methods
+        dataset = UnifiedDataset.__new__(UnifiedDataset)
+        dataset.task_enum = SupportedTaskCategory.ObjDet
+
+        ann = {'id': 1, 'category_id': 1, 'bbox': [100, 150, 200, 300]}
+        img_width, img_height = 800, 600
+
+        bbox_out, segment = dataset._process_coco_annotation(ann, img_width, img_height, 'xyxy')
+
+        # Expected: normalized [cls, x1/w, y1/h, x2/w, y2/h]
+        # [0, 100/800, 150/600, 300/800, 450/600] = [0, 0.125, 0.25, 0.375, 0.75]
+        assert bbox_out == [0, 0.125, 0.25, 0.375, 0.75]
+        assert segment is None
+
+    @patch('ax_datasets.objdataadapter.LOG')
+    def test_process_coco_annotation_with_keypoints(self, mock_log):
+        """Test processing COCO annotation with keypoints."""
+        dataset = UnifiedDataset.__new__(UnifiedDataset)
+        dataset.task_enum = SupportedTaskCategory.Kpts
+
+        ann = {
+            'id': 1,
+            'category_id': 1,
+            'bbox': [100, 150, 200, 300],
+            'keypoints': [10, 20, 1, 30, 40, 1],  # [x1, y1, v1, x2, y2, v2]
+        }
+        img_width, img_height = 800, 600
+
+        bbox_out, segment = dataset._process_coco_annotation(ann, img_width, img_height, 'xyxy')
+
+        # Expected: normalized bbox + keypoints (keypoints are NOT normalized in COCO)
+        assert bbox_out[:5] == [0, 0.125, 0.25, 0.375, 0.75]
+        assert bbox_out[5:] == [10, 20, 1, 30, 40, 1]
+        assert segment is None
+
+    @patch('ax_datasets.objdataadapter.LOG')
+    def test_process_coco_annotation_with_segmentation(self, mock_log):
+        """Test processing COCO annotation with segmentation."""
+        dataset = UnifiedDataset.__new__(UnifiedDataset)
+        dataset.task_enum = SupportedTaskCategory.Seg
+
+        ann = {
+            'id': 1,
+            'category_id': 1,
+            'bbox': [100, 150, 200, 300],
+            'segmentation': [[10, 20, 30, 40, 50, 60]],  # polygon points
+        }
+        img_width, img_height = 800, 600
+
+        bbox_out, segment = dataset._process_coco_annotation(ann, img_width, img_height, 'xyxy')
+
+        # Expected: normalized bbox
+        assert bbox_out == [0, 0.125, 0.25, 0.375, 0.75]
+        assert segment is not None
+        assert isinstance(segment, np.ndarray)
+        assert segment.shape == (3, 2)  # 3 points, 2 coordinates each
+
+    @patch('ax_datasets.objdataadapter.LOG')
+    def test_process_coco_annotation_invalid_bbox(self, mock_log):
+        """Test processing annotation with invalid bbox."""
+        dataset = UnifiedDataset.__new__(UnifiedDataset)
+        dataset.task_enum = SupportedTaskCategory.ObjDet
+
+        ann = {'id': 1, 'category_id': 1, 'bbox': [100, 150, 0, 300]}  # w=0 is invalid
+        img_width, img_height = 800, 600
+
+        bbox_out, segment = dataset._process_coco_annotation(ann, img_width, img_height, 'xyxy')
+
+        assert bbox_out is None
+        assert segment is None
+        # Verify warning was logged
+        assert mock_log.warning.called
+
+    def test_load_and_validate_coco_json_valid(self, temp_dir):
+        """Test loading and validating a valid COCO JSON file."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        # Create a valid COCO JSON file
+        json_path = temp_dir / "annotations.json"
+        coco_data = {
+            'images': [{'id': 1, 'file_name': 'img1.jpg', 'width': 640, 'height': 480}],
+            'annotations': [
+                {'id': 1, 'image_id': 1, 'category_id': 1, 'bbox': [100, 100, 200, 200]}
+            ],
+            'categories': [{'id': 1, 'name': 'person'}],
+        }
+
+        with open(json_path, 'w') as f:
+            json.dump(coco_data, f)
+
+        result = UnifiedDataset._load_and_validate_coco_json(dataset, json_path)
+
+        assert result == coco_data
+        assert 'images' in result
+        assert 'annotations' in result
+
+    def test_load_and_validate_coco_json_missing_images(self, temp_dir):
+        """Test validation error for missing 'images' field."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        json_path = temp_dir / "annotations.json"
+        coco_data = {
+            'annotations': [{'id': 1, 'image_id': 1}],
+            'categories': [{'id': 1, 'name': 'person'}],
+        }
+
+        with open(json_path, 'w') as f:
+            json.dump(coco_data, f)
+
+        with pytest.raises(DataFormatError, match="missing required 'images' field"):
+            UnifiedDataset._load_and_validate_coco_json(dataset, json_path)
+
+    def test_load_and_validate_coco_json_missing_annotations(self, temp_dir):
+        """Test validation error for missing 'annotations' field."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        json_path = temp_dir / "annotations.json"
+        coco_data = {
+            'images': [{'id': 1, 'file_name': 'img1.jpg'}],
+            'categories': [{'id': 1, 'name': 'person'}],
+        }
+
+        with open(json_path, 'w') as f:
+            json.dump(coco_data, f)
+
+        with pytest.raises(DataFormatError, match="missing required 'annotations' field"):
+            UnifiedDataset._load_and_validate_coco_json(dataset, json_path)
+
+    def test_load_and_validate_coco_json_invalid_json(self, temp_dir):
+        """Test error for invalid JSON format."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        json_path = temp_dir / "invalid.json"
+        with open(json_path, 'w') as f:
+            f.write("{invalid json content")
+
+        with pytest.raises(DataLoadingError, match="Failed to parse COCO JSON file"):
+            UnifiedDataset._load_and_validate_coco_json(dataset, json_path)
+
+    def test_build_coco_mappings(self):
+        """Test building COCO lookup mappings."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        coco_data = {
+            'images': [
+                {'id': 1, 'file_name': 'img1.jpg', 'width': 640, 'height': 480},
+                {'id': 2, 'file_name': 'img2.jpg', 'width': 640, 'height': 480},
+            ],
+            'annotations': [
+                {'id': 1, 'image_id': 1, 'category_id': 1, 'bbox': [100, 100, 200, 200]},
+                {'id': 2, 'image_id': 1, 'category_id': 2, 'bbox': [300, 300, 100, 100]},
+                {'id': 3, 'image_id': 2, 'category_id': 1, 'bbox': [150, 150, 250, 250]},
+            ],
+        }
+
+        img_id_to_info, img_id_to_anns = UnifiedDataset._build_coco_mappings(dataset, coco_data)
+
+        # Check image mappings
+        assert len(img_id_to_info) == 2
+        assert img_id_to_info[1]['file_name'] == 'img1.jpg'
+        assert img_id_to_info[2]['file_name'] == 'img2.jpg'
+
+        # Check annotation mappings
+        assert len(img_id_to_anns) == 2
+        assert len(img_id_to_anns[1]) == 2  # Image 1 has 2 annotations
+        assert len(img_id_to_anns[2]) == 1  # Image 2 has 1 annotation
+
+    def test_find_image_directory_explicit(self, temp_dir):
+        """Test finding image directory with explicit img_dir parameter."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        img_dir = temp_dir / 'custom_images'
+        img_dir.mkdir()
+
+        json_file = temp_dir / 'annotations.json'
+        json_file.touch()
+
+        result = UnifiedDataset._find_image_directory(
+            dataset, temp_dir, json_file, img_dir='custom_images'
+        )
+
+        assert result == img_dir
+
+    def test_find_image_directory_same_as_json(self, temp_dir):
+        """Test finding images in the same directory as JSON file."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        json_file = temp_dir / 'annotations.json'
+        json_file.touch()
+
+        # Create an image in the same directory
+        (temp_dir / 'img1.jpg').touch()
+
+        result = UnifiedDataset._find_image_directory(dataset, temp_dir, json_file)
+
+        assert result == temp_dir
+
+    def test_find_image_directory_standard_coco_structure(self, temp_dir):
+        """Test finding images in standard COCO directory structure."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        # Create standard COCO structure: images/val/
+        img_dir = temp_dir / 'images' / 'val'
+        img_dir.mkdir(parents=True)
+
+        json_file = temp_dir / 'val.json'
+        json_file.touch()
+
+        result = UnifiedDataset._find_image_directory(dataset, temp_dir, json_file)
+
+        assert result == img_dir
+
+    def test_find_image_directory_fallback_to_data_root(self, temp_dir):
+        """Test fallback to data_root when no images found elsewhere."""
+        dataset = mock.MagicMock(spec=UnifiedDataset)
+
+        json_file = temp_dir / 'subdir' / 'annotations.json'
+        json_file.parent.mkdir()
+        json_file.touch()
+
+        result = UnifiedDataset._find_image_directory(dataset, temp_dir, json_file)
+
+        assert result == temp_dir
+
+
+class TestErrorMessageQuality:
+    """Test that error messages are clear and helpful."""
+
+    def test_json_file_not_treated_as_text(self, temp_dir):
+        """Test that JSON files are not read line-by-line as text files.
+
+        This is a regression test for the bug where JSON file contents
+        were being read as image paths, causing massive error messages.
+        """
+        # Create a COCO JSON file
+        json_path = temp_dir / "annotations.json"
+        coco_data = {
+            'images': [{'id': 1, 'file_name': 'img1.jpg', 'width': 640, 'height': 480}],
+            'annotations': [
+                {'id': 1, 'image_id': 1, 'category_id': 1, 'bbox': [100, 100, 200, 200]}
+            ],
+            'categories': [{'id': 1, 'name': 'person'}],
+        }
+
+        with open(json_path, 'w') as f:
+            json.dump(coco_data, f)
+
+        # Create the image
+        img_path = temp_dir / 'img1.jpg'
+        img = Image.new('RGB', (640, 480))
+        img.save(img_path)
+
+        # Mock the dataset initialization
+        with patch('ax_datasets.objdataadapter.UnifiedDataset._configure_data') as mock_config:
+            mock_config.return_value = (temp_dir, json_path, None)
+
+            # This should work without trying to read JSON content as image paths
+            dataset = UnifiedDataset(
+                data_root=temp_dir,
+                split='val',
+                label_type=SupportedLabelType.COCOJSON,
+                val_data='annotations.json',
+            )
+
+            # Should successfully load 1 image
+            assert len(dataset) == 1
+            assert dataset.img_paths[0] == img_path
+
+    def test_missing_images_error_is_clear(self, temp_dir):
+        """Test that missing images produce clear error messages."""
+        dataset = UnifiedDataset.__new__(UnifiedDataset)
+
+        json_path = temp_dir / "annotations.json"
+        coco_data = {
+            'images': [
+                {'id': 1, 'file_name': 'missing1.jpg', 'width': 640, 'height': 480},
+                {'id': 2, 'file_name': 'missing2.jpg', 'width': 640, 'height': 480},
+            ],
+            'annotations': [
+                {'id': 1, 'image_id': 1, 'category_id': 1, 'bbox': [100, 100, 200, 200]},
+                {'id': 2, 'image_id': 2, 'category_id': 1, 'bbox': [100, 100, 200, 200]},
+            ],
+            'categories': [{'id': 1, 'name': 'person'}],
+        }
+
+        with open(json_path, 'w') as f:
+            json.dump(coco_data, f)
+
+        # This should raise a clear error about no images found
+        with pytest.raises(DataLoadingError, match="No images found from COCO JSON"):
+            dataset._load_from_coco_json(temp_dir, json_path, 'xyxy')
+
+    def test_invalid_json_format_error_is_clear(self, temp_dir):
+        """Test that invalid JSON produces a clear error message."""
+        dataset = UnifiedDataset.__new__(UnifiedDataset)
+
+        json_path = temp_dir / "invalid.json"
+        with open(json_path, 'w') as f:
+            f.write("{ this is not valid json }")
+
+        with pytest.raises(DataLoadingError, match="Failed to parse COCO JSON file"):
+            dataset._load_and_validate_coco_json(json_path)

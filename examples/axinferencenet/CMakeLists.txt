@@ -20,7 +20,10 @@ add_executable(axinferencenet_tensor axinferencenet_tensor.cpp)
 # Cascaded example
 add_executable(axinferencenet_cascaded axinferencenet_cascaded.cpp)
 
-foreach(target axinferencenet_example axinferencenet_tensor axinferencenet_cascaded)
+# Tracker example
+add_executable(axinferencenet_tracker axinferencenet_tracker.cpp)
+
+foreach(target axinferencenet_example axinferencenet_tensor axinferencenet_cascaded axinferencenet_tracker)
     target_compile_options(${target} PRIVATE
         -Wall
         -Werror
@@ -46,3 +49,14 @@ foreach(target axinferencenet_example axinferencenet_tensor axinferencenet_casca
     )
     install(TARGETS ${target} RUNTIME DESTINATION bin)
 endforeach()
+
+# Only axinferencenet_tracker needs Eigen and tracker headers/libs
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+
+target_include_directories(axinferencenet_tracker PRIVATE
+    ${EIGEN3_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/../trackers/include
+)
+target_link_libraries(axinferencenet_tracker PUBLIC
+    ${CMAKE_SOURCE_DIR}/../operators/lib/libtracker_factory.so
+)

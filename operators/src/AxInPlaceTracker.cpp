@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include "AxDataInterface.h"
 #include "AxLog.hpp"
 #include "AxMeta.hpp"
@@ -205,6 +205,7 @@ create_box_meta(const std::string &output_meta_key,
   map[output_meta_key]->enable_extern = false;
 }
 
+
 extern "C" void
 inplace(const AxDataInterface &data, const tracker_properties *prop,
     unsigned int subframe_index, unsigned int number_of_subframes,
@@ -280,9 +281,15 @@ inplace(const AxDataInterface &data, const tracker_properties *prop,
     }
   }
 
-  auto &per_stream_tracker = stream_tracker_map
-                                 .try_emplace(stream_id, prop->algorithm, prop->algo_params)
-                                 .first->second;
+  TrackerParams algo_params = prop->algo_params;
+  if (GetParamOrDefault<bool>(algo_params, "enable_id_recovery", false)) {
+    algo_params["img_width"] = static_cast<int>(video_info.width);
+    algo_params["img_height"] = static_cast<int>(video_info.height);
+  }
+
+  auto &per_stream_tracker
+      = stream_tracker_map.try_emplace(stream_id, prop->algorithm, algo_params)
+            .first->second;
 
   // Compute CMC transform if enabled
   std::optional<Eigen::Matrix<float, 2, 3>> cmc_transform;
@@ -394,8 +401,9 @@ inplace(const AxDataInterface &data, const tracker_properties *prop,
       if (tracking_descriptor.detection_meta_id >= kpts_meta->num_elements()) {
         throw std::runtime_error("inplace_tracker: detection_meta_id out of bounds");
       }
-      KptXyvVector kpts = kpts_meta->get_kpts_xyv(
-          tracking_descriptor.detection_meta_id * kpts_per_box, kpts_per_box);
+      auto kpts_span = kpts_meta->get_kpts_xyv(
+          tracking_descriptor.detection_meta_id, kpts_per_box);
+      KptXyvVector kpts(kpts_span.begin(), kpts_span.end());
       float score = kpts_meta->score(tracking_descriptor.detection_meta_id);
 
       std::vector<int> ids;

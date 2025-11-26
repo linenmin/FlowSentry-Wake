@@ -63,6 +63,12 @@ class AxMetaKptsDetection : public AxMetaBbox, public AxMetaKpts
     return decoder_name;
   }
 
+  void extend(const AxMetaKptsDetection &other)
+  {
+    AxMetaBbox::extend(other);
+    AxMetaKpts::extend(other);
+  }
+
   std::vector<int> kpts_shape;
   std::string decoder_name;
 };

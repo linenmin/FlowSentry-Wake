@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# Copyright Axelera AI, 2025
 import cv2
 import numpy as np
 
@@ -93,7 +94,7 @@ def main(window, stream):
             break
 
 
-with display.App(visible=False) as app:
+with display.App(renderer=False) as app:
     app.start_thread(main, (None, stream), name='InferenceThread')
     app.run()
 stream.stop()

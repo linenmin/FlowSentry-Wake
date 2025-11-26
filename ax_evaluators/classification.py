@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 # Evaluator implementation for classification tasks.
 from __future__ import annotations
 
@@ -48,6 +48,58 @@ _aggregators = {
     "max": AggregatorMax,
 }
 
+_STREAMING_AGGREGATORS = (AggregatorAverage, AggregatorSum, AggregatorMin, AggregatorMax)
+
+
+class _RunningMetricState:
+    def __init__(self, store_values: bool = False) -> None:
+        self.store_values = store_values
+        self.values: Optional[List[float]] = [] if store_values else None
+        self.count = 0
+        self.total = 0.0
+        self.min_val: Optional[float] = None
+        self.max_val: Optional[float] = None
+
+    def update(self, value: float) -> None:
+        self.count += 1
+        self.total += value
+        self.min_val = value if self.min_val is None else min(self.min_val, value)
+        self.max_val = value if self.max_val is None else max(self.max_val, value)
+        if self.store_values and self.values is not None:
+            self.values.append(value)
+
+    def average(self) -> float:
+        return self.total / self.count if self.count else 0.0
+
+    def sum(self) -> float:
+        return self.total
+
+    def minimum(self) -> float:
+        return self.min_val if self.min_val is not None else 0.0
+
+    def maximum(self) -> float:
+        return self.max_val if self.max_val is not None else 0.0
+
+    def as_sequence(self) -> Sequence[float]:
+        if self.store_values and self.values is not None:
+            return self.values
+        if not self.count:
+            return []
+        # Fallback to a single representative value when history isn't tracked
+        return [self.average()]
+
+
+def _finalize_aggregator(aggregator: AggregatorBase, state: _RunningMetricState) -> float:
+    if isinstance(aggregator, AggregatorAverage):
+        return state.average()
+    if isinstance(aggregator, AggregatorSum):
+        return state.sum()
+    if isinstance(aggregator, AggregatorMin):
+        return state.minimum()
+    if isinstance(aggregator, AggregatorMax):
+        return state.maximum()
+    return aggregator(state.as_sequence())
+
 
 class GeneratorBase(collections.abc.Iterable):
     """This class is to put common functionality for all the generators
@@ -85,8 +137,7 @@ class GeneratorFull(GeneratorBase, Generic[PT, LT]):
 
 class Comparable(metaclass=abc.ABCMeta):
     @abc.abstractmethod
-    def __lt__(self, other: Any) -> bool:
-        ...
+    def __lt__(self, other: Any) -> bool: ...
 
 
 CT = TypeVar("CT", bound=Comparable)
@@ -402,7 +453,7 @@ class ClassificationEvaluator(types.Evaluator):
             self.predictions = []
             self.labels = []
         else:
-            self.metric_results = collections.defaultdict(list)
+            self._init_running_states()
         self._has_confirmed_topk = False
         self._default_topk = top_k
 
@@ -417,6 +468,8 @@ class ClassificationEvaluator(types.Evaluator):
             if len(scores) != self._default_topk:
                 LOG.info(f"Setting measurement of topk to {len(scores)}")
                 self.metric_defs = create_classification_metric_definitions(len(scores))
+                if not USE_OFFLINE_EVAL:
+                    self._init_running_states()
             self._has_confirmed_topk = True
 
         if USE_OFFLINE_EVAL:
@@ -425,7 +478,8 @@ class ClassificationEvaluator(types.Evaluator):
         else:
             for metric in self.metric_defs.get_metrics():
                 result = metric(prediction, label)
-                self.metric_results[metric.NAME].append(result)
+                state = self._state_for_metric(metric)
+                state.update(result)
 
     def collect_metrics(self):
         if USE_OFFLINE_EVAL:
@@ -434,10 +488,9 @@ class ClassificationEvaluator(types.Evaluator):
         else:
             results = collections.defaultdict(dict)
             for metric, aggregators in self.metric_defs.items():
+                state = self.metric_states.get(metric.NAME, _RunningMetricState())
                 for aggregator in aggregators:
-                    results[metric.NAME][aggregator.NAME] = aggregator(
-                        self.metric_results[metric.NAME]
-                    )
+                    results[metric.NAME][aggregator.NAME] = _finalize_aggregator(aggregator, state)
 
         metric_names = list(results.keys())
         aggregator_dict = {metric: list(aggs.keys()) for metric, aggs in results.items()}
@@ -451,3 +504,18 @@ class ClassificationEvaluator(types.Evaluator):
             for agg_name, value in aggregators.items():
                 eval_result.set_metric_result(metric_name, value, agg_name, is_percentage=True)
         return eval_result
+
+    def _init_running_states(self):
+        self.metric_states: Dict[str, _RunningMetricState] = {}
+        for metric, aggregators in self.metric_defs.items():
+            store_values = any(not isinstance(agg, _STREAMING_AGGREGATORS) for agg in aggregators)
+            self.metric_states[metric.NAME] = _RunningMetricState(store_values)
+
+    def _state_for_metric(self, metric: MetricBase) -> _RunningMetricState:
+        state = self.metric_states.get(metric.NAME)
+        if state is None:
+            aggregators = self.metric_defs.get_aggregators(metric)
+            store_values = any(not isinstance(agg, _STREAMING_AGGREGATORS) for agg in aggregators)
+            state = _RunningMetricState(store_values)
+            self.metric_states[metric.NAME] = state
+        return state
