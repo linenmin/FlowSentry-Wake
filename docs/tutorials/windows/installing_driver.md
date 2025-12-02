@@ -51,8 +51,8 @@ The PC desktop should display "Test Mode" in the lower right corner.
 > These steps require access to a Windows Administrator account.
 ### Step 1 - Getting the Drivers
 The driver archives can be downloaded from:
-- [MetisOmega-1.3.1-cd42e26.zip](https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/MetisOmega-1.3.1-cd42e26.zip)
-- [Switchtec-kmdf-0.7_2019.zip](https://media.axelera.ai/releases/v1.5.0/build-Release-Windows-2204-amd64/package_repos/Switchtec-kmdf-0.7_2019.zip) [Optional, only for 4-Metis PCIe board]
+- [MetisDriver-1.3.1.zip](https://software.axelera.ai/artifactory/axelera-win/driver/1.3.x/MetisDriver-1.3.1.zip)
+- [Switchtec-kmdf-0.7_2019.zip](https://software.axelera.ai/artifactory/axelera-win/driver/1.3.x/switchtec-kmdf-0.7_2019.zip) [Optional, only for 4-Metis PCIe board]
 
 Then extract the drivers locally. Each extracted folder should contain three files: .cat, .inf and .sys.
 
