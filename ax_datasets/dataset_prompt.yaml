@@ -108,8 +108,9 @@ WiderFace:
     \ prepare the dataset by following the instructions at the model source repository:\n\
     https://github.com/biubug6/Pytorch_Retinaface?tab=readme-ov-file#data1\n\n Step\
     \ 1: Download the organized dataset they used as in the \"Data1\" subsection.\n\
-    \ Step 2: Download the annotations from dropbox and take the val/label.txt to\
-    \ the data/widerface/val folder.\n Step 3: Download widerface mat files from https://github.com/biubug6/Pytorch_Retinaface/tree/master/widerface_evaluate/ground_truth\
+    \ Step 2: Download the annotations from https://media.axelera.ai/artifacts/data/retinaface_gt_labels.zip\
+    \ and take the val/label.txt to the data/widerface/val folder.\n Step 3: Download\
+    \ widerface mat files from https://github.com/biubug6/Pytorch_Retinaface/tree/master/widerface_evaluate/ground_truth\
     \ and place them in the data/widerface/wider_face_split folder.\n"
   splits:
     train:

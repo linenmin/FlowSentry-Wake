@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 // Optimized anchor-free YOLO(v8) decoder
 
 #include <opencv2/opencv.hpp>
@@ -350,8 +350,19 @@ decode_to_meta(const AxTensorsInterface &in_tensors,
   auto padding = prop->padding;
   if (tensors.size() != prop->sigmoid_tables.size() && tensors[0].bytes == 1) {
     throw std::runtime_error(
-        "ssd_decode_to_meta : Number of input tensors or dequantize parameters is incorrect");
+        "decode_to_meta : Number of input tensors or dequantize parameters is incorrect");
   }
+  if (tensors.size() == 1) {
+    throw std::runtime_error(
+        "decode_to_meta : Badly constructed pipeline, possible reason is setting handle_postamble or handle_all to true, please refer to docs/tutorials/application.md");
+  }
+
+  if (tensors.size() != padding.size()) {
+    throw std::runtime_error(
+        "depadd_tensors : number of tensors: " + std::to_string(tensors.size())
+        + " and padding size " + std::to_string(padding.size()) + " do not match");
+  }
+
   auto predictions = yolov8seg_decode::decode_tensors(tensors, *prop, padding, logger);
   predictions = ax_utils::topk(predictions, prop->topk);
 

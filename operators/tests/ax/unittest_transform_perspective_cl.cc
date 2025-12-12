@@ -9,21 +9,10 @@
 #include <CL/cl.h>
 #endif
 
+extern bool has_opencl_platform();
+
 namespace
 {
-bool has_opencl_platform = [] {
-  cl_platform_id platformId;
-  cl_uint numPlatforms;
-
-  auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
-  if (error == CL_SUCCESS) {
-    cl_uint num_devices = 0;
-    cl_device_id device_id;
-    error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
-  }
-  return error == CL_SUCCESS;
-}();
-
 class ColorFormatFixture : public ::testing::TestWithParam<FormatParam>
 {
 };
@@ -37,7 +26,7 @@ INSTANTIATE_TEST_SUITE_P(PerspectiveTestSuite, ColorFormatFixture,
 TEST_P(ColorFormatFixture, color_fusing_test)
 {
   FormatParam format = GetParam();
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -99,7 +88,7 @@ TEST_P(ColorFormatFixture, color_fusing_test)
 
 TEST(perspective_cl, identity_test)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -122,7 +111,7 @@ TEST(perspective_cl, identity_test)
 
 TEST(perspective_cl, translation_test)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -152,7 +141,7 @@ TEST(perspective_cl, translation_test)
 
 TEST(perspective_cl, happy_path_test)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -175,7 +164,7 @@ TEST(perspective_cl, happy_path_test)
 
 TEST(perspective_cl, invalid_matrix_test)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {

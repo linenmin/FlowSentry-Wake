@@ -271,6 +271,18 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolo_obb_decode::prop
   }
   auto tensors = in_tensors;
   auto padding = prop->padding;
+
+  if (tensors.size() == 1) {
+    throw std::runtime_error(
+        "decode_to_meta : Badly constructed pipeline, possible reason is setting handle_postamble or handle_all to true, please refer to docs/tutorials/application.md");
+  }
+
+  if (tensors.size() != padding.size()) {
+    throw std::runtime_error(
+        "decode_to_meta : number of tensors: " + std::to_string(tensors.size())
+        + " and padding size " + std::to_string(padding.size()) + " do not match");
+  }
+
   if (tensors.size() != prop->sigmoid_tables.size() && tensors[0].bytes == 1) {
     throw std::runtime_error(
         "ssd_decode_to_meta : Number of input tensors or dequantize parameters is incorrect");

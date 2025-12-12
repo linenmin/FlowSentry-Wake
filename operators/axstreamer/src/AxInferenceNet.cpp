@@ -1356,6 +1356,20 @@ default_latency_callback(const std::string &, uint64_t, uint64_t)
 
 std::unique_ptr<Ax::InferenceNet>
 Ax::create_inference_net(const InferenceNetProperties &properties,
+    Ax::Logger &logger, InferenceDoneCallback done_callback)
+{
+  return create_inference_net(properties, logger, done_callback, {}, nullptr);
+}
+
+std::unique_ptr<Ax::InferenceNet>
+Ax::create_inference_net(const InferenceNetProperties &properties, Ax::Logger &logger,
+    InferenceDoneCallback done_callback, LatencyCallback latency_callback)
+{
+  return create_inference_net(properties, logger, done_callback, latency_callback, nullptr);
+}
+
+std::unique_ptr<Ax::InferenceNet>
+Ax::create_inference_net(const InferenceNetProperties &properties,
     Ax::Logger &logger, InferenceDoneCallback done_callback,
     LatencyCallback latency_callback, AxAllocationContext *allocation_context)
 {

@@ -1,4 +1,4 @@
-// Copyright Axelera AI, 2024
+// Copyright Axelera AI, 2025
 // Optimized anchor-free YOLOX decoder
 
 #include "AxDataInterface.h"
@@ -258,6 +258,17 @@ decode_to_meta(const AxTensorsInterface &in_tensors,
   }
   auto tensors = in_tensors;
   auto padding = prop->padding;
+
+  if (tensors.size() == 1) {
+    throw std::runtime_error(
+        "decode_to_meta : Badly constructed pipeline, possible reason is setting handle_postamble or handle_all to true, please refer to docs/tutorials/application.md");
+  }
+
+  if (tensors.size() != padding.size()) {
+    throw std::runtime_error(
+        "decode_to_meta : number of tensors: " + std::to_string(tensors.size())
+        + " and padding size " + std::to_string(padding.size()) + " do not match");
+  }
 
   auto predictions = yolox_decode::decode_tensors(tensors, *prop, padding, logger);
   predictions = ax_utils::topk(predictions, prop->topk);

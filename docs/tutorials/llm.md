@@ -27,8 +27,7 @@
 
 
 ## Prerequisites
-- Complete [Installation Guide](install.md) - **CRITICAL: You must create the separate LLM virtual environment**
-- **IMPORTANT: Switch to LLM environment** (`source ~/voyagersdk-llm/bin/activate`) - Vision and LLM environments are separate
+- Complete [Installation Guide](install.md)
 - Understanding of language model concepts (tokens, prompts, generation)
 - At least 4GB AIPU memory (some models require 16GB)
 
@@ -36,16 +35,6 @@
 **Intermediate** - Requires understanding of LLM concepts and environment management
 
 ## Overview
-
-> [!CRITICAL]
-> **Virtual Environment Management:** LLM inference uses a **separate virtual environment** from vision models.
-> 
-> - **Vision models**: `source ~/voyagersdk/bin/activate`
-> - **LLM models**: `source ~/voyagersdk-llm/bin/activate`
-> 
-> These environments have different dependencies (GStreamer vs Transformers) and cannot be mixed. Always verify your active environment with `echo $VIRTUAL_ENV` before running LLM commands.
-
----
 
 Axelera AI is excited to offer support for Small Language Models (SLMs) on our Metis platform. The Voyager SDK enables a selection of popular, license-free SLMs, allowing users to experience language model inference on our hardware.
 You can try several precompiled models to explore the capabilities available today. This feature demonstrates the potential of running efficient language model inference on Axelera AI's hardware architecture.
@@ -229,12 +218,11 @@ The `axextractembeddings` tool is used to generate embedding files **offline**. 
 
 ## Next Steps
 - **Explore available models**: Browse LLM section in [Model Zoo](../reference/model_zoo.md)
-- **Switch between workflows**: Remember to activate correct environment (vision: `~/voyagersdk`, LLM: `~/voyagersdk-llm`)
 - **Monitor resource usage**: Use [AxMonitor](axmonitor.md) to track memory consumption
 
 ## Related Documentation
 **Tutorials:**
-- [Installation Guide](install.md) - Create the separate voyagersdk-llm virtual environment
+- [Installation Guide](install.md) - Create the separate voyagersdk virtual environment
 - [Quick Start Guide](quick_start_guide.md) - General SDK concepts apply to LLM workflow
 
 **References:**

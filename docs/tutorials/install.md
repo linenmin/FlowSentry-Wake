@@ -145,7 +145,6 @@ installer configuration file on the new release branch.
 - **Run first inference**: [Quick Start Guide](quick_start_guide.md)
 - **Enable firmware updates**: [Enable Updates Guide](enable_updates.md) for new boards
 - **For Windows users**: Complete [Windows Getting Started](windows/windows_getting_started.md)
-- **For LLM workflows**: Create separate environment per installation instructions
 
 ## Related Documentation
 **Tutorials:**

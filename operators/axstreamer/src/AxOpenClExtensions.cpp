@@ -78,11 +78,11 @@ create_buffer(void *ptr, cl_context ctx, cl_extensions extensions,
       flags |= CL_MEM_COPY_HOST_PTR;
     }
   }
-  if ((flags & CL_MEM_WRITE_ONLY) != 0) {
+  if ((flags & CL_MEM_WRITE_ONLY) != 0 && !ptr) {
     //  Output buffers are best allocated in device memory
+    //  when we have an opencl buffer
     flags &= ~(CL_MEM_USE_HOST_PTR | CL_MEM_ALLOC_HOST_PTR | CL_MEM_COPY_HOST_PTR);
     flags |= CL_MEM_ALLOC_HOST_PTR;
-    ptr = nullptr;
   }
 
   const auto unaligned_size = elem_size * num_elems;

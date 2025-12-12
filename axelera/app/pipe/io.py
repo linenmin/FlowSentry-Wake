@@ -277,17 +277,27 @@ def _build_gst_usb(gst: gst_builder.Builder, src: config.Source) -> bool:
 
 def _build_gst_rtsp(gst: gst_builder.Builder, location: str, stream_idx: str, latency=500):
     username, password, location = _parse_livestream_location(location)
-    gst.rtspsrc(
-        {
-            'location': f"{location}",
-            'user-id': f"{username}",
-            'user-pw': f"{password}",
-            'latency': latency,
-            # decodebin to dynamically select the appropriate decoder
-            # for h264, h265, mjpg, jpeg
-            'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
-        }
-    )
+    rtsp_props = {
+        'location': f"{location}",
+        'user-id': f"{username}",
+        'user-pw': f"{password}",
+        'latency': latency,
+        # decodebin to dynamically select the appropriate decoder
+        # for h264, h265, mjpg, jpeg
+        'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
+    }
+
+    rtsp_protocol = config.env.rtsp_protocol.lower()
+    if rtsp_protocol == 'tcp':
+        rtsp_props['protocols'] = 4
+    elif rtsp_protocol == 'udp':
+        rtsp_props['protocols'] = 1
+    elif rtsp_protocol not in ('all', ''):
+        LOG.warning(
+            f"Invalid AXELERA_RTSP_PROTOCOL value: {rtsp_protocol}. Valid values are 'tcp', 'udp', or 'all'. Using default protocol selection."
+        )
+
+    gst.rtspsrc(rtsp_props)
     gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
 
 

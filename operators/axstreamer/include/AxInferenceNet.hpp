@@ -138,6 +138,9 @@ InferenceNetProperties read_inferencenet_properties(const std::string &p, Ax::Lo
 /// buffers that were created in axtransform operators to AxInferenceNet.
 std::unique_ptr<InferenceNet> create_inference_net(const InferenceNetProperties &properties,
     Ax::Logger &logger, InferenceDoneCallback done_callback);
+std::unique_ptr<InferenceNet> create_inference_net(
+    const InferenceNetProperties &properties, Ax::Logger &logger,
+    InferenceDoneCallback done_callback, LatencyCallback latency_callback);
 std::unique_ptr<InferenceNet> create_inference_net(const InferenceNetProperties &properties,
     Ax::Logger &logger, InferenceDoneCallback done_callback,
     LatencyCallback latency_callback, AxAllocationContext *allocation_context);

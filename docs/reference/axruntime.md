@@ -385,8 +385,9 @@ AXR_EXPORT axrProperties * axr_create_properties (
 
 
 * `context` the context
-* `initial_properties` a string of ; separated key=value pairs.
+* `initial_properties` a string of newline separated key=value pairs.  
 
+For integer parameters, the value should be passed as decimal.  For boolean parameters use 0/1.
 
 **Returns:**
 
@@ -442,6 +443,17 @@ AXR_EXPORT axrConnection * axr_device_connect (
 * `device` the device to connect to (or NULL to connect to the first available device)
 * `num_sub_devices` number of sub devices to connect to
 * `properties` options to use when connecting to the device
+
+Valid properties are :
+
+======================== ========== ===========================================
+Property                 Default    Description
+======================== ========== ===========================================
+device_firmware_check             1 If 1, check the firmware version of the
+                                    device and reload if necessary.
+======================== ========== ===========================================
+
+
 ### function `axr_device_ready`
 
 _Check if a device is ready to be connected to after configuration._
@@ -654,6 +666,7 @@ AXR_EXPORT axrModel * axr_load_model (
 
 * `context` the context
 * `path` the path to the model file return null if the model could not be created if non-null the model creation was successful
+
 ### function `axr_load_model_instance`
 
 _Load a model onto a connected device._
@@ -672,6 +685,24 @@ AXR_EXPORT axrModelInstance * axr_load_model_instance (
 * `connection` the connected device
 * `model` the model to load
 * `properties` the properties to use when loading the model, or NULL to use the default set of properties.
+
+Valid properties are :
+
+ ================= ======= =================================================================
+ Property          Default Description
+ ================= ======= =================================================================
+ aipu_cores        0       L2 resources to allocate for the model, set to batch size
+ num_sub_devices   0       Number of sub-devices to use, set to batch size of the model
+ input_dmabuf      0       True if the input arguments are dmabuf file descriptors
+ device_profiling  0       True to enable device profiling
+ host_profiling    0       True to enable host profiling
+ output_dmabuf     0       True if the output arguments are dmabuf file descriptors
+ double_buffer     0       True to enable double buffering
+ elf_in_ddr        1       True if the model was compiled with elf_in_ddr as True.
+ ================= ======= =================================================================
+
+
+
 ### function `axr_num_model_inputs`
 
 _Get the number of inputs to the model._

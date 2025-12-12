@@ -9,25 +9,13 @@
 #include <CL/cl.h>
 #endif
 
+extern bool has_opencl_platform();
+
 namespace
 {
-bool has_opencl_platform = [] {
-  cl_platform_id platformId;
-  cl_uint numPlatforms;
-
-  auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
-  if (error == CL_SUCCESS) {
-    cl_uint num_devices = 0;
-    cl_device_id device_id;
-    error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
-  }
-  return error == CL_SUCCESS;
-}();
-
-
 TEST(normalize_cl, no_mean_or_scale)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -55,9 +43,69 @@ TEST(normalize_cl, no_mean_or_scale)
   EXPECT_EQ(out_buf, expected);
 }
 
+TEST(normalize_cl, no_mean_or_scale_rgb)
+{
+  if (!has_opencl_platform()) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "mean", "0.5, 0.5 ,0.5" },
+    { "std", "1.0, 1.0, 1.0" },
+    { "quant_zeropoint", "0" },
+    { "quant_scale", "0.003919653594493866" },
+  };
+
+  auto xform = Ax::LoadTransform("normalize_cl", input);
+  std::vector<uint8_t> in_buf(4 * 3);
+  std::iota(in_buf.begin(), in_buf.end(), 0);
+  std::vector<uint8_t> out_buf(4 * 4);
+
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x81, 0x82, 0x83, 0x00, 0x84, 0x85, 0x86, 0x00,
+    0x87, 0x88, 0x89, 0x00, 0x8a, 0x8b, 0x8c, 0x00,
+    // clang-format on
+  };
+  auto in = AxTensorsInterface{ { { 1, 1, 4, 3 }, 1, in_buf.data() } };
+  auto out = AxTensorsInterface{ { { 1, 1, 4, 4 }, 1, out_buf.data() } };
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
+  EXPECT_EQ(out_buf, expected);
+}
+
+TEST(normalize_cl, no_mean_or_scale_grey)
+{
+  if (!has_opencl_platform()) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "mean", "0.5, 0.5 ,0.5" },
+    { "std", "1.0, 1.0, 1.0" },
+    { "quant_zeropoint", "0" },
+    { "quant_scale", "0.003919653594493866" },
+  };
+
+  auto xform = Ax::LoadTransform("normalize_cl", input);
+  std::vector<uint8_t> in_buf(16);
+  std::iota(in_buf.begin(), in_buf.end(), 0);
+  std::vector<uint8_t> out_buf(16);
+
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88,
+    0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90,
+    // clang-format on
+  };
+  auto in = AxTensorsInterface{ { { 1, 1, 16, 1 }, 1, in_buf.data() } };
+  auto out = AxTensorsInterface{ { { 1, 1, 16, 1 }, 1, out_buf.data() } };
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
+  EXPECT_EQ(out_buf, expected);
+}
+
 TEST(normalize_cl, no_mean_or_scale_4x4)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -87,9 +135,39 @@ TEST(normalize_cl, no_mean_or_scale_4x4)
   EXPECT_EQ(out_buf, expected);
 }
 
+TEST(normalize_cl, no_mean_or_scale_4x4_grey)
+{
+  if (!has_opencl_platform()) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "mean", "0.5, 0.5 ,0.5" },
+    { "std", "1.0, 1.0, 1.0" },
+    { "quant_zeropoint", "0" },
+    { "quant_scale", "0.003919653594493866" },
+  };
+
+  auto xform = Ax::LoadTransform("normalize_cl", input);
+  std::vector<uint8_t> in_buf(16);
+  std::iota(in_buf.begin(), in_buf.end(), 0);
+  std::vector<uint8_t> out_buf(16);
+
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88,
+    0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90,
+    // clang-format on
+  };
+  auto in = AxTensorsInterface{ { { 1, 4, 4, 1 }, 1, in_buf.data() } };
+  auto out = AxTensorsInterface{ { { 1, 4, 4, 1 }, 1, out_buf.data() } };
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
+  EXPECT_EQ(out_buf, expected);
+}
+
 TEST(normalize_cl, no_mean_or_scale_4x4_x)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -119,5 +197,34 @@ TEST(normalize_cl, no_mean_or_scale_4x4_x)
   EXPECT_EQ(out_buf, expected);
 }
 
+TEST(normalize_cl, no_mean_or_scale_4x4_x_grey)
+{
+  if (!has_opencl_platform()) {
+    GTEST_SKIP();
+  }
+  std::unordered_map<std::string, std::string> input = {
+    { "mean", "0.0, 0.0 ,0.0" },
+    { "std", "1.0, 1.0, 1.0" },
+    { "quant_zeropoint", "-127.5" },
+    { "quant_scale", "0.003919653594493866" },
+  };
+
+  auto xform = Ax::LoadTransform("normalize_cl", input);
+  std::vector<uint8_t> in_buf(4 * 4);
+  std::iota(in_buf.begin(), in_buf.end(), 0);
+  std::vector<uint8_t> out_buf(4 * 4);
+
+  auto expected = std::vector<uint8_t>{
+    // clang-format off
+    0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88,
+    0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90,
+    // clang-format on
+  };
+  auto in = AxTensorsInterface{ { { 1, 4, 4, 1 }, 1, in_buf.data() } };
+  auto out = AxTensorsInterface{ { { 1, 4, 4, 1 }, 1, out_buf.data() } };
+  Ax::MetaMap metadata;
+  xform->transform(in, out, 0, 1, metadata);
+  EXPECT_EQ(out_buf, expected);
+}
 
 } // namespace

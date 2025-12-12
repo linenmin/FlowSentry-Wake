@@ -112,11 +112,11 @@ postprocess_yolov8(const float *data, const std::vector<int64_t> &dims,
     int img_height, int model_input_width, int model_input_height, bool letterboxed)
 {
   std::vector<Detection> detections;
-  if (dims.size() != 3)
+  if (dims.size() != 4)
     return detections;
-  int batch = static_cast<int>(dims[0]);
-  int num_channels = static_cast<int>(dims[1]);
-  int num_anchors = static_cast<int>(dims[2]);
+  int batch = static_cast<int>(dims[1]);
+  int num_channels = static_cast<int>(dims[2]);
+  int num_anchors = static_cast<int>(dims[3]);
   int num_classes = num_channels - 4;
   if (batch != 1)
     return detections;

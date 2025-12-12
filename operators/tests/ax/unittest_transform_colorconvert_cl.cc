@@ -9,21 +9,10 @@
 #include <CL/cl.h>
 #endif
 
+extern bool has_opencl_platform();
+
 namespace
 {
-bool has_opencl_platform = [] {
-  cl_platform_id platformId;
-  cl_uint numPlatforms;
-
-  auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
-  if (error == CL_SUCCESS) {
-    cl_uint num_devices = 0;
-    cl_device_id device_id;
-    error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
-  }
-  return error == CL_SUCCESS;
-}();
-
 struct format_params {
   AxVideoFormat in;
   std::string out;
@@ -69,7 +58,7 @@ INSTANTIATE_TEST_SUITE_P(ColorConvertTestSuite, PassthroughFixture,
 
 TEST_P(PassthroughFixture, can_passthrough)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   auto format = GetParam();
@@ -129,7 +118,7 @@ TEST_P(PassthroughFixture, can_passthrough)
 
 TEST(Conversions1, rgb2bgr)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -162,7 +151,7 @@ TEST(Conversions1, rgb2bgr)
 
 TEST(Conversions, bgr2rgb)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -195,7 +184,7 @@ TEST(Conversions, bgr2rgb)
 
 TEST(Conversion, yuyv2rgb)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -234,7 +223,7 @@ TEST(Conversion, yuyv2rgb)
 
 TEST(Conversion, i4202rgb)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -277,7 +266,7 @@ TEST(Conversion, i4202rgb)
 
 TEST(Conversion, nv12torgb)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -319,7 +308,7 @@ TEST(Conversion, nv12torgb)
 // Test for RGB to GRAY conversion
 TEST(Conversion, rgb2gray)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -359,7 +348,7 @@ TEST(Conversion, rgb2gray)
 // Test for grayscale passthrough from YUV formats (NV12/I420)
 TEST(Conversion, yuv2gray_passthrough)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -411,7 +400,7 @@ TEST(Conversion, yuv2gray_passthrough)
 
 TEST(Conversion, i4202rgb_clockwise)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -456,7 +445,7 @@ TEST(Conversion, i4202rgb_clockwise)
 
 TEST(Conversion, i4202rgb_counterclockwise)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -501,7 +490,7 @@ TEST(Conversion, i4202rgb_counterclockwise)
 
 TEST(Conversion, i4202rgb_upper_left_diagonal)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -546,7 +535,7 @@ TEST(Conversion, i4202rgb_upper_left_diagonal)
 
 TEST(Conversion, i4202rgb_upper_right_diagonal)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -592,7 +581,7 @@ TEST(Conversion, i4202rgb_upper_right_diagonal)
 
 TEST(Conversion, i4202rgb_horizontal_flip)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -635,7 +624,7 @@ TEST(Conversion, i4202rgb_horizontal_flip)
 
 TEST(Conversion, i4202rgb_vertical_flip)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -678,7 +667,7 @@ TEST(Conversion, i4202rgb_vertical_flip)
 
 TEST(Conversion, i4202rgb_rotate180)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -721,7 +710,7 @@ TEST(Conversion, i4202rgb_rotate180)
 
 TEST(Conversion, yuyv_rotate180)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -759,7 +748,7 @@ TEST(Conversion, yuyv_rotate180)
 
 TEST(Conversion, nv122rgb_rotate180)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -799,7 +788,7 @@ TEST(Conversion, nv122rgb_rotate180)
 // Test for BGRA to GRAY conversion
 TEST(Conversion, bgra2gray)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -835,7 +824,7 @@ TEST(Conversion, bgra2gray)
 // Test for YUY2 to GRAY conversion
 TEST(Conversion, yuyv2gray)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {

@@ -392,6 +392,15 @@ class Environment:
         '''
         return 'gl,3,3'
 
+    @_var
+    def rtsp_protocol(self) -> str:
+        '''The network protocol to use for RTSP streams.
+
+        Can be 'tcp', 'udp', or 'all'.
+        With 'all', it enables udp-mcast+udp+tcp protocols.
+        '''
+        return 'all'
+
     def show_help(self) -> str:
         lines = [
             'NOTE: the following environment variables are subject to change and are for advanced',

@@ -318,10 +318,10 @@ def _check_dataset_status(
     if not dataset_root.exists():
         return DatasetStatus.NOT_FOUND, f"Dataset directory {dataset_root} does not exist."
 
-    # As we already have Imagenet locally, we don't want to redownload it.
-    # If there is no local ImageNet, we will still download it due to lack of verified files.
-    if dataset_name == 'ImageNet' and not is_private:
-        return DatasetStatus.IGNORE_CHECK, "Ignore the check for ImageNet."
+    # In customer environments, skip validation for ImageNet and let torchvision handle extraction
+    # of manually placed tar files. Internal environments with S3 access still validate.
+    if dataset_name == 'ImageNet' and env.s3_available == '0':
+        return DatasetStatus.IGNORE_CHECK, "Ignore the check for ImageNet in customer environment."
     elif dataset_name.startswith('Customer.'):
         return DatasetStatus.IGNORE_CHECK, "Ignore the check for Customer dataset."
 

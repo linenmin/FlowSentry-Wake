@@ -117,6 +117,7 @@ TEST(yolov8seg_decode_scores, all_filtered_at_max_confidence)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0, 0" },
     { "scales", "1, 1, 1, 1" },
     { "confidence_threshold", "1.0" },
@@ -156,6 +157,7 @@ TEST(yolov8seg_decode_scores, none_filtered_at_min_confidence_with_multiclass)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0, 0" },
     { "scales", "1, 1, 1, 1" },
     { "confidence_threshold", "0.0" },
@@ -202,6 +204,7 @@ TEST(yolov8seg_decode_scores, all_but_first_highest_filtered_at_min_confidence_w
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0, 0" },
     { "scales", "1, 1, 1, 1" },
     { "confidence_threshold", "0.0" },
@@ -250,6 +253,7 @@ TEST(yolov8seg_decode_scores, with_multiclass_all_below_threshold_are_filtered)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0, 0" },
     { "scales", "1, 1, 1, 1" },
     { "confidence_threshold", "0.4" },
@@ -296,6 +300,7 @@ TEST(yolov8seg_decode_scores, without_scaling_segments)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0, 0" },
     { "scales", "1, 1, 1, 1" },
     { "confidence_threshold", "0.4" },
@@ -342,6 +347,7 @@ TEST(yolov8seg_decode_scores, with_heatmap)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0, 0" },
     { "scales", "1, 1, 1, 1" },
     { "confidence_threshold", "0.4" },

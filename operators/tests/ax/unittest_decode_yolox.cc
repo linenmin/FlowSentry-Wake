@@ -103,6 +103,7 @@ TEST(yolox_decode_scores, all_filtered_at_max_confidence)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0" },
     { "scales", "1, 1, 1" },
     { "confidence_threshold", "1.0" },
@@ -138,6 +139,7 @@ TEST(yolox_decode_scores, none_filtered_at_min_confidence_with_multiclass)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0" },
     { "scales", "1, 1, 0.5" },
     { "confidence_threshold", "0.0" },
@@ -174,6 +176,7 @@ TEST(yolox_decode_scores, all_but_first_highest_filtered_at_min_confidence_with_
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0" },
     { "scales", "1, 1, 0.5" },
     { "confidence_threshold", "0.0" },
@@ -210,6 +213,7 @@ TEST(yolox_decode_scores, with_multiclass_all_below_threshold_are_filtered)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "-1, -1, 0" },
     { "scales", "0.5, 0.5, 1" },
     { "confidence_threshold", "0.4" },
@@ -246,6 +250,7 @@ TEST(yolox_decode_scores, with_num_classes_2)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "-1, -1, 0" },
     { "scales", "0.5, 0.5, 1" },
     { "confidence_threshold", "0.4" },
@@ -283,6 +288,7 @@ TEST(yolox_decode_scores, with_num_classes_80)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "-1, -1, 0" },
     { "scales", "0.5, 0.5, 1" },
     { "confidence_threshold", "0.4" },

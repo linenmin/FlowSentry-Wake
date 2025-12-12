@@ -147,6 +147,7 @@ TEST(yolov8_decode_scores, all_filtered_at_max_confidence)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0" },
     { "scales", "1, 1" },
     { "confidence_threshold", "1.0" },
@@ -179,6 +180,7 @@ TEST(yolov8_decode_scores, none_filtered_at_min_confidence_with_multiclass)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0" },
     { "scales", "1, 1" },
     { "confidence_threshold", "0.0" },
@@ -213,6 +215,7 @@ TEST(yolov8_decode_scores, all_but_first_highest_filtered_at_min_confidence_with
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0" },
     { "scales", "1, 1" },
     { "confidence_threshold", "0.0" },
@@ -249,6 +252,7 @@ TEST(yolov8_decode_scores, with_multiclass_all_below_threshold_are_filtered)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0" },
     { "scales", "1, 1" },
     { "confidence_threshold", "0.4" },
@@ -284,6 +288,7 @@ TEST(yolov8_decode_kpts, decode_kpts)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0, 0" },
     { "scales", "1.0, 1.0, 0" },
     { "confidence_threshold", "0.20" },
@@ -321,6 +326,7 @@ TEST(yolov8_decode_scores, dequantize_with_sigmoid)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "14, 14" },
     { "scales", "2.0, 2.0" },
     { "confidence_threshold", "0.20" },
@@ -356,6 +362,7 @@ TEST(yolov8_focal_loss, detects_focal_loss_from_box_depth_64)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0" },
     { "scales", "1.0, 1.0" },
     { "confidence_threshold", "0.20" },
@@ -386,6 +393,7 @@ TEST(yolov8_focal_loss, detects_no_focal_loss_from_box_depth_4)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 0" },
     { "scales", "1.0, 1.0" },
     { "confidence_threshold", "0.20" },
@@ -446,6 +454,7 @@ TEST(yolov8_focal_loss, dequantize_tables_used_for_non_focal_loss)
 
   std::unordered_map<std::string, std::string> properties = {
     { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" },
     { "zero_points", "0, 5" }, // Different zero points for scores and boxes
     { "scales", "1.0, 2.0" }, // Different scales
     { "confidence_threshold", "0.20" },
@@ -469,5 +478,68 @@ TEST(yolov8_focal_loss, dequantize_tables_used_for_non_focal_loss)
   auto [actual_boxes, actual_scores, actual_classes] = get_object_meta(map, meta_identifier);
   EXPECT_EQ(actual_classes.size(), 1);
   EXPECT_EQ(actual_boxes.size(), 4);
+}
+
+TEST(yolov8_errors, single_tensor_with_padding_throws)
+{
+  // Test that single tensor with padding parameter throws error
+  auto scores = std::vector<int8_t>{ 1 };
+  std::string meta_identifier = "yolov8";
+
+  std::unordered_map<std::string, std::string> properties = {
+    { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0" },
+    { "zero_points", "0" },
+    { "scales", "1.0" },
+    { "confidence_threshold", "0.20" },
+    { "classes", "1" },
+    { "multiclass", "0" },
+    { "model_width", "640" },
+    { "model_height", "640" },
+    { "scale_up", "1" },
+  };
+  auto decoder = Ax::LoadDecode("yolov8", properties);
+
+  AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
+  auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 1 });
+
+  // Should throw runtime error for single tensor with padding
+  EXPECT_THROW(decoder->decode_to_meta(score_tensors, 0, 1, map, video_info), std::runtime_error);
+}
+
+TEST(yolov8_errors, tensor_padding_size_mismatch_throws)
+{
+  // Test that tensor count not matching padding count throws error
+  auto boxes = std::vector<int8_t>(64);
+  auto scores = std::vector<int8_t>{ 1 };
+  auto kpts = std::vector<int8_t>(51);
+  std::string meta_identifier = "yolov8";
+
+  std::unordered_map<std::string, std::string> properties = {
+    { "meta_key", meta_identifier },
+    { "padding", "0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0" }, // Only 2 padding entries for 3 tensors
+    { "zero_points", "0, 0, 0" },
+    { "scales", "1.0, 1.0, 1.0" },
+    { "confidence_threshold", "0.20" },
+    { "classes", "1" },
+    { "multiclass", "0" },
+    { "kpts_shape", "17,3" },
+    { "model_width", "640" },
+    { "model_height", "640" },
+    { "scale_up", "1" },
+  };
+  auto decoder = Ax::LoadDecode("yolov8", properties);
+
+  AxVideoInterface video_info{ { 64, 48, 64, 0, AxVideoFormat::RGB }, nullptr };
+  std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> map{};
+  auto score_tensors = tensors_from_vector(scores, { 1, 1, 1, 1 });
+  auto box_tensors = tensors_from_vector(boxes, { 1, 1, 1, 64 });
+  auto kpts_tensors = tensors_from_vector(kpts, { 1, 1, 1, 51 });
+  score_tensors.push_back(box_tensors[0]);
+  score_tensors.push_back(kpts_tensors[0]);
+
+  // Should throw runtime error for tensor/padding size mismatch (3 tensors, 2 padding entries)
+  EXPECT_THROW(decoder->decode_to_meta(score_tensors, 0, 1, map, video_info), std::runtime_error);
 }
 } // namespace

@@ -363,19 +363,33 @@ def test_input_gst_bad_usb():
 
 
 @pytest.mark.parametrize(
-    'source, location, username, password',
+    'source, location, username, password, protocol, exp_protocol',
     [
-        ('rtsp://somehost/', 'rtsp://somehost/', '', ''),
-        ('rtsp://user@somehost/path?param=1', 'rtsp://somehost/path?param=1', 'user', ''),
-        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass'),
-        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass'),
-        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass'),
+        ('rtsp://somehost/', 'rtsp://somehost/', '', '', '', None),
+        ('rtsp://somehost/', 'rtsp://somehost/', '', '', 'tcp', 4),
+        ('rtsp://somehost/', 'rtsp://somehost/', '', '', 'udp', 1),
+        ('rtsp://somehost/', 'rtsp://somehost/', '', '', 'all', None),
+        (
+            'rtsp://user@somehost/path?param=1',
+            'rtsp://somehost/path?param=1',
+            'user',
+            '',
+            '',
+            None,
+        ),
+        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass', 'all', None),
+        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass', 'all', None),
+        ('rtsp://user:pass@somehost/', 'rtsp://somehost/', 'user', 'pass', 'all', None),
     ],
 )
-def test_input_gst_rtsp(source, location, username, password):
-    with patch.object(os, 'access', return_value=1):
+def test_input_gst_rtsp(source, location, username, password, protocol, exp_protocol):
+    with contextlib.ExitStack() as s:
+        s.enter_context(patch.object(os, 'access', return_value=1))
+        s.enter_context(patch.object(config, 'env', Mock(rtsp_protocol=protocol)))
         pipein = io.SinglePipeInput('gst', config.Source(source))
-    assert _gen_input_gst(pipein) == [
+        got = _gen_input_gst(pipein)
+    prot = {} if exp_protocol is None else {'protocols': exp_protocol}
+    assert got == [
         {
             'instance': 'rtspsrc',
             'location': location,
@@ -383,6 +397,7 @@ def test_input_gst_rtsp(source, location, username, password):
             'user-pw': password,
             'latency': 500,
             'connections': {'stream_%u': 'rtspcapsfilter0.sink'},
+            **prot,
         },
         {
             'instance': 'capsfilter',

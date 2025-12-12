@@ -1,23 +1,10 @@
-// Copyright Axelera AI, 2023
+// Copyright Axelera AI, 2025
 #include <gtest/gtest.h>
 
 #include "AxNms.hpp"
 
 namespace
 {
-
-bool has_opencl_platform = [] {
-  cl_platform_id platformId;
-  cl_uint numPlatforms;
-
-  if (clGetPlatformIDs(1, &platformId, &numPlatforms) == CL_SUCCESS) {
-    cl_device_id deviceId;
-    return clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &deviceId, NULL) == CL_SUCCESS
-           || clGetDeviceIDs(platformId, CL_DEVICE_TYPE_CPU, 1, &deviceId, NULL) == CL_SUCCESS;
-  }
-  return false;
-}();
-
 TEST(nms, empty_list_returns_empty_list)
 {
   auto boxes = std::vector<box_xyxy>{};

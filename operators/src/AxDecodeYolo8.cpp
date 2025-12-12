@@ -326,6 +326,18 @@ decode_to_meta(const AxTensorsInterface &in_tensors, const yolov8_decode::proper
     throw std::runtime_error(
         "ssd_decode_to_meta : Number of input tensors or dequantize parameters is incorrect");
   }
+
+  if (tensors.size() == 1) {
+    throw std::runtime_error(
+        "depadd_tensors : padding cannot be applied when there is only one tensor, consider removing handle_all: True from pipeline");
+  }
+
+  if (tensors.size() != padding.size()) {
+    throw std::runtime_error(
+        "depadd_tensors : number of tensors: " + std::to_string(tensors.size())
+        + " and padding size " + std::to_string(padding.size()) + " do not match");
+  }
+
   auto predictions = yolov8_decode::decode_tensors(tensors, *prop, padding, logger);
   predictions = ax_utils::topk(predictions, prop->topk);
 

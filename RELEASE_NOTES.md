@@ -1,10 +1,13 @@
 ![](/docs/images/Ax_Page_Banner_2500x168_01.png)
-# Voyager SDK release notes v1.5.1
+# Voyager SDK release notes v1.5
 
+- [Voyager SDK release notes v1.5.2](#voyager-sdk-release-notes-v152)
+  - [Fixed Issues Since v1.5.1](#fixed-issues-since-v151)
+  - [New Features / Support (v1.5.2)](#new-features--support-v152)
+  - [Document Updates](#document-updates)
 - [Voyager SDK release notes v1.5.1](#voyager-sdk-release-notes-v151)
-  - [Release Description](#release-description)
   - [Release Qualification](#release-qualification)
-  - [New Features / Support](#new-features--support)
+  - [New Features / Support (v1.5.1)](#new-features--support-v151)
     - [New Axelera AI Cards and Systems](#new-axelera-ai-cards-and-systems)
     - [New Platforms](#new-platforms)
     - [New Networks Supported](#new-networks-supported)
@@ -15,7 +18,7 @@
     - [End-to-End Pipelines](#end-to-end-pipelines)
     - [Installation](#installation)
     - [AI Pipeline Builder](#ai-pipeline-builder)
-    - [\[Beta\] Model Compiler](#beta-model-compiler)
+    - [Beta Model Compiler](#beta-model-compiler)
     - [Runtime](#runtime)
     - [Tools](#tools)
     - [Firmware](#firmware)
@@ -27,9 +30,26 @@
     - [Runtime Environment](#runtime-environment)
   - [Further Support](#further-support)
 
-## Release Description
-Voyager SDK v1.5 release brings new models and features, and multiple improvements to the overall
-stability and maturity of the system.
+## Voyager SDK release notes v1.5.2
+This release addresses several issues found in v1.5.1 and delivers targeted improvements to stability, compatibility, and developer experience.
+
+## Fixed Issues Since v1.5.1
+- Fixed build failures for ImageNet networks using HINT instructions.
+- Fixed `NormaliseCL` to correctly handle non‑4‑channel inputs.
+- Prevented segmentation faults in YOLO decoders when receiving an unexpected number of input tensors.
+
+## New Features / Support (v1.5.2)
+- Runtime now supports executing AXM files directly, streamlining deployment.
+- Added selectable network protocol for RTSP sources in `inference.py` to improve input flexibility.
+- Added `create_inference_net` overloads to allow existing code to compile without a context parameter.
+
+## Document Updates
+- Updated runtime and deployment guidance for AXM execution.
+- General refinements across tutorials and references aligned with the above changes.
+
+## Voyager SDK release notes v1.5.1
+
+- [Voyager SDK release notes v1.5.1](#voyager-sdk-release-notes-v151)
 - Support for Ubuntu 24.04 with Python 3.12 for development and running inference.
 - A new computer vision task Oriented Bounding Boxes Object Detection added to the model zoo.
 - New models added for image classification, instance segmentation and keypoint detection.
@@ -40,7 +60,7 @@ This is a production-ready release of Voyager SDK. Software components and featu
 development are marked "\[Beta\]" indicating tested functionality that will continue to grow in
 future releases or "\[Experimental\]" indicating early-stage feature with limited testing.
 
-## New Features / Support
+## New Features / Support (v1.5.1)
 
 ### New Axelera AI Cards and Systems
 - The release adds support for
@@ -150,7 +170,7 @@ parent folder of Voyager SDK.
 - A more general crop operator has been added.
 - The centre crop operator now allows for non-square outputs.
 
-### \[Beta\] Model Compiler
+### Beta Model Compiler
 - \[Beta\] The Compiler CLI default for the `resources_used` option has been changed from 1.0 to
   0.25. With this option set to the default 0.25 on compilation, it compiles models for single-core
   using 1/4 of the available memory resources. This allows to easily decide at execution time how
@@ -198,7 +218,7 @@ parent folder of Voyager SDK.
 - Fixed incorrect cropping and face alignment issues.
 
 ## Known Issues and Limitations
-- **Installer tool’s docker option not working (SDK-8083):** Running `install.sh --docker` fails on
+- **Installer tool's docker option not working (SDK-8083):** Running `install.sh --docker` fails on
   certain configurations, for example on Firefly ITX-3588J motherboard.
 - **Higher RAM required for compiling `Real-ESRGAN-x4plus`:**
   Compiling the model Real-ESRGAN-x4plus requires a machine with at least 128GB of memory.

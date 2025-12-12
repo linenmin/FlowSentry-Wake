@@ -9,21 +9,10 @@
 #include <CL/cl.h>
 #endif
 
+extern bool has_opencl_platform();
+
 namespace
 {
-bool has_opencl_platform = [] {
-  cl_platform_id platformId;
-  cl_uint numPlatforms;
-
-  auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
-  if (error == CL_SUCCESS) {
-    cl_uint num_devices = 0;
-    cl_device_id device_id;
-    error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
-  }
-  return error == CL_SUCCESS;
-}();
-
 class PolarTransformFormatFixture : public ::testing::TestWithParam<FormatParam>
 {
 };
@@ -85,7 +74,7 @@ make_video_interface(int width, int height, AxVideoFormat format, std::vector<ui
 TEST_P(PolarTransformFormatFixture, basic_polar_transform_test)
 {
   FormatParam format = GetParam();
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
 
@@ -128,7 +117,7 @@ TEST_P(PolarTransformFormatFixture, basic_polar_transform_test)
 TEST_P(PolarTransformFormatFixture, inverse_polar_transform_test)
 {
   FormatParam format = GetParam();
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
 
@@ -170,7 +159,7 @@ TEST_P(PolarTransformFormatFixture, inverse_polar_transform_test)
 TEST_P(PolarTransformFormatFixture, polar_transform_with_custom_center)
 {
   FormatParam format = GetParam();
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
 
@@ -211,7 +200,7 @@ TEST_P(PolarTransformFormatFixture, polar_transform_with_custom_center)
 TEST_P(PolarTransformFormatFixture, polar_transform_semilog_mode)
 {
   FormatParam format = GetParam();
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
 
@@ -256,7 +245,7 @@ TEST_P(PolarTransformFormatFixture, polar_transform_semilog_mode)
 TEST_P(PolarTransformFormatFixture, polar_transform_with_size_property)
 {
   FormatParam format = GetParam();
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
 
@@ -301,7 +290,7 @@ class PolarTransformExceptionTest : public ::testing::Test
 
 TEST_F(PolarTransformExceptionTest, test_conflicting_size_and_width_height)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
 
@@ -316,7 +305,7 @@ TEST_F(PolarTransformExceptionTest, test_conflicting_size_and_width_height)
 
 TEST_F(PolarTransformExceptionTest, test_unsupported_input_format)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
 

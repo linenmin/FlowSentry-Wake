@@ -167,11 +167,11 @@ Create a local windows-packages directory and download the installers:x
 rmdir /s /q windows-packages 2>nul
 mkdir windows-packages
 cd windows-packages
-curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.1/axelera-win-device-installer.exe
-curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.1/axelera-win-runtime-installer.exe
-curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.1/axelera-win-syslibs-installer.exe
-curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.1/axelera-win-toolchain-deps-installer.exe
-curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.1/axelera-win-services-installer.exe
+curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.x/axelera-win-device-installer.exe
+curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.x/axelera-win-runtime-installer.exe
+curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.x/axelera-win-syslibs-installer.exe
+curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.x/axelera-win-toolchain-deps-installer.exe
+curl -L -O https://software.axelera.ai/artifactory/axelera-win/packages/1.5.x/axelera-win-services-installer.exe
 curl -L -O https://software.axelera.ai/artifactory/axelera-runtime-pypi/axelera-runtime/axelera_runtime-1.5.1-py3-none-any.whl
 curl -L -O https://software.axelera.ai/artifactory/axelera-runtime-pypi/axelera-types/axelera_types-1.5.1-py3-none-any.whl
 curl -L -O https://software.axelera.ai/artifactory/axelera-runtime-pypi/axelera-llm/axelera_llm-1.5.1-py3-none-any.whl

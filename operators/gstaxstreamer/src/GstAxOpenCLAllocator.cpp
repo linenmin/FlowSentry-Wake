@@ -108,6 +108,23 @@ release_buffer_dependencies(GstOpenCLMemory *ocl_mem)
     gst_buffer_unref((GstBuffer *) mem);
   }
   ocl_mem->buffer.gst_memories.clear();
+  if (ocl_mem->buffer.event) {
+    clReleaseEvent(ocl_mem->buffer.event);
+    ocl_mem->buffer.event = nullptr;
+  }
+}
+
+static cl_command_queue
+get_command_queue()
+{
+  GstOpenCLAllocator *opencl_allocator = GST_OPENCL_ALLOCATOR_CAST(
+      gst_opencl_allocator_get("auto", nullptr)); // Get the OpenCL allocator
+  if (opencl_allocator) {
+    auto commands = opencl_allocator->cl_details.commands; // Get the command queue
+    gst_object_unref(opencl_allocator); // Don't forget to unref when done
+    return commands;
+  }
+  return nullptr;
 }
 
 static gpointer
@@ -121,22 +138,21 @@ gst_opencl_map(GstMemory *mem, gsize maxsize, GstMapFlags flags)
   //  If we have a buffer, then we need to map it into CPU space
   //  Once we have done that we can release the buffer and any dependencies
   if (ocl_mem->buffer.buffer) {
-    cl_command_queue commands = nullptr;
-    GstOpenCLAllocator *opencl_allocator = GST_OPENCL_ALLOCATOR_CAST(
-        gst_opencl_allocator_get("auto", nullptr)); // Get the OpenCL allocator
-    if (opencl_allocator) {
-      commands = opencl_allocator->cl_details.commands; // Get the command queue
-      gst_object_unref(opencl_allocator); // Don't forget to unref when done
-    }
+    cl_command_queue commands = get_command_queue();
     if (!commands) {
       GST_ERROR_OBJECT(ocl_mem, "No OpenCL command queue available for mapping");
       return nullptr;
     }
     int error = CL_SUCCESS;
-    auto cl_flags = (flags & GST_MAP_WRITE) != 0 ? CL_MAP_WRITE_INVALIDATE_REGION : CL_MAP_READ;
-    ocl_mem->buffer.mapped = clEnqueueMapBuffer(commands, ocl_mem->buffer.buffer,
-        CL_TRUE, cl_flags, 0, maxsize, 0, nullptr, nullptr, &error);
-
+    if (ocl_mem->buffer.event) {
+      clWaitForEvents(1, &ocl_mem->buffer.event);
+      clReleaseEvent(ocl_mem->buffer.event);
+      ocl_mem->buffer.event = nullptr;
+    } else {
+      auto cl_flags = (flags & GST_MAP_WRITE) != 0 ? CL_MAP_WRITE_INVALIDATE_REGION : CL_MAP_READ;
+      ocl_mem->buffer.mapped = clEnqueueMapBuffer(commands, ocl_mem->buffer.buffer,
+          CL_TRUE, cl_flags, 0, maxsize, 0, nullptr, nullptr, &error);
+    }
     release_buffer_dependencies(ocl_mem);
     if (error != CL_SUCCESS) {
       GST_ERROR_OBJECT(ocl_mem, "Failed to map the buffer to CPU space: %d", error);
@@ -155,13 +171,7 @@ gst_opencl_unmap(GstMemory *mem)
     GST_ERROR_OBJECT(ocl_mem, "Unable to map non OpenCL memory");
   }
   if (ocl_mem->buffer.buffer) {
-    cl_command_queue commands = nullptr;
-    GstOpenCLAllocator *opencl_allocator = GST_OPENCL_ALLOCATOR_CAST(
-        gst_opencl_allocator_get("auto", nullptr)); // Get the OpenCL allocator
-    if (opencl_allocator) {
-      commands = opencl_allocator->cl_details.commands; // Get the command queue
-      gst_object_unref(opencl_allocator); // Don't forget to unref when done
-    }
+    cl_command_queue commands = get_command_queue();
     if (!commands) {
       GST_ERROR_OBJECT(ocl_mem, "No OpenCL command queue available for mapping");
       return;
@@ -187,9 +197,7 @@ gst_opencl_free(GstAllocator *allocator, GstMemory *mem)
       GST_ERROR_OBJECT(self, "Failed to release OpenCL buffer: %d", error);
     }
   }
-
   release_buffer_dependencies(ocl_mem);
-
   std::free(ocl_mem->buffer.data.data());
   delete ocl_mem;
 }

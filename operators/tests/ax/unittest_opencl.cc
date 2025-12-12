@@ -12,26 +12,31 @@
 
 static Ax::Logger defaultLogger(Ax::Severity::warning);
 
+bool
+has_opencl_platform()
+{
+  static bool has_opencl_platform = [] {
+    cl_platform_id platformId;
+    cl_uint numPlatforms;
+
+    auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
+    if (error == CL_SUCCESS) {
+      cl_uint num_devices = 0;
+      cl_device_id device_id;
+      error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
+    }
+    return error == CL_SUCCESS;
+  }();
+  return has_opencl_platform;
+}
+
 namespace opencl_tests
 {
-
-bool has_opencl_platform = [] {
-  cl_platform_id platformId;
-  cl_uint numPlatforms;
-
-  auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
-  if (error == CL_SUCCESS) {
-    cl_uint num_devices = 0;
-    cl_device_id device_id;
-    error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
-  }
-  return error == CL_SUCCESS;
-}();
 
 
 TEST(cl_details, build_details_has_correct_version)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   auto ctx = AxAllocationContextHandle(ax_create_allocation_context("auto", nullptr));
@@ -40,7 +45,7 @@ TEST(cl_details, build_details_has_correct_version)
 
 TEST(cl_details, clone_context_copies_version)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   auto ctx = AxAllocationContextHandle(ax_create_allocation_context("auto", nullptr));
@@ -52,7 +57,7 @@ TEST(cl_details, clone_context_copies_version)
 
 TEST(cl_details, cl_program_fails_with_incorrect_version)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   auto ctx = AxAllocationContextHandle(ax_create_allocation_context("auto", nullptr));

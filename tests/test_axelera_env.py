@@ -1,4 +1,4 @@
-# Copyright Axelera AI, 2024
+# Copyright Axelera AI, 2025
 
 from pathlib import Path
 import re
@@ -115,6 +115,13 @@ def test_use_double_buffer():
 def test_torch_device():
     assert get().torch_device == ''
     assert get(torch_device='cuda').torch_device == 'cuda'
+
+
+def test_rtsp_protocol():
+    assert get().rtsp_protocol == 'all'
+    assert get(rtsp_protocol='tcp').rtsp_protocol == 'tcp'
+    assert get(rtsp_protocol='udp').rtsp_protocol == 'udp'
+    assert get(rtsp_protocol='all').rtsp_protocol == 'all'
 
 
 def test_help():

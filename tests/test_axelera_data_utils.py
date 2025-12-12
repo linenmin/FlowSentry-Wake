@@ -401,3 +401,117 @@ def test_download_hint_with_file_extraction(
         # Check that the hint includes both filenames from the val split
         assert 'ILSVRC2012_devkit_t12.tar.gz' in hint_message
         assert 'ILSVRC2012_img_val.tar' in hint_message
+
+
+def test_check_dataset_status_without_mocking(mock_filesystem, tmp_path):
+    """Direct calls to _check_dataset_status to verify logic works end-to-end without mocks"""
+    with patch.dict(
+        os.environ,
+        {'AXELERA_FRAMEWORK': str(mock_filesystem), 'AXELERA_S3_AVAILABLE': '0'},
+    ):
+        from axelera.app.data_utils import DatasetConfig, _check_dataset_status
+
+        config = DatasetConfig(
+            mock_filesystem / "ax_datasets" / DatasetYamlFile.DATASET_PRIVATE.value,
+            DatasetYamlFile.DATASET_PRIVATE,
+        )
+
+        # ImageNet with manually placed files in customer environment
+        dataset_root = tmp_path / "imagenet_with_files"
+        dataset_root.mkdir()
+        (dataset_root / 'ILSVRC2012_img_val.tar').touch()
+        (dataset_root / 'ILSVRC2012_devkit_t12.tar.gz').touch()
+        status, _ = _check_dataset_status(dataset_root, 'ImageNet', 'val', config, is_private=True)
+        assert status == DatasetStatus.IGNORE_CHECK
+
+        # Customer datasets always skip validation
+        dataset_root = tmp_path / "customer_dataset"
+        dataset_root.mkdir()
+        status, _ = _check_dataset_status(
+            dataset_root, 'Customer.Test', 'val', config, is_private=True
+        )
+        assert status == DatasetStatus.IGNORE_CHECK
+
+
+@pytest.mark.parametrize(
+    "dataset_name,s3_available,expected_status",
+    [
+        ('ImageNet', '0', DatasetStatus.IGNORE_CHECK),  # Customer env: skip validation
+        ('ImageNet', '1', DatasetStatus.INCOMPLETE),  # Internal env: validate
+        ('Customer.Test', '0', DatasetStatus.IGNORE_CHECK),  # Always skip for Customer.*
+        ('Customer.Test', '1', DatasetStatus.IGNORE_CHECK),  # Always skip for Customer.*
+    ],
+)
+def test_dataset_status_invariants(
+    mock_filesystem, tmp_path, dataset_name, s3_available, expected_status
+):
+    """Verify critical invariants: ImageNet checks s3_available, Customer.* always ignores"""
+    with patch.dict(
+        os.environ,
+        {'AXELERA_FRAMEWORK': str(mock_filesystem), 'AXELERA_S3_AVAILABLE': s3_available},
+    ):
+        from axelera.app.data_utils import DatasetConfig, _check_dataset_status
+
+        config = DatasetConfig(
+            mock_filesystem / "ax_datasets" / DatasetYamlFile.DATASET_PRIVATE.value,
+            DatasetYamlFile.DATASET_PRIVATE,
+        )
+
+        dataset_root = tmp_path / dataset_name.replace('.', '_')
+        dataset_root.mkdir(parents=True)
+
+        status, _ = _check_dataset_status(
+            dataset_root, dataset_name, 'val', config, is_private=True
+        )
+        assert status == expected_status
+
+
+@pytest.mark.parametrize(
+    "s3_available,dataset_has_files",
+    [
+        ('0', True),  # Customer env with tar files
+        ('0', False),  # Customer env with empty dir
+        ('1', True),  # Internal env with tar files
+        ('1', False),  # Internal env with empty dir
+    ],
+)
+def test_imagenet_ignore_check_in_customer_environment(
+    mock_filesystem, tmp_path, s3_available, dataset_has_files
+):
+    """ImageNet skips validation in customer environments, validates in internal environments"""
+    dataset_root = tmp_path / "ImageNet"
+    dataset_root.mkdir(parents=True)
+
+    if dataset_has_files:
+        # Simulate user placing tar files
+        (dataset_root / 'ILSVRC2012_img_val.tar').touch()
+        (dataset_root / 'ILSVRC2012_devkit_t12.tar.gz').touch()
+
+    with patch.dict(
+        os.environ,
+        {'AXELERA_FRAMEWORK': str(mock_filesystem), 'AXELERA_S3_AVAILABLE': s3_available},
+    ):
+        from axelera.app.data_utils import DatasetConfig, _check_dataset_status
+
+        # Load config
+        config = DatasetConfig(
+            mock_filesystem / "ax_datasets" / DatasetYamlFile.DATASET_PRIVATE.value,
+            DatasetYamlFile.DATASET_PRIVATE,
+        )
+
+        status, msg = _check_dataset_status(
+            dataset_root, 'ImageNet', 'val', config, is_private=True
+        )
+
+        if s3_available == '0':
+            # Customer environment: should always IGNORE_CHECK for ImageNet
+            assert status == DatasetStatus.IGNORE_CHECK
+            assert "Ignore the check for ImageNet in customer environment" in msg
+        else:
+            # Internal environment: should validate normally
+            if dataset_has_files:
+                assert status == DatasetStatus.INCOMPLETE
+                assert "No completion stamp found" in msg
+            else:
+                assert status == DatasetStatus.INCOMPLETE
+                assert "Dataset directory is empty" in msg

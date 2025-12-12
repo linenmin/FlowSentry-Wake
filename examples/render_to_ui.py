@@ -9,7 +9,8 @@ This demo shows how to:
     * Add UI controls: greyscale toggle, network selection, source selection, image preprocessor selection, and dynamic add/remove pipelines
 
 Requirements:
-    pip install wxPython
+    sudo apt install libgtk-3-dev
+    pip install wxpython
 """
 
 from __future__ import annotations

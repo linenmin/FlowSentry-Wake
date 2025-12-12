@@ -9,8 +9,20 @@
 
 #include "AxOpenCl.hpp"
 
+class CLNormalize;
+
+struct normalize_properties {
+  float quant_scale;
+  float quant_zeropoint;
+  std::vector<cl_float> add;
+  std::vector<cl_float> mul;
+  std::unique_ptr<CLNormalize> normalize;
+  bool to_tensor{};
+  bool downstream_supports_opencl{};
+};
+
 const char *kernel_cl = R"##(
-__kernel void quantize(const int heightA, const int widthA, const int strideIn, const int strideOut,
+__kernel void quantize_rgba(const int heightA, const int widthA, const int strideIn, const int strideOut,
 __global const uchar4 *in, __global char4 *out, float4 mul, float4 add) {
     const int col = get_global_id(0);
     const int row = get_global_id(1);
@@ -18,6 +30,29 @@ __global const uchar4 *in, __global char4 *out, float4 mul, float4 add) {
       const int in_idx = row  * (strideIn >> 2) + col;
       const int out_idx = row * (strideOut >> 2) + col;
       out[out_idx] = convert_char4_sat(mad(convert_float4(in[in_idx]), mul, add));
+    }
+}
+
+__kernel void quantize_rgb(const int heightA, const int widthA, const int strideIn, const int strideOut,
+__global const uchar *in, __global char4 *out, float4 mul, float4 add) {
+    const int col = get_global_id(0);
+    const int row = get_global_id(1);
+    if (row < heightA && col < widthA){
+      __global const uchar * p_in = in + (row * strideIn);
+      const int out_idx = row * (strideOut >> 2) + col;
+      uchar4 in_val = (uchar4)(vload3(col, p_in), 0);
+      out[out_idx] = convert_char4_sat(mad(convert_float4(in_val), mul, add));
+    }
+}
+
+__kernel void quantize_grey(const int heightA, const int widthA, const int strideIn, const int strideOut,
+__global const uchar *in, __global char *out, float4 mul, float4 add) {
+    const int col = get_global_id(0);
+    const int row = get_global_id(1);
+    if (row < heightA && col < widthA){
+      const int in_idx = row  * strideIn + col;
+      const int out_idx = row * strideOut + col;
+      out[out_idx] = convert_char_sat(mad(in[in_idx], mul.x, add.x));
     }
 }
 
@@ -35,12 +70,15 @@ class CLNormalize
   using kernel = CLProgram::ax_kernel;
 
   CLNormalize(std::string source, Ax::Logger &logger)
-      : program(source, logger), quantize{ program.get_kernel("quantize") }
+      : program(source, logger), //
+        quantize_rgba{ program.get_kernel("quantize_rgba") }, //
+        quantize_rgb{ program.get_kernel("quantize_rgb") }, //
+        quantize_grey{ program.get_kernel("quantize_grey") }
   {
   }
 
-  CLProgram::flush_details run_kernel(
-      const kernel &kernel, const buffer_details &out, const buffer &outbuf)
+  CLProgram::flush_details run_kernel(const kernel &kernel,
+      const buffer_details &out, const buffer &outbuf, bool start_flush)
   {
     size_t global_work_size[3] = { 1, 1, 1 };
     global_work_size[0] = out.width;
@@ -50,42 +88,57 @@ class CLNormalize
       throw std::runtime_error("Unable to execute kernel. Error: "
                                + ax_utils::cl_error_to_string(error));
     }
-    return program.flush_output_buffer_async(outbuf, ax_utils::determine_buffer_size(out));
+    return start_flush ? program.flush_output_buffer_async(
+               outbuf, ax_utils::determine_buffer_size(out)) :
+                         CLProgram::flush_details{};
   }
 
-
-  std::function<void()> run(const buffer_details &in, const buffer_details &out,
-      const std::vector<cl_float> &add, const std::vector<cl_float> &mul)
+  kernel get_kernel(const buffer_details &in)
   {
+    if (in.channels == 4) {
+      return quantize_rgba;
+    } else if (in.channels == 3) {
+      return quantize_rgb;
+    } else if (in.channels == 1) {
+      return quantize_grey;
+    } else {
+      throw std::runtime_error("Unsupported number of channels for normalize: "
+                               + std::to_string(in.channels));
+    }
+  }
+
+  void run(const buffer_details &in, const buffer_details &out, const normalize_properties &prop)
+  {
+    bool start_flush = !prop.downstream_supports_opencl;
     auto inpbuf = program.create_buffer(in, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR);
     auto outbuf = program.create_buffer(out, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR);
 
-    program.set_kernel_args(quantize, 0, out.height, out.width, in.stride,
-        out.stride, *inpbuf, *outbuf, mul, add);
+    auto kernel = get_kernel(in);
+    program.set_kernel_args(kernel, 0, out.height, out.width, in.stride,
+        out.stride, *inpbuf, *outbuf, prop.mul, prop.add);
 
-    auto [error, event, mapped] = run_kernel(quantize, out, outbuf);
+    auto [error, event, mapped] = run_kernel(kernel, out, outbuf, start_flush);
     if (error != CL_SUCCESS) {
       throw std::runtime_error("Unable to map output buffer, error: "
                                + ax_utils::cl_error_to_string(error));
     }
-    return [this, event, mapped, inpbuf, outbuf]() {
-      program.unmap_buffer(event, outbuf, mapped);
-    };
+    if (!event) {
+      if (auto *p = std::get_if<opencl_buffer *>(&out.data)) {
+        (*p)->event = event;
+        (*p)->mapped = mapped;
+      } else {
+        clWaitForEvents(1, &event);
+        clReleaseEvent(event);
+      }
+    }
   }
 
   private:
   CLProgram program;
   int error{};
-  kernel quantize;
-};
-
-struct normalize_properties {
-  float quant_scale;
-  float quant_zeropoint;
-  std::vector<cl_float> add;
-  std::vector<cl_float> mul;
-  std::unique_ptr<CLNormalize> normalize;
-  bool to_tensor{};
+  kernel quantize_rgba;
+  kernel quantize_rgb;
+  kernel quantize_grey;
 };
 
 extern "C" const std::unordered_set<std::string> &
@@ -144,29 +197,47 @@ init_and_set_static_properties(
 }
 
 extern "C" void
-set_dynamic_properties(const std::unordered_map<std::string, std::string> & /*input*/,
-    normalize_properties * /*prop*/, Ax::Logger & /*logger*/)
+set_dynamic_properties(const std::unordered_map<std::string, std::string> &input,
+    normalize_properties *prop, Ax::Logger & /*logger*/)
 {
+  prop->downstream_supports_opencl = Ax::get_property(input, "downstream_supports_opencl",
+      "resize_cl_static_properties", prop->downstream_supports_opencl);
 }
 
 extern "C" AxDataInterface
 set_output_interface(const AxDataInterface &interface,
     const normalize_properties *prop, Ax::Logger &logger)
 {
+  auto in_details = ax_utils::extract_buffer_details(interface);
+  auto out_channels = in_details[0].channels == 1 ? 1 : 4;
   if (prop->to_tensor) {
     if (std::holds_alternative<AxVideoInterface>(interface)) {
       auto &info = std::get<AxVideoInterface>(interface).info;
-      AxTensorsInterface output = { { { 1, info.height, info.width, 4 }, 1, nullptr } };
+      AxTensorsInterface output
+          = { { { 1, info.height, info.width, out_channels }, 1, nullptr } };
       return AxDataInterface(output);
     }
   }
   AxDataInterface output = interface;
+  if (auto *video = std::get_if<AxVideoInterface>(&output)) {
+    //  Output is always 8-bit signed char
+    video->info.format = AxVideoFormat::RGBA;
+  } else if (auto *tensors = std::get_if<AxTensorsInterface>(&output)) {
+    for (auto &tensor : *tensors) {
+      if (tensor.sizes.size() < 4) {
+        logger(AX_ERROR)
+            << "normalize: tensor must have at least 4 dimensions" << std::endl;
+        throw std::runtime_error("normalize: tensor must have at least 4 dimensions");
+      }
+      tensor.sizes[3] = out_channels;
+    }
+  }
   return output;
 }
 
 
-static std::function<void()>
-transform_async(const AxDataInterface &input, const AxDataInterface &output,
+extern "C" void
+transform(const AxDataInterface &input, const AxDataInterface &output,
     const normalize_properties *prop, unsigned int, unsigned int,
     std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &, Ax::Logger &logger)
 {
@@ -181,18 +252,5 @@ transform_async(const AxDataInterface &input, const AxDataInterface &output,
   if (output_details.size() != 1) {
     throw std::runtime_error("normalize works on single tensor (possibly batched) output only");
   }
-
-  return prop->normalize->run(input_details[0], output_details[0], prop->add, prop->mul);
-}
-
-extern "C" void
-transform(const AxDataInterface &input, const AxDataInterface &output,
-    const normalize_properties *prop, unsigned int, unsigned int,
-    std::unordered_map<std::string, std::unique_ptr<AxMetaBase>> &meta_map,
-    Ax::Logger &logger)
-{
-  logger(AX_WARN) << "Running in synchronous mode, possible performance degradation"
-                  << std::endl;
-  auto completer = transform_async(input, output, prop, 0, 0, meta_map, logger);
-  completer();
+  prop->normalize->run(input_details[0], output_details[0], *prop);
 }

@@ -12,6 +12,10 @@ Finally, we offer a prebuilt package to get quickly started without needing to c
 The ONNX file for the FastSAM segmentation model can be obtained from ultralytics:
 https://docs.ultralytics.com/reference/models/fastsam/model/#ultralytics.models.fastsam.model.FastSAM
 
+```bash
+pip install ultralytics
+```
+
 ```python
 from ultralytics import FastSAM
 
@@ -84,7 +88,7 @@ wget https://media.axelera.ai/artifacts/reference/apps/clip_rn50x4_bs1_simp_part
 To expedite setup, a precompiled model package is available for download. Extract the archive into the `build` directory using the following command:
 
 ```bash
-wget https://media.axelera.ai/artifacts/reference/apps/fastsams-rn50x4-onnx-1.4-runtime3.0.zip -O fastsams-rn50x4-onnx.zip && mkdir -p build && unzip -o fastsams-rn50x4-onnx.zip -d build/fastsams-rn50x4-onnx
+wget https://media.axelera.ai/artifacts/reference/apps/fastsams-rn50x4-onnx-1.4-runtime4.0.zip -O fastsams-rn50x4-onnx.zip && mkdir -p build && unzip -o fastsams-rn50x4-onnx.zip -d build/fastsams-rn50x4-onnx
 ```
 
 > [!NOTE]
@@ -93,11 +97,12 @@ wget https://media.axelera.ai/artifacts/reference/apps/fastsams-rn50x4-onnx-1.4-
 
 ## Running the FastSAM demo app
 
-Download the test video, install the tkinter library, and run the demo app:
+Download the test video, install the wxPython library, and run the demo app:
 
 ```bash
 wget https://media.axelera.ai/artifacts/test_videos/bowl-of-fruit.mp4 -O ./media/bowl-of-fruit.mp4
-sudo apt-get update && sudo apt-get install python3-tk
+sudo apt-get update && sudo apt-get install libgtk-3-dev
+pip install wxpython
 python ax_models/reference/apps/fastsam/fastsam-app.py
 ```
 

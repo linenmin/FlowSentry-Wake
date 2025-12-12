@@ -9,25 +9,13 @@
 #include <CL/cl.h>
 #endif
 
+extern bool has_opencl_platform();
+
 namespace
 {
-bool has_opencl_platform = [] {
-  cl_platform_id platformId;
-  cl_uint numPlatforms;
-
-  auto error = clGetPlatformIDs(1, &platformId, &numPlatforms);
-  if (error == CL_SUCCESS) {
-    cl_uint num_devices = 0;
-    cl_device_id device_id;
-    error = clGetDeviceIDs(platformId, CL_DEVICE_TYPE_GPU, 1, &device_id, &num_devices);
-  }
-  return error == CL_SUCCESS;
-}();
-
-
 TEST(resize_cl, two2one)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -138,7 +126,7 @@ TEST(resize_cl, two2one)
 
 TEST(resize_cl, four2one)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -172,7 +160,7 @@ TEST(resize_cl, four2one)
 
 TEST(resize_cl, four2one_rgb)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -206,7 +194,7 @@ TEST(resize_cl, four2one_rgb)
 
 TEST(resize_cl, scale_up)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -233,7 +221,7 @@ TEST(resize_cl, scale_up)
 
 TEST(resize_cl, no_scale_up)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -267,7 +255,7 @@ TEST(resize_cl, no_scale_up)
 
 TEST(resize_cl, halfpixel_centres_upscale)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -312,7 +300,7 @@ TEST(resize_cl, halfpixel_centres_upscale)
 
 TEST(resize_cl, no_resize_with_normalize)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -355,7 +343,7 @@ TEST(resize_cl, no_resize_with_normalize)
 
 TEST(resize_cl, yuyvrgb)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -397,7 +385,7 @@ TEST(resize_cl, yuyvrgb)
 
 TEST(resize_cl, i4202rgb)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {
@@ -444,7 +432,7 @@ TEST(resize_cl, i4202rgb)
 
 TEST(resize_cl, nv12torgb)
 {
-  if (!has_opencl_platform) {
+  if (!has_opencl_platform()) {
     GTEST_SKIP();
   }
   std::unordered_map<std::string, std::string> input = {

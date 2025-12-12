@@ -504,6 +504,22 @@ gst_axinferencenet_push_done(GstAxInferenceNet *inf, Ax::CompletedFrame &frame)
   }
 }
 
+static guint
+count_sink_pads(GstElement *element)
+{
+  guint count = 0;
+  GValue item = G_VALUE_INIT;
+  GstIterator *it = gst_element_iterate_sink_pads(element);
+
+  while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
+    count++;
+    g_value_reset(&item);
+  }
+
+  gst_iterator_free(it);
+  return count;
+}
+
 static int
 determine_max_pool_buffers(GstAxInferenceNet *sink)
 {
@@ -522,7 +538,8 @@ determine_max_pool_buffers(GstAxInferenceNet *sink)
     }
     //  This assumes 4 pre and 4 post processing operators with double
     //  buffering and 50 buffers for the last layer
-    auto other_buffers = 8 * 2 + 50;
+    auto num_sinks = count_sink_pads(GST_ELEMENT(sink));
+    auto other_buffers = 8 + 50 / (num_sinks > 0 ? num_sinks : 1);
     max_buffers = pre_fill + output_drop + other_buffers;
   }
   return max_buffers;

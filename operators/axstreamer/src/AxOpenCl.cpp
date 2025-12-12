@@ -182,7 +182,7 @@ get_order_preference(std::string_view preference, Ax::Logger &logger)
     return { "NVIDIA"s, "Intel"s, "ARM"s };
   } else if (preference == "nvidia") {
     return { "NVIDIA"s };
-  } else if (preference != "auto") { // AUTO or any other value
+  } else if (preference != "auto" && !preference.empty()) { // AUTO or any other value
     logger(AX_WARN) << "Unknown OpenCL preference: " << preference
                     << ", using auto" << std::endl;
   }
