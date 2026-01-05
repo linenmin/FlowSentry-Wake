@@ -253,11 +253,12 @@ class OpticalFlowDataAdapter(types.DataAdapter):
                     yield tensor
         
         # 使用 batch_size=1，因为我们的数据已经是成对的
+        # 使用 batch_size=None 禁用自动 batching，直接返回 dataset yield 的 tensor
+        # 这样避免 DataLoader 自动添加 batch 维度导致 Rank 5 问题
         return torch.utils.data.DataLoader(
             CalibrationIterableDataset(self),
-            batch_size=batch_size or 1,
-            num_workers=0,
-            collate_fn=lambda x: torch.stack(x)
+            batch_size=None,
+            num_workers=0
         )
 
 
