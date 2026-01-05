@@ -1,5 +1,5 @@
 # EdgeFlowNet 光流模型配置
-# 分辨率: 960×540, 输入: 6通道 (两帧RGB拼接)
+# 分辨率: 1024×576 (16:9, 16的倍数)
 axelera-model-format: 1.0.0
 
 name: edgeflownet-opticalflow
@@ -14,9 +14,9 @@ models:
     class_path: edgeflownet_model.py
     task_category: Classification
     input_tensor_layout: NHWC
-    input_tensor_shape: [1, 540, 960, 6]
+    input_tensor_shape: [1, 576, 1024, 6]
     input_color_format: RGB
-    weight_path: weights/edgeflownet_540_960.onnx
+    weight_path: weights/edgeflownet_576_1024.onnx
     dataset: EdgeFlowNetCalibrationDataset
     extra_kwargs:
 
@@ -25,6 +25,4 @@ datasets:
     class: OpticalFlowDataAdapter
     class_path: edgeflownet_model.py
     data_dir_name: calib_edgeflownet
-    # 移除 repr_imgs_dir_path，迫使 SDK 使用 DataAdapter 的 create_calibration_data_loader
-    # 我们使用自定义字段 calib_data_path 传递路径
     calib_data_path: data/calib_edgeflownet

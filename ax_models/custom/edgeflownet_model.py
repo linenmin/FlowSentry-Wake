@@ -29,8 +29,8 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
     
     # 类属性（不需要在 __init__ 中初始化）
     prev_frame = None
-    input_height = 540
-    input_width = 960
+    input_height = 576   # 16的倍数
+    input_width = 1024   # 16的倍数
     
     def init_model_deploy(self, model_info, dataset_config, **kwargs):
         """
@@ -112,8 +112,8 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         """
         self.dataset_config = dataset_config
         self.model_info = model_info
-        self.input_height = 540
-        self.input_width = 960
+        self.input_height = 576   # 16的倍数
+        self.input_width = 1024   # 16的倍数
         # 从配置中获取路径（支持多种配置方式）
         self.calib_data_path = dataset_config.get('calib_data_path', '')
         self.data_dir_path = dataset_config.get('data_dir_path', '')
