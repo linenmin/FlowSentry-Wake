@@ -246,8 +246,10 @@ class OpticalFlowDataAdapter(types.DataAdapter):
             def __iter__(self):
                 # 适配器产生 numpy [H, W, 6]
                 for combined in self.adapter:
-                    # 转换为 Tensor [6, H, W] (NCHW)
-                    tensor = torch.from_numpy(combined).permute(2, 0, 1)
+                    # 转换为 Tensor [H, W, 6] (NHWC)，保持模型输入格式
+                    # 不要进行 permute，因为模型 layout 是 NHWC
+                    tensor = torch.from_numpy(combined)
+                    print(f"DEBUG: Yielding tensor shape: {tensor.shape}")
                     yield tensor
         
         # 使用 batch_size=1，因为我们的数据已经是成对的
