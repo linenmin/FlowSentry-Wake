@@ -1,0 +1,29 @@
+# EdgeFlowNet 光流模型配置
+# 分辨率: 960×540, 输入: 6通道 (两帧RGB拼接)
+axelera-model-format: 1.0.0
+
+name: edgeflownet-opticalflow
+
+description: EdgeFlowNet 光流估计模型，用于计算连续两帧之间的像素运动。输入为两帧RGB图像拼接(6通道)，输出为光流场(2通道 u,v)。
+
+pipeline: null
+
+models:
+  edgeflownet:
+    class: EdgeFlowNetModel
+    class_path: edgeflownet_model.py
+    task_category: Other
+    input_tensor_layout: NHWC
+    input_tensor_shape: [1, 540, 960, 6]
+    input_color_format: RGB
+    weight_path: weights/edgeflownet_540_960.onnx
+    dataset: SintelCalibrationDataset
+    extra_kwargs:
+      aipu_cores: 4
+
+datasets:
+  SintelCalibrationDataset:
+    class: OpticalFlowDataAdapter
+    class_path: edgeflownet_model.py
+    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/sintel_calibration/
+    repr_imgs_dataloader_color_format: RGB
