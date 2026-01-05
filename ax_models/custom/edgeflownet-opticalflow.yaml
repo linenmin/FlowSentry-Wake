@@ -25,5 +25,5 @@ datasets:
     class: OpticalFlowDataAdapter
     class_path: edgeflownet_model.py
     data_dir_name: calib_edgeflownet
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/calib_edgeflownet/
-    repr_imgs_dataloader_color_format: RGB
+    # 不使用 repr_imgs_dir_path，让 SDK 调用自定义 DataAdapter
+    calib_data_path: data/calib_edgeflownet

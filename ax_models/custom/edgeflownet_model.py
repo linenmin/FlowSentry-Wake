@@ -97,7 +97,9 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         self.model_info = model_info
         self.input_height = 540
         self.input_width = 960
-        # 从配置中获取路径
+        # 从配置中获取路径（支持多种配置方式）
+        self.calib_data_path = dataset_config.get('calib_data_path', '')
+        self.data_dir_path = dataset_config.get('data_dir_path', '')
         self.repr_imgs_dir_path = dataset_config.get('repr_imgs_dir_path', '')
         self.color_format = dataset_config.get('repr_imgs_dataloader_color_format', 'RGB')
     
@@ -182,7 +184,16 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         """
         支持直接迭代（用于校准）
         """
-        data_dir = self.repr_imgs_dir_path
+        # 优先使用 calib_data_path，然后 data_dir_path，最后 repr_imgs_dir_path
+        data_dir = self.calib_data_path or self.data_dir_path or self.repr_imgs_dir_path
+        
+        # 如果是相对路径，尝试相对于 AXELERA_FRAMEWORK
+        if data_dir and not Path(data_dir).is_absolute():
+            import os
+            framework_path = os.environ.get('AXELERA_FRAMEWORK', '')
+            if framework_path:
+                data_dir = Path(framework_path) / data_dir
+        
         frame_pairs = self._generate_frame_pairs(data_dir)
         
         if not frame_pairs:
@@ -191,6 +202,7 @@ class OpticalFlowDataAdapter(types.DataAdapter):
                 yield np.random.uniform(0, 1, (1, self.input_height, self.input_width, 6)).astype(np.float32)
             return
         
+        print(f"找到 {len(frame_pairs)} 对校准帧对")
         for frame1_path, frame2_path in frame_pairs:
             combined = self._load_and_process_pair(frame1_path, frame2_path)
             if combined is not None:
