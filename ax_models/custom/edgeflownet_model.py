@@ -211,6 +211,7 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         data_dir = self.calib_data_path or self.data_dir_path or self.repr_imgs_dir_path
         
         # 如果是相对路径，尝试相对于 AXELERA_FRAMEWORK
+        if data_dir and not Path(data_dir).is_absolute():
             import os
             framework_path = os.environ.get('AXELERA_FRAMEWORK', '')
             if framework_path:
