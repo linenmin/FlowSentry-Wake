@@ -79,10 +79,23 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
         # 更新前一帧缓存
         self.prev_frame = img_normalized.copy()
         
-        # 添加 batch 维度
+        # 添加 batch 维度 [1, H, W, 6]
         combined = np.expand_dims(combined, axis=0)
         
-        return combined
+        # 转换为 torch.Tensor [1, H, W, 6] -> [1, 6, H, W] (如果需要 NHWC -> NCHW)
+        # 注意：YAML 中 input_tensor_layout: NHWC，所以这里应该保持 [1, H, W, 6] 还是转置？
+        # SDK 通常期望 NCHW 格式的 Tensor，即使模型是 NHWC
+        # 但这里的 combined 是 np.array
+        # 让我们查看 simplest_onnx.py，它使用 transforms.ToTensor()，返回 CHW
+        import torch
+        tensor = torch.from_numpy(combined)
+        
+        # 根据经验，override_preprocess 应该返回 NCHW 格式的 Tensor
+        # combined 是 NHWC [1, 540, 960, 6]
+        # permute to NCHW [1, 6, 540, 960]
+        tensor = tensor.permute(0, 3, 1, 2)
+        
+        return tensor
     
     def reset_frame_buffer(self):
         """重置帧缓存"""
@@ -198,7 +211,6 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         data_dir = self.calib_data_path or self.data_dir_path or self.repr_imgs_dir_path
         
         # 如果是相对路径，尝试相对于 AXELERA_FRAMEWORK
-        if data_dir and not Path(data_dir).is_absolute():
             import os
             framework_path = os.environ.get('AXELERA_FRAMEWORK', '')
             if framework_path:
@@ -216,7 +228,34 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         for frame1_path, frame2_path in frame_pairs:
             combined = self._load_and_process_pair(frame1_path, frame2_path)
             if combined is not None:
-                yield np.expand_dims(combined, axis=0)
+                # 返回 numpy 数组，不需要 batch 维度，DataLoader 会处理
+                yield combined
+
+    def create_calibration_data_loader(self, transform, root, batch_size, **kwargs):
+        """
+        创建校准数据加载器
+        覆盖 SDK 默认行为，使用自定义逻辑加载 6 通道数据
+        """
+        import torch
+        
+        class CalibrationIterableDataset(torch.utils.data.IterableDataset):
+            def __init__(self, adapter):
+                self.adapter = adapter
+            
+            def __iter__(self):
+                # 适配器产生 numpy [H, W, 6]
+                for combined in self.adapter:
+                    # 转换为 Tensor [6, H, W] (NCHW)
+                    tensor = torch.from_numpy(combined).permute(2, 0, 1)
+                    yield tensor
+        
+        # 使用 batch_size=1，因为我们的数据已经是成对的
+        return torch.utils.data.DataLoader(
+            CalibrationIterableDataset(self),
+            batch_size=batch_size or 1,
+            num_workers=0,
+            collate_fn=lambda x: torch.stack(x)
+        )
 
 
 def flow_to_color(flow: np.ndarray, max_flow: float = None) -> np.ndarray:
