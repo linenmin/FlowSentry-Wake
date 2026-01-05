@@ -6,36 +6,23 @@ name: edgeflownet-opticalflow
 
 description: EdgeFlowNet 光流估计模型，用于计算连续两帧之间的像素运动。输入为两帧RGB图像拼接(6通道)，输出为光流场(2通道 u,v)。
 
-pipeline:
-  - optical_flow:
-      model_name: edgeflownet
-      input:
-        type: image
-      preprocess:
-        - resize:
-            width: 960
-            height: 540
-        - torch-totensor:
-      inference:
-        handle_all: false
-      postprocess:
+pipeline: null
 
 models:
   edgeflownet:
-    class: AxONNXModel
-    class_path: $AXELERA_FRAMEWORK/ax_models/base_onnx.py
-    task_category: Other
+    class: EdgeFlowNetModel
+    class_path: edgeflownet_model.py
+    task_category: Classification
     input_tensor_layout: NHWC
     input_tensor_shape: [1, 540, 960, 6]
     input_color_format: RGB
     weight_path: weights/edgeflownet_540_960.onnx
     dataset: EdgeFlowNetCalibrationDataset
     extra_kwargs:
-      aipu_cores: 4
 
 datasets:
   EdgeFlowNetCalibrationDataset:
     class: OpticalFlowDataAdapter
-    class_path: $AXELERA_FRAMEWORK/ax_models/custom/edgeflownet_model.py
+    class_path: edgeflownet_model.py
     repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/calib_edgeflownet/
     repr_imgs_dataloader_color_format: RGB
