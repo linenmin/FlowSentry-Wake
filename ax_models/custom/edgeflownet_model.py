@@ -49,6 +49,9 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
         预处理函数
         将当前帧与前一帧拼接为6通道输入
         支持 PIL Image 或 numpy 数组输入
+        
+        注意：返回 Rank 3 tensor [H, W, 6]，不带 batch 维度！
+        SDK 会自动添加 batch 维度。
         """
         # 将 PIL Image 转换为 numpy 数组
         from PIL import Image
@@ -73,28 +76,19 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
         if self.prev_frame is None:
             self.prev_frame = img_normalized.copy()
         
-        # 拼接两帧为6通道
+        # 拼接两帧为6通道 [H, W, 6]
         combined = np.concatenate([self.prev_frame, img_normalized], axis=-1)
         
         # 更新前一帧缓存
         self.prev_frame = img_normalized.copy()
         
-        # 添加 batch 维度 [1, H, W, 6]
-        combined = np.expand_dims(combined, axis=0)
-        
-        # 转换为 torch.Tensor [1, H, W, 6] -> [1, 6, H, W] (如果需要 NHWC -> NCHW)
-        # 注意：YAML 中 input_tensor_layout: NHWC，所以这里应该保持 [1, H, W, 6] 还是转置？
-        # SDK 通常期望 NCHW 格式的 Tensor，即使模型是 NHWC
-        # 但这里的 combined 是 np.array
-        # 让我们查看 simplest_onnx.py，它使用 transforms.ToTensor()，返回 CHW
+        # 转换为 torch.Tensor，保持 NHWC 格式 [H, W, 6]
+        # 不添加 batch 维度，SDK 会自动添加
         import torch
         tensor = torch.from_numpy(combined)
         
-        # 根据经验，override_preprocess 应该返回 NCHW 格式的 Tensor
-        # combined 是 NHWC [1, 540, 960, 6]
-        # permute to NCHW [1, 6, 540, 960]
-        tensor = tensor.permute(0, 3, 1, 2)
-        
+        # 返回 Rank 3 tensor [H, W, 6]
+        # 模型 input_tensor_layout 是 NHWC，SDK 会处理
         return tensor
     
     def reset_frame_buffer(self):
@@ -257,8 +251,9 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         # 这样避免 DataLoader 自动添加 batch 维度导致 Rank 5 问题
         return torch.utils.data.DataLoader(
             CalibrationIterableDataset(self),
-            batch_size=None,
-            num_workers=0
+            batch_size=batch_size or 1,
+            num_workers=0,
+            collate_fn=lambda x: torch.stack(x)
         )
 
 
