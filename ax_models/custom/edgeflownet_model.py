@@ -27,11 +27,22 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
     输出: 光流场 [H, W, 2] (u, v)
     """
     
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.prev_frame = None  # 缓存前一帧
-        self.input_height = 540  # 输入高度
-        self.input_width = 960   # 输入宽度
+    # 类属性（不需要在 __init__ 中初始化）
+    prev_frame = None
+    input_height = 540
+    input_width = 960
+    
+    def init_model_deploy(self, model_info, dataset_config, **kwargs):
+        """
+        SDK 在实例化后调用此方法
+        在这里初始化自定义属性
+        """
+        # 调用父类方法加载 ONNX 模型
+        super().init_model_deploy(model_info, dataset_config, **kwargs)
+        # 初始化帧缓存
+        self.prev_frame = None
+        self.input_height = 540
+        self.input_width = 960
     
     def override_preprocess(self, img: np.ndarray) -> np.ndarray:
         """
