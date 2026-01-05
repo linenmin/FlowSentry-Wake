@@ -44,14 +44,24 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
         self.input_height = 540
         self.input_width = 960
     
-    def override_preprocess(self, img: np.ndarray) -> np.ndarray:
+    def override_preprocess(self, img) -> np.ndarray:
         """
         预处理函数
         将当前帧与前一帧拼接为6通道输入
+        支持 PIL Image 或 numpy 数组输入
         """
-        # 确保图像是 numpy 数组
+        # 将 PIL Image 转换为 numpy 数组
+        from PIL import Image
+        if isinstance(img, Image.Image):
+            img = np.array(img)
+        
+        # 确保图像是 numpy 数组（兼容 torch tensor）
         if hasattr(img, 'numpy'):
             img = img.numpy()
+        
+        # 如果是 RGBA，转换为 RGB
+        if img.ndim == 3 and img.shape[-1] == 4:
+            img = img[..., :3]
         
         # 调整图像大小
         img_resized = cv2.resize(img, (self.input_width, self.input_height))
