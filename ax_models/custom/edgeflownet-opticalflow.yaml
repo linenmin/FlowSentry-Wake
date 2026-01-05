@@ -25,5 +25,5 @@ datasets:
   SintelCalibrationDataset:
     class: OpticalFlowDataAdapter
     class_path: edgeflownet_model.py
-    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/sintel_calibration/
+    repr_imgs_dir_path: $AXELERA_FRAMEWORK/data/calib_edgeflownet/
     repr_imgs_dataloader_color_format: RGB

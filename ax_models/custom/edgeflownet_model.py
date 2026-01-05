@@ -71,7 +71,11 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
 class OpticalFlowDataAdapter:
     """
     光流校准数据集适配器
-    从 Sintel 数据集加载帧对用于量化校准
+    支持 FlyingThings3D 目录结构:
+    data_dir/
+    ├── 0000/left/*.png
+    ├── 0001/left/*.png
+    └── ...
     """
     
     def __init__(self, repr_imgs_dir_path: str, repr_imgs_dataloader_color_format: str = 'RGB'):
@@ -80,50 +84,85 @@ class OpticalFlowDataAdapter:
         self.input_height = 540  # 输入高度
         self.input_width = 960   # 输入宽度
     
+    def _find_all_sequences(self):
+        """
+        查找所有序列文件夹
+        返回每个序列中排序后的帧列表
+        """
+        sequences = []
+        
+        # 遍历子文件夹 (0000, 0001, ...)
+        for subdir in sorted(self.data_dir.iterdir()):
+            if not subdir.is_dir():
+                continue
+            
+            # 查找 left 文件夹
+            left_dir = subdir / 'left'
+            if left_dir.exists():
+                # 获取所有 PNG 文件并排序
+                frames = sorted(left_dir.glob('*.png'))
+                if len(frames) >= 2:
+                    sequences.append(frames)
+            else:
+                # 如果没有 left 子文件夹，直接查找 PNG
+                frames = sorted(subdir.glob('*.png'))
+                if len(frames) >= 2:
+                    sequences.append(frames)
+        
+        # 如果没有子文件夹，尝试直接在根目录查找
+        if not sequences:
+            frames = sorted(self.data_dir.glob('*.png'))
+            if len(frames) >= 2:
+                sequences.append(frames)
+        
+        return sequences
+    
     def __iter__(self) -> Generator[np.ndarray, None, None]:
         """
         生成校准数据
         返回: [1, H, W, 6] 形状的数组
         """
-        # 查找所有帧对
-        frame_files = sorted(self.data_dir.glob('*.png'))
+        # 查找所有序列
+        sequences = self._find_all_sequences()
         
-        if len(frame_files) < 2:
-            # 如果没有足够的帧，生成随机数据
+        if not sequences:
+            # 如果没有找到帧，生成随机数据
+            print(f"警告: 未找到校准图片，使用随机数据")
             for _ in range(100):
                 yield np.random.uniform(0, 1, (1, self.input_height, self.input_width, 6)).astype(np.float32)
             return
         
-        # 遍历连续帧对
-        for i in range(len(frame_files) - 1):
-            # 读取连续两帧
-            frame1_path = frame_files[i]
-            frame2_path = frame_files[i + 1]
-            
-            frame1 = cv2.imread(str(frame1_path))
-            frame2 = cv2.imread(str(frame2_path))
-            
-            if frame1 is None or frame2 is None:
-                continue
-            
-            # BGR → RGB
-            if self.color_format == 'RGB':
-                frame1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
-                frame2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
-            
-            # 调整大小
-            frame1 = cv2.resize(frame1, (self.input_width, self.input_height))
-            frame2 = cv2.resize(frame2, (self.input_width, self.input_height))
-            
-            # 归一化
-            frame1 = frame1.astype(np.float32) / 255.0
-            frame2 = frame2.astype(np.float32) / 255.0
-            
-            # 拼接为6通道
-            combined = np.concatenate([frame1, frame2], axis=-1)
-            
-            # 添加 batch 维度
-            yield np.expand_dims(combined, axis=0)
+        # 遍历每个序列中的连续帧对
+        for frames in sequences:
+            for i in range(len(frames) - 1):
+                # 读取连续两帧
+                frame1_path = frames[i]
+                frame2_path = frames[i + 1]
+                
+                frame1 = cv2.imread(str(frame1_path))
+                frame2 = cv2.imread(str(frame2_path))
+                
+                if frame1 is None or frame2 is None:
+                    continue
+                
+                # BGR → RGB
+                if self.color_format == 'RGB':
+                    frame1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
+                    frame2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
+                
+                # 调整大小
+                frame1 = cv2.resize(frame1, (self.input_width, self.input_height))
+                frame2 = cv2.resize(frame2, (self.input_width, self.input_height))
+                
+                # 归一化
+                frame1 = frame1.astype(np.float32) / 255.0
+                frame2 = frame2.astype(np.float32) / 255.0
+                
+                # 拼接为6通道
+                combined = np.concatenate([frame1, frame2], axis=-1)
+                
+                # 添加 batch 维度
+                yield np.expand_dims(combined, axis=0)
 
 
 def flow_to_color(flow: np.ndarray, max_flow: float = None) -> np.ndarray:
