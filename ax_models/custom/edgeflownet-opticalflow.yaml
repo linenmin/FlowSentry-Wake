@@ -17,7 +17,7 @@ models:
     input_tensor_layout: NHWC
     input_tensor_shape: [1, 576, 1024, 6]
     input_color_format: RGB
-    weight_path: weights/edgeflownet_576_1024.onnx
+    weight_path: weights/edgeflownet/edgeflownet_576_1024.onnx
     dataset: EdgeFlowNetCalibrationDataset
     extra_kwargs:
 
