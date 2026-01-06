@@ -26,5 +26,5 @@ datasets:
     class: OpticalFlowDataAdapter
     class_path: edgeflownet_model.py
     data_dir_name: calib_merged
-    repr_imgs_dir_path: data/calib_merged
+    repr_imgs_dir_path: /home/orangepi/.cache/axelera/data/calib_merged
     repr_imgs_dataloader_color_format: RGB
