@@ -1,5 +1,6 @@
 # EdgeFlowNet 光流模型配置
 # 分辨率: 1024×576 (16:9, 16的倍数)
+# 校准数据: 使用水平拼接的帧对图片 [576, 2048, 3]
 axelera-model-format: 1.0.0
 
 name: edgeflownet-opticalflow
@@ -24,5 +25,6 @@ datasets:
   EdgeFlowNetCalibrationDataset:
     class: OpticalFlowDataAdapter
     class_path: edgeflownet_model.py
-    data_dir_name: calib_edgeflownet
-    calib_data_path: data/calib_edgeflownet
+    data_dir_name: calib_merged
+    repr_imgs_dir_path: data/calib_merged
+    repr_imgs_dataloader_color_format: RGB

@@ -47,18 +47,19 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
     def override_preprocess(self, img) -> np.ndarray:
         """
         预处理函数
-        将当前帧与前一帧拼接为6通道输入
-        支持 PIL Image 或 numpy 数组输入
         
-        注意：返回 Rank 3 tensor [H, W, 6]，不带 batch 维度！
-        SDK 会自动添加 batch 维度。
+        处理两种输入类型:
+        1. 拼接图片 [H, 2W, 3]: 校准时 SDK 读取的水平拼接图片
+        2. 单帧图片 [H, W, 3]: 推理时使用，与前一帧拼接
+        
+        输出: Rank 3 tensor [H, W, 6]，不带 batch 维度
         """
-        # 将 PIL Image 转换为 numpy 数组
         from PIL import Image
+        import torch
+        
+        # 转换为 numpy 数组
         if isinstance(img, Image.Image):
             img = np.array(img)
-        
-        # 确保图像是 numpy 数组（兼容 torch tensor）
         if hasattr(img, 'numpy'):
             img = img.numpy()
         
@@ -66,30 +67,51 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
         if img.ndim == 3 and img.shape[-1] == 4:
             img = img[..., :3]
         
-        # 调整图像大小
-        img_resized = cv2.resize(img, (self.input_width, self.input_height))
+        h, w, c = img.shape
         
-        # 归一化到 0-1 范围
-        img_normalized = img_resized.astype(np.float32) / 255.0
+        # 检测是否为拼接图片 (宽度约等于高度的 2 倍)
+        # 拼接图片: [576, 2048, 3] -> w/h ≈ 3.5
+        # 单帧图片: [576, 1024, 3] -> w/h ≈ 1.78
+        is_merged = (w > h * 2.5)  # 宽高比大于 2.5 认为是拼接图片
         
-        # 如果没有前一帧，使用当前帧代替
-        if self.prev_frame is None:
+        if is_merged:
+            # === 处理拼接图片 ===
+            # 输入: [H, 2W, 3]
+            half_w = w // 2
+            
+            # 切分左右两图
+            img1 = img[:, :half_w, :]   # [H, W, 3] 前一帧
+            img2 = img[:, half_w:, :]   # [H, W, 3] 当前帧
+            
+            # Resize 到模型输入尺寸
+            img1 = cv2.resize(img1, (self.input_width, self.input_height))
+            img2 = cv2.resize(img2, (self.input_width, self.input_height))
+            
+            # 归一化
+            img1 = img1.astype(np.float32) / 255.0
+            img2 = img2.astype(np.float32) / 255.0
+            
+            # 拼接为 6 通道 [H, W, 6]
+            combined = np.concatenate([img1, img2], axis=-1)
+            
+        else:
+            # === 处理单帧图片 (推理模式) ===
+            # Resize 到模型输入尺寸
+            img_resized = cv2.resize(img, (self.input_width, self.input_height))
+            img_normalized = img_resized.astype(np.float32) / 255.0
+            
+            # 如果没有前一帧，使用当前帧
+            if self.prev_frame is None:
+                self.prev_frame = img_normalized.copy()
+            
+            # 拼接两帧为 6 通道
+            combined = np.concatenate([self.prev_frame, img_normalized], axis=-1)
+            
+            # 更新前一帧缓存
             self.prev_frame = img_normalized.copy()
         
-        # 拼接两帧为6通道 [H, W, 6]
-        combined = np.concatenate([self.prev_frame, img_normalized], axis=-1)
-        
-        # 更新前一帧缓存
-        self.prev_frame = img_normalized.copy()
-        
-        # 转换为 torch.Tensor，保持 NHWC 格式 [H, W, 6]
-        # 不添加 batch 维度，SDK 会自动添加
-        import torch
-        tensor = torch.from_numpy(combined)
-        
         # 返回 Rank 3 tensor [H, W, 6]
-        # 模型 input_tensor_layout 是 NHWC，SDK 会处理
-        return tensor
+        return torch.from_numpy(combined)
     
     def reset_frame_buffer(self):
         """重置帧缓存"""
