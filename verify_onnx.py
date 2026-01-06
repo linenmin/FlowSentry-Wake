@@ -82,8 +82,41 @@ def verify_model(model_path):
     if len(crop_nodes) == 0:
         print("    ⚠️ 警告: 没有找到 Crop 节点，模型可能未修复!")
     else:
-        for node in crop_nodes[:5]:
-            print(f"    - {node.op_type}: {node.name[:60]}...")
+        # 获取权重信息
+        weights_dict = {init.name: init for init in model.graph.initializer}
+        
+        for node in crop_nodes:
+            print(f"\n    - {node.op_type}: {node.name[:60]}...")
+            
+            # 获取 kernel_shape
+            kernel_shape = None
+            group = None
+            for attr in node.attribute:
+                if attr.name == "kernel_shape":
+                    kernel_shape = list(attr.ints)
+                if attr.name == "group":
+                    group = attr.i
+            
+            print(f"      kernel_shape: {kernel_shape}")
+            print(f"      group: {group}")
+            
+            # 检查权重形状
+            if len(node.input) > 1:
+                weight_name = node.input[1]
+                if weight_name in weights_dict:
+                    w = weights_dict[weight_name]
+                    w_shape = list(w.dims)
+                    print(f"      weights shape: {w_shape}")
+                    
+                    # 检查权重中的热点位置
+                    import numpy as np
+                    w_data = np.frombuffer(w.raw_data, dtype=np.float32).reshape(w_shape)
+                    nonzero = np.argwhere(w_data[0, 0] != 0)
+                    if len(nonzero) == 1:
+                        hotspot = tuple(nonzero[0])
+                        print(f"      hotspot位置: {hotspot}")
+                    else:
+                        print(f"      ⚠️ 非单一热点: {len(nonzero)} 个非零值")
     
     # 4. 总结
     print("\n" + "=" * 60)
