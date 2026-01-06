@@ -41,8 +41,8 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
         super().init_model_deploy(model_info, dataset_config, **kwargs)
         # 初始化帧缓存
         self.prev_frame = None
-        self.input_height = 540
-        self.input_width = 960
+        self.input_height = 576   # 16的倍数
+        self.input_width = 1024   # 16的倍数
     
     def override_preprocess(self, img) -> np.ndarray:
         """
