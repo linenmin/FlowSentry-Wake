@@ -14,10 +14,10 @@ models:
     class: EdgeFlowNetModel
     class_path: edgeflownet_model.py
     task_category: Classification
-    input_tensor_layout: NHWC
-    input_tensor_shape: [1, 576, 1024, 6]
+    input_tensor_layout: NCHW
+    input_tensor_shape: [1, 6, 576, 1024]
     input_color_format: RGB
-    weight_path: /home/orangepi/.cache/axelera/weights/edgeflownet/edgeflownet_576_1024.onnx
+    weight_path: /home/orangepi/.cache/axelera/weights/edgeflownet/multiscale_bilinear_576_1024.onnx
     dataset: EdgeFlowNetCalibrationDataset
     extra_kwargs:
 

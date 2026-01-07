@@ -111,6 +111,8 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
             self.prev_frame = img_normalized.copy()
         
         # 返回 Rank 3 tensor [H, W, 6]
+        combined = np.transpose(combined, (2, 0, 1))
+        combined = np.ascontiguousarray(combined)
         return torch.from_numpy(combined)
     
     def reset_frame_buffer(self):
@@ -216,7 +218,8 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         
         # 拼接为 6 通道
         combined = np.concatenate([frame1, frame2], axis=-1)
-        
+        combined = np.transpose(combined, (2, 0, 1))
+        combined = np.ascontiguousarray(combined)
         return combined
     
     def __iter__(self):
@@ -238,7 +241,11 @@ class OpticalFlowDataAdapter(types.DataAdapter):
         if not frame_pairs:
             print(f"警告: 未找到校准图片于 {data_dir}，使用随机数据")
             for _ in range(100):
-                yield np.random.uniform(0, 1, (1, self.input_height, self.input_width, 6)).astype(np.float32)
+                yield np.random.uniform(
+                    0,
+                    1,
+                    (6, self.input_height, self.input_width),
+                ).astype(np.float32)
             return
         
         print(f"找到 {len(frame_pairs)} 对校准帧对")
@@ -292,6 +299,8 @@ def flow_to_color(flow: np.ndarray, max_flow: float = None) -> np.ndarray:
         [H, W, 3] RGB 颜色图
     """
     # 获取 u, v 分量
+    if flow.ndim == 3 and flow.shape[0] == 2:
+        flow = np.transpose(flow, (1, 2, 0))
     u = flow[..., 0]
     v = flow[..., 1]
     
