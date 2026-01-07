@@ -52,7 +52,7 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
         1. 拼接图片 [H, 2W, 3]: 校准时 SDK 读取的水平拼接图片
         2. 单帧图片 [H, W, 3]: 推理时使用，与前一帧拼接
         
-        输出: Rank 3 tensor [H, W, 6]，不带 batch 维度
+        输出: Rank 3 tensor [6, H, W]，不带 batch 维度
         """
         from PIL import Image
         import torch
@@ -110,7 +110,7 @@ class EdgeFlowNetModel(base_onnx.AxONNXModel):
             # 更新前一帧缓存
             self.prev_frame = img_normalized.copy()
         
-        # 返回 Rank 3 tensor [H, W, 6]
+        # 返回 Rank 3 tensor [6, H, W]
         combined = np.transpose(combined, (2, 0, 1))
         combined = np.ascontiguousarray(combined)
         return torch.from_numpy(combined)
@@ -269,8 +269,8 @@ class OpticalFlowDataAdapter(types.DataAdapter):
             def __iter__(self):
                 # 适配器产生 numpy [H, W, 6]
                 for combined in self.adapter:
-                    # 转换为 Tensor [H, W, 6] (NHWC)，保持模型输入格式
-                    # 不要进行 permute，因为模型 layout 是 NHWC
+                    # 转换为 Tensor [6, H, W] (NCHW)，保持模型输入格式
+                    # 不要进行 permute，因为模型 layout 是 NCHW
                     tensor = torch.from_numpy(combined)
                     print(f"DEBUG: Yielding tensor shape: {tensor.shape}")
                     yield tensor
